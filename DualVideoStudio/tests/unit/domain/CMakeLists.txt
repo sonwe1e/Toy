@@ -1,0 +1,33 @@
+include(GoogleTest)
+
+add_executable(
+    dvs_domain_unit_tests
+    ClipTests.cpp
+    ExportPlanTests.cpp
+    FrameTimelineTests.cpp
+     FrameTimelineCanonicalContractTests.cpp
+     VfrMediaDescriptorConsistencyTests.cpp
+    MediaDescriptorAndErrorTests.cpp
+    ModuleNameTests.cpp
+    ProjectTests.cpp
+    RationalRateTests.cpp
+    SourcePairValidatorTests.cpp
+)
+target_link_libraries(
+    dvs_domain_unit_tests
+    PRIVATE
+        dvs_domain
+        dvs::test_dependencies
+)
+
+dvs_apply_project_warnings(dvs_domain_unit_tests)
+set_target_properties(dvs_domain_unit_tests PROPERTIES FOLDER "Tests/Unit/Domain")
+
+gtest_discover_tests(
+    dvs_domain_unit_tests
+    TEST_PREFIX "domain."
+    DISCOVERY_MODE PRE_TEST
+    PROPERTIES
+        LABELS "unit;domain"
+        TIMEOUT 10
+)

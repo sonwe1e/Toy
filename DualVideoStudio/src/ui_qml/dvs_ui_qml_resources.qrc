@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/qml">
+        <file alias="Main.qml">qml/Main.qml</file>
+        <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>
+    </qresource>
+</RCC>

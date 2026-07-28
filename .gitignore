@@ -1,0 +1,20 @@
+# --- Workspace-level exclusions ---
+# Per-project build/dependency rules live in each project's own .gitignore
+# and continue to apply inside its directory.
+
+# Local AI/tool state
+.claude/
+**/.serena/
+
+# Neutralized nested repositories (local history backups, not for upload;
+# rename a folder back to .git to restore that project's standalone repo)
+**/.git.bak/
+
+# Local scratch files
+DualVideoStudio/_test_patch.txt
+DualVideoStudio/diag.cmd
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

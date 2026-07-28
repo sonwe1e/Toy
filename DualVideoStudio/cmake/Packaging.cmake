@@ -1,0 +1,15 @@
+include_guard(GLOBAL)
+
+set(CPACK_PACKAGE_NAME "DualVideoStudio")
+set(CPACK_PACKAGE_VENDOR "DualVideoStudio Contributors")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Frame-exact dual-video review workstation")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_FILE_NAME "DualVideoStudio-${PROJECT_VERSION}-windows-x64")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "DualVideoStudio")
+set(CPACK_MONOLITHIC_INSTALL ON)
+set(CPACK_WIX_VERSION 4)
+set(CPACK_WIX_INSTALL_SCOPE perMachine)
+set(CPACK_WIX_UPGRADE_GUID "8E0E8272-2FA8-4B2D-A929-809E95D93DE2")
+set(CPACK_PRE_BUILD_SCRIPTS "${PROJECT_SOURCE_DIR}/cmake/VerifyPackageStage.cmake")
+
+include(CPack)
