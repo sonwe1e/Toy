@@ -1043,7 +1043,7 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
 }
 
-TEST(PlaybackCoordinatorTests, PauseBeforeCadenceCancelsRunAndRejectsTheStaleTick) {
+TEST(PlaybackCoordinatorTests, StepBeforeCadenceCancelsRunAndRejectsTheStaleTick) {
     const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
     const auto provider = std::make_shared<FakeFrameProvider>();
     const auto render = std::make_shared<FakeRenderChannel>();
@@ -1057,24 +1057,36 @@ TEST(PlaybackCoordinatorTests, PauseBeforeCadenceCancelsRunAndRejectsTheStaleTic
               PortSubmitResult::Accepted);
     EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
     ASSERT_TRUE(scheduler->waitForScheduleCount(2U));
+    ASSERT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
+
+    // A frame step during playback pauses the run first, then seeks the next frame
+    // (USERPLAN 3.1/6.2) instead of bouncing off a Busy gate.
     ASSERT_EQ(coordinator->submit(StepFramesCommand{
                   .context = commandContext(coordinator, domain::CommandId{3}),
                   .delta = 1,
               }),
               PortSubmitResult::Accepted);
-    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Busy);
-    ASSERT_EQ(coordinator->submit(
-                  PauseCommand{.context = commandContext(coordinator, domain::CommandId{4})}),
-              PortSubmitResult::Accepted);
-    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
-    EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPaused);
-    EXPECT_FALSE(coordinator->snapshot()->requestedFrame.has_value());
-    EXPECT_GE(scheduler->cancelCount(), 2U);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kSeeking;
+    }));
+    EXPECT_EQ(coordinator->snapshot()->requestedFrame, domain::FrameId{1});
+    ASSERT_TRUE(provider->waitForCancelCount(1U));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const auto seek = provider->frameRequest(1U);
+    ASSERT_TRUE(seek.has_value());
+    EXPECT_EQ(seek->frameId, domain::FrameId{1});
 
+    ASSERT_TRUE(provider->postFrameReady(*seek, makeFrameSet(seek->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*seek));
+    presentPublished(coordinator, render, 1U);
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+    EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{1});
+
+    // The stale cadence tick from the canceled run cannot request another frame.
     ASSERT_TRUE(scheduler->fire(1U));
-    markGraphicsReady(coordinator, domain::DeviceGeneration{3});
-    EXPECT_EQ(provider->frameRequestCount(), 1U);
-    EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{0});
+    EXPECT_EQ(provider->frameRequestCount(), 2U);
+    EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{1});
 }
 
 TEST(PlaybackCoordinatorTests, PauseDuringDecodeCancelsGenerationAndIgnoresLateResults) {
@@ -2575,6 +2587,111 @@ TEST(PlaybackCoordinatorTests, SeekAdvancesGenerationCancelsOldScopeAndPublishes
     EXPECT_TRUE(afterSeek->isConsistent());
     EXPECT_EQ(afterSeek->displayedFrame, domain::FrameId{7});
     EXPECT_EQ(afterSeek->playbackGeneration, domain::PlaybackGeneration{2});
+}
+
+TEST(PlaybackCoordinatorTests, RapidStepsChainOntoNewestTargetsAndSupersedeThePriorSeek) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // Two steps while the first seek is still in flight: targets must chain 0 -> 1 -> 2 and the
+    // first seek must be superseded (canceled) instead of bouncing off a Busy gate.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> newest = provider->frameRequest(2U);
+    ASSERT_TRUE(newest.has_value());
+    EXPECT_EQ(newest->frameId, domain::FrameId{2});
+
+    std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Canceled);
+
+    ASSERT_TRUE(provider->postFrameReady(*newest, makeFrameSet(newest->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*newest));
+    presentPublished(coordinator, render, 1U);
+
+    terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{3});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    const std::shared_ptr<const SessionSnapshot> after = coordinator->snapshot();
+    ASSERT_NE(after, nullptr);
+    EXPECT_TRUE(after->isConsistent());
+    EXPECT_EQ(after->displayedFrame, domain::FrameId{2});
+}
+
+TEST(PlaybackCoordinatorTests, StepDuringPlaybackPausesBeforeSeekingTheTarget) {
+    const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator =
+        makeCoordinator(provider, render, std::make_shared<FakeMediaProbe>(), scheduler);
+    ASSERT_NE(coordinator, nullptr);
+    markGraphicsReady(coordinator);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(PlayCommand{.context = commandContext(coordinator, domain::CommandId{2})}),
+              PortSubmitResult::Accepted);
+    std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    ASSERT_TRUE(scheduler->waitForScheduleCount(2U));
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPlaying;
+    }));
+
+    // Frame navigation during playback pauses first, then seeks the explicit target.
+    ASSERT_EQ(coordinator->submit(SeekFrameCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .frameId = domain::FrameId{5},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kSeeking;
+    }));
+    EXPECT_EQ(coordinator->snapshot()->requestedFrame, domain::FrameId{5});
+
+    std::optional<FrameRequest> seekRequest;
+    ASSERT_TRUE(waitUntil([&] {
+        for (std::size_t index = provider->frameRequestCount(); index-- > 0U;) {
+            const std::optional<FrameRequest> candidate = provider->frameRequest(index);
+            if (candidate.has_value() && candidate->frameId == domain::FrameId{5}) {
+                seekRequest = candidate;
+                return true;
+            }
+        }
+        return false;
+    }));
+    ASSERT_TRUE(seekRequest.has_value());
+    ASSERT_TRUE(provider->postFrameReady(*seekRequest, makeFrameSet(seekRequest->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*seekRequest));
+    presentPublished(coordinator, render, 1U);
+
+    terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{3});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    const std::shared_ptr<const SessionSnapshot> after = coordinator->snapshot();
+    ASSERT_NE(after, nullptr);
+    EXPECT_TRUE(after->isConsistent());
+    EXPECT_EQ(after->playbackState, domain::PlaybackState::kPaused);
+    EXPECT_EQ(after->displayedFrame, domain::FrameId{5});
 }
 
 TEST(PlaybackCoordinatorTests, SuppressesDuplicateCommandsWithoutASecondProviderRequest) {

@@ -340,7 +340,10 @@ private:
             snapshot_ && !next.playing && snapshot_->requestedFrame.has_value();
         const bool playbackBlocksCommands = next.playing || playbackDraining || transportPending;
         next.canOpen = next.graphicsReady && !next.busy && !playbackBlocksCommands;
-        const bool canNavigate = next.graphicsReady && !next.busy && !playbackBlocksCommands &&
+        // Navigation stays available while playing or while an earlier navigation is in flight:
+        // the coordinator pauses playback on the first frame step and coalesces rapid presses
+        // onto the newest target (USERPLAN 3.1/6.2). Opens remain gated by transport activity.
+        const bool canNavigate = next.graphicsReady && !next.busy &&
                                  next.displayState == ReviewDisplayState::Ready &&
                                  next.totalFrames != 0U;
         next.canFirst = canNavigate;

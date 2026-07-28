@@ -918,6 +918,23 @@ private:
                            domain::CanonicalTimeline{*set.canonicalRate()});
     }
 
+    // A newer navigation target replaces an in-flight exact seek: cancel its provider scope and
+    // presentation timer and complete the superseded command as canceled. The caller dispatches
+    // the fresh command, whose beginSeek advances the generation again.
+    void supersedePendingSeek() {
+        if (!pending_.has_value() || pending_->phase != PendingPhase::kSeekingFrame) {
+            return;
+        }
+        PendingCommand superseded = std::move(*pending_);
+        pending_.reset();
+        if (superseded.presentationTimerId.has_value()) {
+            static_cast<void>(
+                dependencies_.deadlineScheduler->cancel(*superseded.presentationTimerId));
+        }
+        dependencies_.directFrameProvider->cancel(superseded.providerContext);
+        completeCommand(superseded.command, CommandOutcome::Canceled);
+    }
+
     // Cancels every in-flight probe of the pending open and completes that command as canceled,
     // so a freshly submitted open can start its own probe set. Late completions from the canceled
     // probes no longer match any pending slot and are ignored.
@@ -1232,7 +1249,11 @@ private:
         }
 
         const std::int64_t maximum = static_cast<std::int64_t>(state_.canonicalFrameCount - 1U);
-        const std::int64_t current = state_.displayedFrame.value_or(domain::FrameId{0}).value();
+        // Steps chain against the newest requested target, not the last displayed frame, so a
+        // burst of presses walks 101, 102, 103... while earlier requests are still in flight.
+        const std::int64_t current =
+            state_.requestedFrame.value_or(state_.displayedFrame.value_or(domain::FrameId{0}))
+                .value();
         const std::int64_t target =
             command.delta > 0
                 ? (command.delta > maximum - current ? maximum : current + command.delta)
@@ -1302,6 +1323,30 @@ private:
             pendingProbe_.has_value()) {
             // A new open supersedes in-flight probes instead of bouncing off a Busy gate.
             supersedePendingProbes();
+        }
+        const bool isNavigationCommand =
+            std::holds_alternative<SeekFrameCommand>(command) ||
+            std::holds_alternative<StepFramesCommand>(command) ||
+            std::holds_alternative<FirstFrameCommand>(command) ||
+            std::holds_alternative<LastFrameCommand>(command);
+        if (isNavigationCommand) {
+            if (pendingProbe_.has_value()) {
+                completeCommand(context, CommandOutcome::Busy);
+                return;
+            }
+            // Frame navigation pauses an active playback run first, and supersedes an in-flight
+            // exact seek so rapid presses coalesce onto the newest target (USERPLAN 3.1/6.2).
+            if (playbackRun_.has_value()) {
+                stopPlayback();
+            }
+            if (pending_.has_value()) {
+                if (pending_->phase == PendingPhase::kSeekingFrame) {
+                    supersedePendingSeek();
+                } else {
+                    completeCommand(context, CommandOutcome::Busy);
+                    return;
+                }
+            }
         }
         if (pending_.has_value() || pendingProbe_.has_value() || playbackRun_.has_value()) {
             completeCommand(context, CommandOutcome::Busy);

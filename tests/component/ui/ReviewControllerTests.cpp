@@ -357,10 +357,11 @@ TEST_F(ReviewControllerTests, ProjectsContinuousPlaybackWithoutLatchingGeneralBu
     ASSERT_TRUE(waitUntil([&controller] { return controller.playing() && controller.canPause(); }));
     EXPECT_FALSE(controller.busy());
     EXPECT_FALSE(controller.canOpen());
-    EXPECT_FALSE(controller.canFirst());
-    EXPECT_FALSE(controller.canPrevious());
-    EXPECT_FALSE(controller.canNext());
-    EXPECT_FALSE(controller.canLast());
+    // Frame navigation stays enabled during playback: dispatching it pauses first, then seeks.
+    EXPECT_TRUE(controller.canFirst());
+    EXPECT_TRUE(controller.canPrevious());
+    EXPECT_TRUE(controller.canNext());
+    EXPECT_TRUE(controller.canLast());
 
     ASSERT_TRUE(controller.togglePlayback());
     ASSERT_TRUE(std::holds_alternative<application::PauseCommand>(backend->submitted.back()));
@@ -371,7 +372,8 @@ TEST_F(ReviewControllerTests, ProjectsContinuousPlaybackWithoutLatchingGeneralBu
     ASSERT_TRUE(waitUntil([&controller] {
         return !controller.playing() && !controller.canPause() && !controller.canPlay();
     }));
-    EXPECT_FALSE(controller.canFirst());
+    // Navigation stays enabled while the pause drains; a new step supersedes the in-flight one.
+    EXPECT_TRUE(controller.canFirst());
 
     backend->currentSnapshot.displayedFrame = domain::FrameId{3};
     backend->currentSnapshot.requestedFrame.reset();
