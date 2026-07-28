@@ -140,15 +140,10 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaOperation::kMediaDecode), "media-decode");
     EXPECT_EQ(stableId(MediaOperation::kGraphicsInitialization), "graphics-initialization");
     EXPECT_EQ(stableId(MediaOperation::kFramePresentation), "frame-presentation");
-    EXPECT_EQ(stableId(SourceRole::kNone), "none");
-    EXPECT_EQ(stableId(SourceRole::kA), "a");
-    EXPECT_EQ(stableId(SourceRole::kB), "b");
-    EXPECT_EQ(stableId(SourceRole::kPair), "pair");
-    EXPECT_EQ(stableId(SourceRole::kProject), "project");
 
     const MediaError error = makeMediaError(MediaErrorCode::kInvalidFrameCount,
                                             MediaOperation::kMediaDescriptorValidation,
-                                            SourceRole::kA,
+                                            SourceId{0},
                                             true,
                                             "count was zero",
                                             RequestId{42});
@@ -161,7 +156,7 @@ TEST(MediaErrorTests, KeepsNativeGraphicsDiagnosticsOutOfTheUserMessageKey) {
     const MediaError error =
         makeMediaError(MediaErrorCode::kGraphicsUnavailable,
                        MediaOperation::kGraphicsInitialization,
-                       SourceRole::kNone,
+                       std::nullopt,
                        true,
                        "D3D11 device creation failed with HRESULT 0x887A0005.");
     EXPECT_EQ(error.userMessageKey, "graphics-unavailable");
@@ -172,7 +167,7 @@ TEST(MediaErrorTests, KeepsNativeGraphicsDiagnosticsOutOfTheUserMessageKey) {
 TEST(MediaErrorTests, ResultCanCarryMediaErrorAsEitherValueOrFailure) {
     const MediaError value = makeMediaError(MediaErrorCode::kInvalidArgument,
                                             MediaOperation::kProjectPersistence,
-                                            SourceRole::kProject,
+                                            std::nullopt,
                                             false,
                                             "decoded persisted error");
     const auto success = Result<MediaError>::success(value);
@@ -182,7 +177,7 @@ TEST(MediaErrorTests, ResultCanCarryMediaErrorAsEitherValueOrFailure) {
     const auto failure =
         Result<MediaError>::failure(makeMediaError(MediaErrorCode::kInvalidProjectSchema,
                                                    MediaOperation::kProjectPersistence,
-                                                   SourceRole::kProject,
+                                                   std::nullopt,
                                                    false,
                                                    "schema rejected"));
     ASSERT_FALSE(failure);

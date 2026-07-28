@@ -30,14 +30,15 @@ enum class RenderPublishResult {
 
 struct MediaProbeRequest final {
     RequestContext context;
-    domain::SourceRole sourceRole;
+    domain::SourceId sourceId;
     std::filesystem::path sourcePath;
 };
 
 struct FrameProviderOpenRequest final {
     PlaybackRequestContext context;
-    domain::MediaDescriptor sourceA;
-    domain::MediaDescriptor sourceB;
+    // The session's compared sources, two or three entries in session order. The provider opens
+    // one decode slot per entry and publishes one FrameSet entry per slot.
+    std::vector<domain::ComparisonSource> sources;
     // The canonical timeline carries either a rational CFR rate or an immutable, normalized,
     // zero-anchored VFR display-order timeline. The provider and the coordinator share one
     // VFR timeline without persisting derived per-frame data for the whole session.
@@ -63,7 +64,7 @@ struct ProjectLoadRequest final {
 // receives an editable project or claims the replacement has compatible media metadata.
 struct ProjectRelinkRequest final {
     RequestContext context;
-    domain::SourceRole sourceRole;
+    domain::SourceId sourceId;
     std::filesystem::path newSourcePath;
 };
 
@@ -179,14 +180,14 @@ public:
     [[nodiscard]] virtual bool cancel(std::uint64_t timerId) noexcept = 0;
 };
 
-// This is the separate, single-slot path for high-frequency complete pairs. It deliberately has
-// no QML/Qt type and no method for publishing one side of a pair.
+// This is the separate, single-slot path for high-frequency complete frame sets. It deliberately
+// has no QML/Qt type and no method for publishing one source of a set.
 class IRenderChannel {
 public:
     virtual ~IRenderChannel() = default;
 
     [[nodiscard]] virtual RenderPublishResult publish(const FrameRequestContext& context,
-                                                      FramePair pair) noexcept = 0;
+                                                      FrameSet set) noexcept = 0;
     virtual void clear(const PlaybackRequestContext& context) noexcept = 0;
 };
 

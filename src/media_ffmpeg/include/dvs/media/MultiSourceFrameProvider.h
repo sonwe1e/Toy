@@ -11,18 +11,19 @@ class FrameBudget;
 
 namespace dvs::media {
 
-// Direct review adapter backed by two independent software decoder contexts. It accepts bounded
-// exact, sequential, and prefetch work, then emits only complete A/B frame pairs.
-class DirectFrameProvider final : public application::IFrameProvider {
+// Multi-source review adapter backed by independent software decoder contexts. It accepts bounded
+// exact, sequential, and prefetch work, then emits only complete frame sets with one entry per
+// loaded source.
+class MultiSourceFrameProvider final : public application::IFrameProvider {
 public:
-    explicit DirectFrameProvider(platform::FrameBudget& frameBudget,
-                                 std::size_t requestCapacity = 16U);
-    ~DirectFrameProvider() override;
+    explicit MultiSourceFrameProvider(platform::FrameBudget& frameBudget,
+                                      std::size_t requestCapacity = 16U);
+    ~MultiSourceFrameProvider() override;
 
-    DirectFrameProvider(const DirectFrameProvider&) = delete;
-    DirectFrameProvider& operator=(const DirectFrameProvider&) = delete;
-    DirectFrameProvider(DirectFrameProvider&&) = delete;
-    DirectFrameProvider& operator=(DirectFrameProvider&&) = delete;
+    MultiSourceFrameProvider(const MultiSourceFrameProvider&) = delete;
+    MultiSourceFrameProvider& operator=(const MultiSourceFrameProvider&) = delete;
+    MultiSourceFrameProvider(MultiSourceFrameProvider&&) = delete;
+    MultiSourceFrameProvider& operator=(MultiSourceFrameProvider&&) = delete;
 
     [[nodiscard]] application::PortSubmitResult
     submit(const application::FrameProviderOpenRequest& request,

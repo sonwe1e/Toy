@@ -44,9 +44,10 @@ Use GoogleTest for C++ and Qt Quick Test for UI. Name C++ tests
 `ThingTests.cpp` and QML tests `tst_thing.qml`; label every CTest case by layer and module.
 Future `domain` and `application` suites require 80% line coverage.
 
-On the D3D11VA runner, paired 1080p60 and 4K30 playback must run five minutes. Exclude
-first two seconds and seek/pause intervals. Never split A/B; paired-frame drops are at most
-0.5%, seek P95 at most 500 ms, UI response at most 100 ms, and decoded-frame
+On the D3D11VA runner, 2-3 source 1080p60 playback must run five minutes. Exclude
+first two seconds and seek/pause intervals. Never split a frame set — every display
+update shows one canonical frame position across all sources; set-level frame drops
+are at most 0.5%, seek P95 at most 500 ms, UI response at most 100 ms, and decoded-frame
 cache usage at most 256 MiB.
 
 ## Commits, Pull Requests, and Agent Invariants
@@ -55,6 +56,6 @@ Use Conventional Commits subjects, e.g. `feat: add exact frame stepping`. PRs mu
 changes, link issues, and list tests. Add performance evidence for media/render work,
 screenshots for visible QML changes, and relevant package validation.
 
-Never block GUI/render threads, publish partial A/B pairs, or omit session/generation/request
+Never block GUI/render threads, publish partial frame sets, or omit session/generation/request
 identity on asynchronous work. Hide FFmpeg/D3D11 types behind adapters. Write project, user,
 and output files transactionally. Preserve every approved test and performance gate.

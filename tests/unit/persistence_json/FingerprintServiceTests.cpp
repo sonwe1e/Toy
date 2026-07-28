@@ -55,7 +55,7 @@ TEST_F(FingerprintServiceTests, FingerprintsSmallFilesWithStandardSha256) {
     const std::filesystem::path source = filePath("small.bin");
     writeFile(source, {'a', 'b', 'c'});
 
-    const auto identity = FingerprintService::fingerprint(source, domain::SourceRole::kA);
+    const auto identity = FingerprintService::fingerprint(source, 0);
 
     ASSERT_TRUE(identity);
     EXPECT_EQ(identity.value().byteSize, 3U);
@@ -74,9 +74,9 @@ TEST_F(FingerprintServiceTests, HashesEveryByteAtTheTwoMiBBoundary) {
     writeFile(changedPath, changed);
 
     const auto originalIdentity =
-        FingerprintService::fingerprint(originalPath, domain::SourceRole::kA);
+        FingerprintService::fingerprint(originalPath, 0);
     const auto changedIdentity =
-        FingerprintService::fingerprint(changedPath, domain::SourceRole::kA);
+        FingerprintService::fingerprint(changedPath, 0);
 
     ASSERT_TRUE(originalIdentity);
     ASSERT_TRUE(changedIdentity);
@@ -103,10 +103,10 @@ TEST_F(FingerprintServiceTests, HashesOnlyFirstAndLastMiBAboveTheBoundary) {
     writeFile(lastPath, lastChanged);
 
     const auto originalIdentity =
-        FingerprintService::fingerprint(originalPath, domain::SourceRole::kA);
-    const auto middleIdentity = FingerprintService::fingerprint(middlePath, domain::SourceRole::kA);
-    const auto firstIdentity = FingerprintService::fingerprint(firstPath, domain::SourceRole::kA);
-    const auto lastIdentity = FingerprintService::fingerprint(lastPath, domain::SourceRole::kA);
+        FingerprintService::fingerprint(originalPath, 0);
+    const auto middleIdentity = FingerprintService::fingerprint(middlePath, 0);
+    const auto firstIdentity = FingerprintService::fingerprint(firstPath, 0);
+    const auto lastIdentity = FingerprintService::fingerprint(lastPath, 0);
 
     ASSERT_TRUE(originalIdentity);
     ASSERT_TRUE(middleIdentity);
@@ -119,7 +119,7 @@ TEST_F(FingerprintServiceTests, HashesOnlyFirstAndLastMiBAboveTheBoundary) {
 
 TEST_F(FingerprintServiceTests, ReportsStableErrorsForMissingAndChangedSources) {
     const std::filesystem::path missing = filePath("missing.bin");
-    const auto missingIdentity = FingerprintService::fingerprint(missing, domain::SourceRole::kB);
+    const auto missingIdentity = FingerprintService::fingerprint(missing, 1);
     ASSERT_FALSE(missingIdentity);
     EXPECT_EQ(missingIdentity.error().code, domain::MediaErrorCode::kSourceMissing);
     EXPECT_EQ(missingIdentity.error().operation, domain::MediaOperation::kProjectPersistence);
@@ -127,12 +127,12 @@ TEST_F(FingerprintServiceTests, ReportsStableErrorsForMissingAndChangedSources) 
 
     const std::filesystem::path source = filePath("changed.bin");
     writeFile(source, {'a', 'b', 'c'});
-    const auto expected = FingerprintService::fingerprint(source, domain::SourceRole::kB);
+    const auto expected = FingerprintService::fingerprint(source, 1);
     ASSERT_TRUE(expected);
 
     writeFile(source, {'x', 'y', 'z'});
     const auto status =
-        FingerprintService::verify(source, expected.value(), domain::SourceRole::kB);
+        FingerprintService::verify(source, expected.value(), 1);
 
     ASSERT_FALSE(status);
     EXPECT_EQ(status.error().code, domain::MediaErrorCode::kSourceFingerprintMismatch);

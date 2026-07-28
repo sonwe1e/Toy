@@ -1,6 +1,8 @@
 #include "dvs/ui/DirectCompare.h"
 
+#include "dvs/application/FrameSet.h"
 #include "dvs/application/PlaybackCoordinator.h"
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/SteadyDeadlineScheduler.h"
 
@@ -52,12 +54,12 @@ class CapturingRenderChannel final : public application::IRenderChannel {
 public:
     [[nodiscard]] application::RenderPublishResult
     publish(const application::FrameRequestContext& context,
-            application::FramePair pair) noexcept override {
+            application::FrameSet set) noexcept override {
         try {
             std::scoped_lock lock(mutex_);
-            captured_.push_back(CapturedPair{
+            captured_.push_back(CapturedSet{
                 .context = context,
-                .pair = std::move(pair),
+                .set = std::move(set),
             });
         } catch (...) {
             return application::RenderPublishResult::Closed;
@@ -67,29 +69,29 @@ public:
 
     void clear(const application::PlaybackRequestContext& context) noexcept override {
         std::scoped_lock lock(mutex_);
-        std::erase_if(captured_, [&context](const CapturedPair& captured) {
+        std::erase_if(captured_, [&context](const CapturedSet& captured) {
             return samePlaybackScope(captured.context.playback, context);
         });
     }
 
-    [[nodiscard]] std::optional<application::FramePair> latestPair() const {
+    [[nodiscard]] std::optional<application::FrameSet> latestSet() const {
         std::scoped_lock lock(mutex_);
         if (captured_.empty()) {
             return std::nullopt;
         }
-        return captured_.back().pair;
+        return captured_.back().set;
     }
 
-    [[nodiscard]] std::optional<application::FramePairPresented> takeUnconfirmedPresentation() {
+    [[nodiscard]] std::optional<application::FrameSetPresented> takeUnconfirmedPresentation() {
         std::scoped_lock lock(mutex_);
-        for (CapturedPair& captured : captured_) {
+        for (CapturedSet& captured : captured_) {
             if (captured.confirmed) {
                 continue;
             }
             captured.confirmed = true;
-            return application::FramePairPresented{
+            return application::FrameSetPresented{
                 .context = captured.context,
-                .frameId = captured.pair.frameId(),
+                .frameId = captured.set.canonicalFrameId(),
             };
         }
         return std::nullopt;
@@ -104,21 +106,21 @@ private:
                lhs.playbackGeneration == rhs.playbackGeneration;
     }
 
-    struct CapturedPair final {
+    struct CapturedSet final {
         application::FrameRequestContext context;
-        application::FramePair pair;
+        application::FrameSet set;
         bool confirmed = false;
     };
 
     mutable std::mutex mutex_;
-    std::vector<CapturedPair> captured_;
+    std::vector<CapturedSet> captured_;
 };
 
 [[nodiscard]] domain::MediaError comparisonError(std::string detail,
                                                  const bool recoverable = true) {
     return domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
                                   domain::MediaOperation::kMediaDecode,
-                                  domain::SourceRole::kPair,
+                                  std::nullopt,
                                   recoverable,
                                   std::move(detail));
 }
@@ -129,7 +131,7 @@ waitForCommandTerminal(const std::shared_ptr<application::PlaybackCoordinator>& 
                        const domain::CommandId commandId) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
     while (std::chrono::steady_clock::now() < deadline) {
-        while (const std::optional<application::FramePairPresented> presented =
+        while (const std::optional<application::FrameSetPresented> presented =
                    renderChannel->takeUnconfirmedPresentation()) {
             static_cast<void>(coordinator->postCritical(application::ApplicationEvent{*presented}));
         }
@@ -177,7 +179,7 @@ compareDirectSources(std::shared_ptr<application::IFrameProvider> provider,
         return domain::Result<DirectComparisonResult>::failure(
             domain::makeMediaError(domain::MediaErrorCode::kInvalidFrameId,
                                    domain::MediaOperation::kMediaDecode,
-                                   domain::SourceRole::kPair,
+                                   std::nullopt,
                                    false,
                                    "The requested direct comparison frame is invalid."));
     }
@@ -199,15 +201,28 @@ compareDirectSources(std::shared_ptr<application::IFrameProvider> provider,
     const CoordinatorIngressCloser closeIngress{coordinator};
 
     const std::shared_ptr<const application::SessionSnapshot> initial = coordinator->snapshot();
-    if (!initial || coordinator->submit(application::OpenDirectSourcesCommand{
+    if (!initial || coordinator->submit(application::OpenDirectComparisonCommand{
                         .context =
                             application::CommandContext{
                                 .sessionId = initial->sessionId,
                                 .sessionEpoch = initial->sessionEpoch,
                                 .commandId = domain::CommandId{1},
                             },
-                        .sourceA = std::move(sourceA),
-                        .sourceB = std::move(sourceB),
+                        .sources =
+                            {
+                                domain::ComparisonSource{
+                                    .id = 0U,
+                                    .role = domain::ComparisonRole::kPrediction,
+                                    .descriptor = sourceA,
+                                    .displayName = sourceA.normalizedPath.filename().string(),
+                                },
+                                domain::ComparisonSource{
+                                    .id = 1U,
+                                    .role = domain::ComparisonRole::kPrediction,
+                                    .descriptor = sourceB,
+                                    .displayName = sourceB.normalizedPath.filename().string(),
+                                },
+                            },
                     }) != application::PortSubmitResult::Accepted) {
         return domain::Result<DirectComparisonResult>::failure(
             comparisonError("The coordinator did not accept the direct source pair.", true));
@@ -241,24 +256,30 @@ compareDirectSources(std::shared_ptr<application::IFrameProvider> provider,
         closeCommandId = domain::CommandId{3};
     }
 
-    const std::optional<application::FramePair> pair = renderChannel->latestPair();
-    if (!pair.has_value() || pair->frameId() != frameId) {
+    const std::optional<application::FrameSet> set = renderChannel->latestSet();
+    if (!set.has_value() || set->canonicalFrameId() != frameId) {
         return domain::Result<DirectComparisonResult>::failure(comparisonError(
-            "The coordinator completed without publishing the requested frame pair."));
+            "The coordinator completed without publishing the requested frame set."));
+    }
+    const application::MappedSourceFrame* const entryA = set->find(0U);
+    const application::MappedSourceFrame* const entryB = set->find(1U);
+    if (entryA == nullptr || entryB == nullptr || !entryA->hasFrame() || !entryB->hasFrame()) {
+        return domain::Result<DirectComparisonResult>::failure(comparisonError(
+            "The coordinator completed without a complete frame for both sources."));
     }
     const DirectComparisonResult result{
-        .frameId = pair->frameId(),
+        .frameId = set->canonicalFrameId(),
         .sourceA =
             DirectComparisonFrame{
-                .width = pair->frameA().geometry().width,
-                .height = pair->frameA().geometry().height,
-                .accountedBytes = pair->frameA().accountedBytes(),
+                .width = entryA->frame->geometry().width,
+                .height = entryA->frame->geometry().height,
+                .accountedBytes = entryA->frame->accountedBytes(),
             },
         .sourceB =
             DirectComparisonFrame{
-                .width = pair->frameB().geometry().width,
-                .height = pair->frameB().geometry().height,
-                .accountedBytes = pair->frameB().accountedBytes(),
+                .width = entryB->frame->geometry().width,
+                .height = entryB->frame->geometry().height,
+                .accountedBytes = entryB->frame->accountedBytes(),
             },
         .reservedBytes = frameBudget.reservedBytes(),
     };

@@ -123,17 +123,13 @@ struct InterruptState final {
            lifecycle->load(std::memory_order_acquire) == ProbeLifecycle::kCanceled;
 }
 
-[[nodiscard]] bool isSourceRole(const domain::SourceRole sourceRole) noexcept {
-    return sourceRole == domain::SourceRole::kA || sourceRole == domain::SourceRole::kB;
-}
-
 [[nodiscard]] domain::MediaError probeError(const domain::MediaErrorCode code,
-                                            const domain::SourceRole sourceRole,
+                                            const std::optional<domain::SourceId> sourceId,
                                             std::string technicalDetail,
                                             const bool recoverable = false) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kMediaProbe,
-                                  sourceRole,
+                                  sourceId,
                                   recoverable,
                                   std::move(technicalDetail));
 }
@@ -156,12 +152,12 @@ struct InterruptState final {
 [[nodiscard]] domain::Result<domain::ColorMetadata>
 normalizeColorMetadata(const AVCodecParameters& parameters,
                        const std::uint32_t height,
-                       const domain::SourceRole sourceRole) {
+                       const domain::SourceId sourceId) {
     if (parameters.color_trc == AVCOL_TRC_SMPTE2084 ||
         parameters.color_trc == AVCOL_TRC_ARIB_STD_B67) {
         return domain::Result<domain::ColorMetadata>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
-                       sourceRole,
+                       sourceId,
                        "HDR transfer characteristics are outside the v1 SDR media contract."));
     }
 
@@ -183,7 +179,7 @@ normalizeColorMetadata(const AVCodecParameters& parameters,
     default:
         return domain::Result<domain::ColorMetadata>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
-                       sourceRole,
+                       sourceId,
                        "Only BT.601 and BT.709 colour matrices are supported by the v1 renderer."));
     }
 
@@ -217,30 +213,23 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
 
 [[nodiscard]] domain::Result<domain::MediaDescriptor> inspectInternal(
     const std::filesystem::path& sourcePath,
-    const domain::SourceRole sourceRole,
+    const domain::SourceId sourceId,
     const std::atomic<ProbeLifecycle>* const lifecycle,
     std::optional<std::shared_ptr<const domain::FrameTimeline>>* const timeline = nullptr) {
     if (timeline != nullptr) {
         *timeline = std::nullopt;
     }
 
-    if (!isSourceRole(sourceRole)) {
-        return domain::Result<domain::MediaDescriptor>::failure(
-            probeError(domain::MediaErrorCode::kInvalidArgument,
-                       sourceRole,
-                       "Media probes require source role A or B."));
-    }
-
     const auto normalizedPath = platform::WindowsPaths::absolutePath(sourcePath);
     if (!normalizedPath) {
         return domain::Result<domain::MediaDescriptor>::failure(probeError(
             domain::MediaErrorCode::kMediaProbeFailed,
-            sourceRole,
+            sourceId,
             "Could not normalize the source path: " + normalizedPath.error().technicalDetail));
     }
 
     auto identityBefore = platform::SourceIdentityService::fingerprint(
-        normalizedPath.value(), sourceRole, domain::MediaOperation::kMediaProbe);
+        normalizedPath.value(), sourceId, domain::MediaOperation::kMediaProbe);
     if (!identityBefore) {
         return domain::Result<domain::MediaDescriptor>::failure(identityBefore.error());
     }
@@ -253,7 +242,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     if (rawFormat == nullptr) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaOpenFailed,
-                       sourceRole,
+                       sourceId,
                        "FFmpeg could not allocate a format context."));
     }
     rawFormat->interrupt_callback.callback = interruptCallback;
@@ -266,7 +255,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         }
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaOpenFailed,
-                       sourceRole,
+                       sourceId,
                        "FFmpeg could not open the source: " + ffmpegError(openResult),
                        true));
     }
@@ -276,7 +265,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     if (streamInfoResult < 0) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                       sourceRole,
+                       sourceId,
                        "FFmpeg could not read stream information: " + ffmpegError(streamInfoResult),
                        true));
     }
@@ -286,7 +275,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     if (streamIndex < 0 || static_cast<unsigned int>(streamIndex) >= format->nb_streams) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                       sourceRole,
+                       sourceId,
                        "The source has no readable video stream.",
                        true));
     }
@@ -296,7 +285,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         stream->codecpar->height <= 0) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                       sourceRole,
+                       sourceId,
                        "The selected video stream has invalid dimensions."));
     }
     const AVCodecParameters& parameters = *stream->codecpar;
@@ -305,14 +294,14 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         parameters.codec_id != AV_CODEC_ID_MPEG4) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedCodec,
-                       sourceRole,
+                       sourceId,
                        "Only H.264, H.265/HEVC, and MPEG-4 Part 2 source video is supported in v1.",
                        true));
     }
     if (avcodec_find_decoder(parameters.codec_id) == nullptr) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedCodec,
-                       sourceRole,
+                       sourceId,
                        "FFmpeg has no decoder for this supported source codec.",
                        true));
     }
@@ -324,7 +313,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         !isSupportedPixelFormat(*pixelDescriptor)) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
-                       sourceRole,
+                       sourceId,
                        "Only 8-bit 4:2:0 source pixel formats are supported in v1.",
                        true));
     }
@@ -338,7 +327,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         auto indexedTimestamps =
             internal::buildPresentationTimestampIndex(internal::TimestampIndexRequest{
                 .sourcePath = normalizedPath.value(),
-                .sourceRole = sourceRole,
+                .sourceId = sourceId,
                 .operation = domain::MediaOperation::kMediaProbe,
                 .expectedFrameCount = stream->nb_frames > 0
                                           ? std::optional<std::int64_t>{stream->nb_frames}
@@ -389,7 +378,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
                                     },
                             },
                         },
-                    .sourceRole = sourceRole,
+                    .sourceId = sourceId,
                     .operation = domain::MediaOperation::kMediaProbe,
                     .cancellation =
                         internal::TimelineCancellation{
@@ -412,7 +401,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
             if (!verifiedRate) {
                 domain::MediaError error = verifiedRate.error();
                 error.operation = domain::MediaOperation::kMediaProbe;
-                error.sourceRole = sourceRole;
+                error.source = sourceId;
                 return domain::Result<domain::MediaDescriptor>::failure(std::move(error));
             }
             frameRate = std::move(verifiedRate).value();
@@ -429,7 +418,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         if (stream->time_base.num <= 0 || stream->time_base.den <= 0) {
             return domain::Result<domain::MediaDescriptor>::failure(
                 probeError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                           sourceRole,
+                           sourceId,
                            "The variable-frame-rate source has a non-positive stream time base."));
         }
         const AVRational timeBase = stream->time_base;
@@ -441,7 +430,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
             if (probeCancellationRequested(lifecycle)) {
                 return domain::Result<domain::MediaDescriptor>::failure(
                     probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                               sourceRole,
+                               sourceId,
                                "The variable-frame-rate presentation-time conversion was canceled.",
                                true));
             }
@@ -449,7 +438,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
             if (!checkedSubtract(presentation, anchor, &offset)) {
                 return domain::Result<domain::MediaDescriptor>::failure(
                     probeError(domain::MediaErrorCode::kArithmeticOverflow,
-                               sourceRole,
+                               sourceId,
                                "The variable-frame-rate presentation-time offset overflowed the "
                                "int64 range."));
             }
@@ -461,7 +450,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
             if (microseconds < 0 || microseconds == std::numeric_limits<std::int64_t>::max()) {
                 return domain::Result<domain::MediaDescriptor>::failure(
                     probeError(domain::MediaErrorCode::kArithmeticOverflow,
-                               sourceRole,
+                               sourceId,
                                "A variable-frame-rate presentation time overflowed during the "
                                "microsecond conversion."));
             }
@@ -471,7 +460,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         if (!variableTimeline) {
             domain::MediaError error = variableTimeline.error();
             error.operation = domain::MediaOperation::kMediaProbe;
-            error.sourceRole = sourceRole;
+            error.source = sourceId;
             return domain::Result<domain::MediaDescriptor>::failure(std::move(error));
         }
         if (timeline != nullptr) {
@@ -481,7 +470,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     }
 
     auto colorMetadata = normalizeColorMetadata(
-        parameters, static_cast<std::uint32_t>(parameters.height), sourceRole);
+        parameters, static_cast<std::uint32_t>(parameters.height), sourceId);
     if (!colorMetadata) {
         return domain::Result<domain::MediaDescriptor>::failure(colorMetadata.error());
     }
@@ -506,7 +495,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         if (durationMicroseconds < 0) {
             return domain::Result<domain::MediaDescriptor>::failure(
                 probeError(domain::MediaErrorCode::kInvalidDuration,
-                           sourceRole,
+                           sourceId,
                            "The stream duration cannot be represented in microseconds."));
         }
     }
@@ -517,14 +506,14 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     };
 
     auto identityAfter = platform::SourceIdentityService::fingerprint(
-        normalizedPath.value(), sourceRole, domain::MediaOperation::kMediaProbe);
+        normalizedPath.value(), sourceId, domain::MediaOperation::kMediaProbe);
     if (!identityAfter) {
         return domain::Result<domain::MediaDescriptor>::failure(identityAfter.error());
     }
     if (!sameIdentity(identityBefore.value(), identityAfter.value())) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kSourceFingerprintMismatch,
-                       sourceRole,
+                       sourceId,
                        "The source changed while FFmpeg was probing it.",
                        true));
     }
@@ -555,7 +544,7 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     if (!validated) {
         domain::MediaError error = validated.error();
         error.operation = domain::MediaOperation::kMediaProbe;
-        error.sourceRole = sourceRole;
+        error.source = sourceId;
         return domain::Result<domain::MediaDescriptor>::failure(std::move(error));
     }
     return validated;
@@ -605,7 +594,7 @@ void postSucceeded(const std::shared_ptr<ProbeOperation>& operation,
     postCritical(operation->events,
                  application::ApplicationEvent{application::ProbeCompleted{
                      .context = operation->request.context,
-                     .sourceRole = operation->request.sourceRole,
+                     .sourceId = operation->request.sourceId,
                      .descriptor = std::move(descriptor),
                      .timeline = std::move(timeline),
                  }});
@@ -723,7 +712,7 @@ private:
             } else {
                 std::optional<std::shared_ptr<const domain::FrameTimeline>> timeline;
                 const auto descriptor = inspectInternal(operation->request.sourcePath,
-                                                        operation->request.sourceRole,
+                                                        operation->request.sourceId,
                                                         &operation->lifecycle,
                                                         &timeline);
                 if (operation->isCanceled()) {
@@ -738,12 +727,12 @@ private:
             postFailed(
                 operation,
                 probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                           operation->request.sourceRole,
+                           operation->request.sourceId,
                            "Unexpected media probe exception: " + std::string{exception.what()}));
         } catch (...) {
             postFailed(operation,
                        probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                                  operation->request.sourceRole,
+                                  operation->request.sourceId,
                                   "Unexpected non-standard media probe exception."));
         }
         remove(operation);
@@ -783,18 +772,18 @@ MediaProbe::MediaProbe(const std::size_t queueCapacity)
 MediaProbe::~MediaProbe() = default;
 
 domain::Result<domain::MediaDescriptor> MediaProbe::inspect(const std::filesystem::path& sourcePath,
-                                                            const domain::SourceRole sourceRole) {
+                                                            const domain::SourceId sourceId) {
     try {
-        return inspectInternal(sourcePath, sourceRole, nullptr);
+        return inspectInternal(sourcePath, sourceId, nullptr);
     } catch (const std::exception& exception) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                       sourceRole,
+                       sourceId,
                        "Unexpected media probe exception: " + std::string{exception.what()}));
     } catch (...) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kMediaProbeFailed,
-                       sourceRole,
+                       sourceId,
                        "Unexpected non-standard media probe exception."));
     }
 }

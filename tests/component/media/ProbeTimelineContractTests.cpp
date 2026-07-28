@@ -1,5 +1,6 @@
 #include "dvs/application/Events.h"
 #include "dvs/application/Ports.h"
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/FrameTimeline.h"
 #include "dvs/domain/RationalRate.h"
 #include "dvs/media/MediaProbe.h"
@@ -69,7 +70,7 @@ namespace {
 [[nodiscard]] application::ProbeCompleted makeCfrCompleted() {
     return application::ProbeCompleted{
         .context = makeContext(),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
         .descriptor = cfrDescriptor(),
         .timeline = std::nullopt,
     };
@@ -91,7 +92,7 @@ TEST(ProbeTimelineContractTests, VfrProbeCompletedCarriesASharedTimeline) {
     ASSERT_TRUE(timeline);
     application::ProbeCompleted completed{
         .context = makeContext(),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
         .descriptor = vfrDescriptor(),
         .timeline = timeline,
     };
@@ -107,16 +108,20 @@ TEST(ProbeTimelineContractTests, VfrProbeCompletedCarriesASharedTimeline) {
 TEST(ProbeTimelineContractTests, OpenRequestCanonicalTimelineAcceptsBothTimingPaths) {
     application::FrameProviderOpenRequest cfrRequest{
         .context = makePlaybackContext(),
-        .sourceA = cfrDescriptor(),
-        .sourceB = cfrDescriptor(),
+        .sources = std::vector<domain::ComparisonSource>{
+            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = cfrDescriptor(), .displayName = "Source 0"},
+            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = cfrDescriptor(), .displayName = "Source 1"},
+        },
         .timeline = domain::CanonicalTimeline{domain::RationalRate::create(30, 1).value()},
     };
     auto vfrTimeline = makeVfrTimeline();
     ASSERT_TRUE(vfrTimeline);
     application::FrameProviderOpenRequest vfrRequest{
         .context = makePlaybackContext(),
-        .sourceA = vfrDescriptor(),
-        .sourceB = vfrDescriptor(),
+        .sources = std::vector<domain::ComparisonSource>{
+            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = vfrDescriptor(), .displayName = "Source 0"},
+            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = vfrDescriptor(), .displayName = "Source 1"},
+        },
         .timeline = domain::CanonicalTimeline{vfrTimeline},
     };
 

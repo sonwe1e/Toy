@@ -127,7 +127,7 @@ validateDevice(ID3D11Device* const rawDevice,
 [[nodiscard]] domain::MediaError unavailableError(std::string technicalDetail) {
     return domain::makeMediaError(domain::MediaErrorCode::kGraphicsUnavailable,
                                   domain::MediaOperation::kGraphicsInitialization,
-                                  domain::SourceRole::kPair,
+                                  std::nullopt,
                                   true,
                                   std::move(technicalDetail));
 }
@@ -135,7 +135,7 @@ validateDevice(ID3D11Device* const rawDevice,
 [[nodiscard]] domain::MediaError lostError(const HRESULT reason) {
     return domain::makeMediaError(domain::MediaErrorCode::kGraphicsDeviceLost,
                                   domain::MediaOperation::kGraphicsInitialization,
-                                  domain::SourceRole::kPair,
+                                  std::nullopt,
                                   true,
                                   "ID3D11Device::GetDeviceRemovedReason reported " +
                                       hresultText(reason) + '.');

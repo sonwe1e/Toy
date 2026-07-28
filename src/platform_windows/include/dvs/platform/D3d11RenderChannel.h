@@ -8,8 +8,8 @@ namespace dvs::platform {
 
 class GpuTransferActor;
 
-// Application-facing adapter for the complete-pair upload actor. Admission is bounded to the
-// actor's active task plus one latest pending pair; no D3D call occurs on the publisher thread.
+// Application-facing adapter for the complete-set upload actor. Admission is bounded to the
+// actor's active task plus one latest pending set; no D3D call occurs on the publisher thread.
 class D3d11RenderChannel final : public application::IRenderChannel {
 public:
     explicit D3d11RenderChannel(std::shared_ptr<GpuTransferActor> transferActor) noexcept;
@@ -17,7 +17,7 @@ public:
 
     [[nodiscard]] application::RenderPublishResult
     publish(const application::FrameRequestContext& context,
-            application::FramePair pair) noexcept override;
+            application::FrameSet set) noexcept override;
     void clear(const application::PlaybackRequestContext& context) noexcept override;
 
 private:

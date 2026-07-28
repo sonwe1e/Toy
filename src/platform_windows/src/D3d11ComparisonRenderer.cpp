@@ -1,4 +1,4 @@
-#include "dvs/platform/D3d11DualVideoRenderer.h"
+#include "dvs/platform/D3d11ComparisonRenderer.h"
 
 #include "dvs/platform/FrameMailbox.h"
 #include "dvs/platform/GraphicsDeviceBroker.h"
@@ -6,8 +6,8 @@
 #include "dvs/platform/RenderActivitySink.h"
 
 #include "D3d11GpuFrameBacking.h"
-#include "GpuFramePair.h"
 #include "GpuFrameResource.h"
+#include "GpuFrameSet.h"
 
 #include <algorithm>
 #include <array>
@@ -74,7 +74,7 @@ struct DifferenceDraw final {
     SurfaceDifferenceFilter filter = SurfaceDifferenceFilter::Bilinear;
 };
 
-struct PreparedPairDraw final {
+struct PreparedSetDraw final {
     FrameMailboxPublication publication;
     bool difference = false;
     VideoDraw drawA;
@@ -267,7 +267,7 @@ d3dBacking(const std::shared_ptr<const GpuFrameResource>& frame) noexcept {
 void appendLetterboxBars(const SurfaceRenderState& state,
                          const SurfaceRect& bounds,
                          const SurfaceRect& content,
-                         PreparedPairDraw& prepared) {
+                         PreparedSetDraw& prepared) {
     const auto append = [&](const SurfaceRect& bar) {
         if (bar.isValid() && prepared.letterboxBarCount < prepared.letterboxBars.size()) {
             prepared.letterboxBars[prepared.letterboxBarCount] =
@@ -443,7 +443,7 @@ Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata) noe
     };
 }
 
-class D3d11DualVideoRenderer::Impl final {
+class D3d11ComparisonRenderer::Impl final {
 public:
     Impl(std::shared_ptr<GraphicsDeviceBroker> deviceBroker,
          std::shared_ptr<FrameMailbox> frameMailbox,
@@ -453,76 +453,76 @@ public:
           acknowledgementMailbox_(std::move(acknowledgementMailbox)),
           activitySink_(std::move(activitySink)) {}
 
-    [[nodiscard]] DualVideoRenderResult render(const SurfaceRenderState& state) noexcept {
+    [[nodiscard]] ComparisonRenderResult render(const SurfaceRenderState& state) noexcept {
         if (!state.isValid() || !deviceBroker_ || !frameMailbox_ || !acknowledgementMailbox_) {
-            return DualVideoRenderResult::InvalidState;
+            return ComparisonRenderResult::InvalidState;
         }
 
         retryPendingAcknowledgement();
         if (acknowledgementClosed_) {
-            return DualVideoRenderResult::Closed;
+            return ComparisonRenderResult::Closed;
         }
 
         const GraphicsDeviceLeaseResult leaseResult = deviceBroker_->tryLease();
         if (leaseResult.status == GraphicsDeviceLeaseStatus::Busy) {
-            return DualVideoRenderResult::Contended;
+            return ComparisonRenderResult::Contended;
         }
         if (leaseResult.status == GraphicsDeviceLeaseStatus::Closed) {
-            return DualVideoRenderResult::Closed;
+            return ComparisonRenderResult::Closed;
         }
         if (leaseResult.status != GraphicsDeviceLeaseStatus::Available ||
             !leaseResult.lease.has_value()) {
-            return DualVideoRenderResult::DeviceUnavailable;
+            return ComparisonRenderResult::DeviceUnavailable;
         }
         const GraphicsDeviceLease& lease = *leaseResult.lease;
         if (!ensureDeviceResources(lease)) {
-            return DualVideoRenderResult::ResourceFailure;
+            return ComparisonRenderResult::ResourceFailure;
         }
         if (!applyRenderState(state, *lease.immediateContext.Get())) {
-            return DualVideoRenderResult::InvalidState;
+            return ComparisonRenderResult::InvalidState;
         }
 
         // A full lossless ACK queue is presentation backpressure. Keep repainting the retained
         // front pair, but do not expose a later publication until the pending event is admitted.
         if (pendingAcknowledgement_.has_value()) {
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::PresentedAckPending
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::PresentedAckPending
+                                                       : ComparisonRenderResult::ResourceFailure;
         }
 
         const FrameMailboxReadResult read = frameMailbox_->tryLatest(lease.deviceGeneration);
         switch (read.status) {
         case FrameMailboxReadStatus::Contended:
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::Contended
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::Contended
+                                                       : ComparisonRenderResult::ResourceFailure;
         case FrameMailboxReadStatus::Closed:
-            return DualVideoRenderResult::Closed;
+            return ComparisonRenderResult::Closed;
         case FrameMailboxReadStatus::DeviceGenerationMismatch:
             frontPublication_.reset();
-            return DualVideoRenderResult::DeviceUnavailable;
+            return ComparisonRenderResult::DeviceUnavailable;
         case FrameMailboxReadStatus::Empty:
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::BackgroundOnly
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::BackgroundOnly
+                                                       : ComparisonRenderResult::ResourceFailure;
         case FrameMailboxReadStatus::Available:
             break;
         }
         if (!read.publication.has_value() || !read.publication->pair) {
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::BackgroundOnly
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::BackgroundOnly
+                                                       : ComparisonRenderResult::ResourceFailure;
         }
 
         const FrameMailboxPublication publication = *read.publication;
         if (frontPublication_.has_value() &&
             frontPublication_->publicationSerial == publication.publicationSerial &&
-            frontPublication_->pair == publication.pair) {
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::Presented
-                                                       : DualVideoRenderResult::ResourceFailure;
+            frontPublication_->pair == publication.set) {
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::Presented
+                                                       : ComparisonRenderResult::ResourceFailure;
         }
 
-        PreparedPairDraw prepared;
-        if (!preparePairDraw(state, publication, lease, prepared)) {
+        PreparedSetDraw prepared;
+        if (!prepareSetDraw(state, publication, lease, prepared)) {
             return frontPublication_.has_value() && drawFrontOrBackground(state, lease)
-                       ? DualVideoRenderResult::BackgroundOnly
-                       : DualVideoRenderResult::ResourceFailure;
+                       ? ComparisonRenderResult::BackgroundOnly
+                       : ComparisonRenderResult::ResourceFailure;
         }
 
         // Replacement is checked after every fallible preparation and immediately before the
@@ -530,24 +530,24 @@ public:
         const FrameMailboxDrawStatus drawStatus =
             frameMailbox_->validateForDraw(publication, lease.deviceGeneration);
         if (drawStatus == FrameMailboxDrawStatus::Contended) {
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::Contended
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::Contended
+                                                       : ComparisonRenderResult::ResourceFailure;
         }
         if (drawStatus == FrameMailboxDrawStatus::Closed) {
-            return DualVideoRenderResult::Closed;
+            return ComparisonRenderResult::Closed;
         }
         if (drawStatus == FrameMailboxDrawStatus::DeviceGenerationMismatch) {
             frontPublication_.reset();
-            return DualVideoRenderResult::DeviceUnavailable;
+            return ComparisonRenderResult::DeviceUnavailable;
         }
         if (drawStatus == FrameMailboxDrawStatus::Superseded) {
-            return drawFrontOrBackground(state, lease) ? DualVideoRenderResult::BackgroundOnly
-                                                       : DualVideoRenderResult::ResourceFailure;
+            return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::BackgroundOnly
+                                                       : ComparisonRenderResult::ResourceFailure;
         }
 
-        drawPreparedPair(prepared, *lease.immediateContext.Get());
+        drawPreparedSet(prepared, *lease.immediateContext.Get());
         frontPublication_ = publication;
-        return acknowledge(publication, *publication.pair);
+        return acknowledge(publication, *publication.set);
     }
 
     void releaseResources() noexcept {
@@ -800,89 +800,136 @@ private:
         return true;
     }
 
-    [[nodiscard]] bool preparePairDraw(const SurfaceRenderState& state,
-                                       const FrameMailboxPublication& publication,
-                                       const GraphicsDeviceLease& lease,
-                                       PreparedPairDraw& prepared) noexcept {
-        if (!publication.pair) {
+    [[nodiscard]] bool prepareSetDraw(const SurfaceRenderState& state,
+                                      const FrameMailboxPublication& publication,
+                                      const GraphicsDeviceLease& lease,
+                                      PreparedSetDraw& prepared) noexcept {
+        if (!publication.set) {
             return false;
         }
-        const GpuFramePair& pair = *publication.pair;
-        const std::shared_ptr<const GpuFrameResource>& frameA = pair.frameA();
-        const std::shared_ptr<const GpuFrameResource>& frameB = pair.frameB();
+        const GpuFrameSet& set = *publication.set;
+        const std::span<const GpuFrameSlot> slots = set.slots();
+
+        // Extract first two slots; missing slots result in black panels.
+        const GpuFrameSlot* const slotA = (slots.size() > 0U) ? &slots[0U] : nullptr;
+        const GpuFrameSlot* const slotB = (slots.size() > 1U) ? &slots[1U] : nullptr;
+        const std::shared_ptr<const GpuFrameResource> frameA = slotA ? slotA->frame : nullptr;
+        const std::shared_ptr<const GpuFrameResource> frameB = slotB ? slotB->frame : nullptr;
         const D3d11GpuFrameBacking* const backingA = d3dBacking(frameA);
         const D3d11GpuFrameBacking* const backingB = d3dBacking(frameB);
-        if (!frameA || !frameB || backingA == nullptr || backingB == nullptr ||
-            backingA->yView() == nullptr || backingA->uvView() == nullptr ||
-            backingB->yView() == nullptr || backingB->uvView() == nullptr) {
+
+        // At least one frame must be present for rendering.
+        if (!frameA && !frameB) {
             return false;
         }
 
         ID3D11DeviceContext& context = *lease.immediateContext.Get();
         HRESULT result = S_OK;
         if (state.viewMode == SurfaceViewMode::Difference) {
-            const SurfaceRect bounds{
-                .x = 0.0F,
-                .y = 0.0F,
-                .width = state.logicalWidth,
-                .height = state.logicalHeight,
-            };
-            const GpuFrameResource& reference =
-                state.differenceReference == SurfaceDifferenceReference::SourceA ? *frameA
-                                                                                 : *frameB;
-            const SurfaceRect destination =
-                aspectFitRect(bounds, reference.geometry().width, reference.geometry().height);
-            if (!destination.isValid()) {
-                return false;
-            }
-            prepared = PreparedPairDraw{
-                .publication = publication,
-                .difference = true,
-                .differenceDraw =
-                    makeDifferenceDraw(state, destination, *frameA, *backingA, *frameB, *backingB),
-            };
-            appendLetterboxBars(state, bounds, destination, prepared);
-            result = writeConstantBuffer(
-                context, *composeBufferA_.Get(), prepared.differenceDraw.compose);
-            if (SUCCEEDED(result)) {
+            // Difference view requires two frames. If fewer than two frames are present,
+            // show the first frame plain (or black if no frames).
+            if (!frameA || !frameB || backingA == nullptr || backingB == nullptr ||
+                backingA->yView() == nullptr || backingA->uvView() == nullptr ||
+                backingB->yView() == nullptr || backingB->uvView() == nullptr) {
+                // Fall back to showing the first frame plain, or black if no frames.
+                if (frameA && backingA && backingA->yView() && backingA->uvView()) {
+                    const SurfaceRect bounds{
+                        .x = 0.0F,
+                        .y = 0.0F,
+                        .width = state.logicalWidth,
+                        .height = state.logicalHeight,
+                    };
+                    const SurfaceRect destination =
+                        aspectFitRect(bounds, frameA->geometry().width, frameA->geometry().height);
+                    if (!destination.isValid()) {
+                        return false;
+                    }
+                    prepared = PreparedSetDraw{
+                        .publication = publication,
+                        .drawA = makeVideoDraw(state, destination, *frameA, *backingA),
+                    };
+                    appendLetterboxBars(state, bounds, destination, prepared);
+                    result = writeConstantBuffer(context, *composeBufferA_.Get(), prepared.drawA.compose);
+                    if (SUCCEEDED(result)) {
+                        result = writeConstantBuffer(context, *colorBufferA_.Get(), prepared.drawA.color);
+                    }
+                } else {
+                    // No frames available; draw black.
+                    prepared = PreparedSetDraw{.publication = publication};
+                }
+            } else {
+                const SurfaceRect bounds{
+                    .x = 0.0F,
+                    .y = 0.0F,
+                    .width = state.logicalWidth,
+                    .height = state.logicalHeight,
+                };
+                const GpuFrameResource& reference =
+                    state.differenceReference == SurfaceDifferenceReference::SourceA ? *frameA
+                                                                                     : *frameB;
+                const SurfaceRect destination =
+                    aspectFitRect(bounds, reference.geometry().width, reference.geometry().height);
+                if (!destination.isValid()) {
+                    return false;
+                }
+                prepared = PreparedSetDraw{
+                    .publication = publication,
+                    .difference = true,
+                    .differenceDraw =
+                        makeDifferenceDraw(state, destination, *frameA, *backingA, *frameB, *backingB),
+                };
+                appendLetterboxBars(state, bounds, destination, prepared);
                 result = writeConstantBuffer(
-                    context, *colorBufferA_.Get(), prepared.differenceDraw.colorA);
-            }
-            if (SUCCEEDED(result)) {
-                result = writeConstantBuffer(
-                    context, *colorBufferB_.Get(), prepared.differenceDraw.colorB);
-            }
-            if (SUCCEEDED(result)) {
-                result = writeConstantBuffer(
-                    context, *differenceBuffer_.Get(), prepared.differenceDraw.options);
+                    context, *composeBufferA_.Get(), prepared.differenceDraw.compose);
+                if (SUCCEEDED(result)) {
+                    result = writeConstantBuffer(
+                        context, *colorBufferA_.Get(), prepared.differenceDraw.colorA);
+                }
+                if (SUCCEEDED(result)) {
+                    result = writeConstantBuffer(
+                        context, *colorBufferB_.Get(), prepared.differenceDraw.colorB);
+                }
+                if (SUCCEEDED(result)) {
+                    result = writeConstantBuffer(
+                        context, *differenceBuffer_.Get(), prepared.differenceDraw.options);
+                }
             }
         } else {
+            // Side-by-side view: draw first two slots left/right; missing slot → cleared/black panel.
             const SurfaceSplitLayout split = computeSurfaceSplit(
                 state.logicalWidth, state.logicalHeight, state.pixelWidth, state.pixelHeight);
-            const SurfaceRect destinationA =
-                aspectFitRect(split.left, frameA->geometry().width, frameA->geometry().height);
-            const SurfaceRect destinationB =
-                aspectFitRect(split.right, frameB->geometry().width, frameB->geometry().height);
-            if (!destinationA.isValid() || !destinationB.isValid()) {
-                return false;
+
+            if (frameA && backingA && backingA->yView() && backingA->uvView()) {
+                const SurfaceRect destinationA =
+                    aspectFitRect(split.left, frameA->geometry().width, frameA->geometry().height);
+                if (!destinationA.isValid()) {
+                    return false;
+                }
+                prepared.drawA = makeVideoDraw(state, destinationA, *frameA, *backingA);
+                appendLetterboxBars(state, split.left, destinationA, prepared);
             }
-            prepared = PreparedPairDraw{
-                .publication = publication,
-                .drawA = makeVideoDraw(state, destinationA, *frameA, *backingA),
-                .drawB = makeVideoDraw(state, destinationB, *frameB, *backingB),
-            };
-            appendLetterboxBars(state, split.left, destinationA, prepared);
-            appendLetterboxBars(state, split.right, destinationB, prepared);
-            result = writeConstantBuffer(context, *composeBufferA_.Get(), prepared.drawA.compose);
-            if (SUCCEEDED(result)) {
-                result = writeConstantBuffer(context, *colorBufferA_.Get(), prepared.drawA.color);
+            if (frameB && backingB && backingB->yView() && backingB->uvView()) {
+                const SurfaceRect destinationB =
+                    aspectFitRect(split.right, frameB->geometry().width, frameB->geometry().height);
+                if (!destinationB.isValid()) {
+                    return false;
+                }
+                prepared.drawB = makeVideoDraw(state, destinationB, *frameB, *backingB);
+                appendLetterboxBars(state, split.right, destinationB, prepared);
             }
-            if (SUCCEEDED(result)) {
-                result =
-                    writeConstantBuffer(context, *composeBufferB_.Get(), prepared.drawB.compose);
+
+            prepared.publication = publication;
+            if (frameA && backingA && backingA->yView() && backingA->uvView()) {
+                result = writeConstantBuffer(context, *composeBufferA_.Get(), prepared.drawA.compose);
+                if (SUCCEEDED(result)) {
+                    result = writeConstantBuffer(context, *colorBufferA_.Get(), prepared.drawA.color);
+                }
             }
-            if (SUCCEEDED(result)) {
-                result = writeConstantBuffer(context, *colorBufferB_.Get(), prepared.drawB.color);
+            if (SUCCEEDED(result) && frameB && backingB && backingB->yView() && backingB->uvView()) {
+                result = writeConstantBuffer(context, *composeBufferB_.Get(), prepared.drawB.compose);
+                if (SUCCEEDED(result)) {
+                    result = writeConstantBuffer(context, *colorBufferB_.Get(), prepared.drawB.color);
+                }
             }
         }
         for (std::size_t index = 0U; SUCCEEDED(result) && index < prepared.letterboxBarCount;
@@ -893,8 +940,8 @@ private:
         return SUCCEEDED(result) || failDevice(result, lease);
     }
 
-    void drawPreparedPair(const PreparedPairDraw& prepared,
-                          ID3D11DeviceContext& context) const noexcept {
+    void drawPreparedSet(const PreparedSetDraw& prepared,
+                         ID3D11DeviceContext& context) const noexcept {
         context.PSSetShader(blackPixelShader_.Get(), nullptr, 0U);
         for (std::size_t index = 0U; index < prepared.letterboxBarCount; ++index) {
             ID3D11Buffer* const composeBuffer = blackComposeBuffers_[index].Get();
@@ -905,34 +952,40 @@ private:
         if (prepared.difference) {
             drawDifference(context, prepared.differenceDraw);
         } else {
-            drawVideoPair(context, prepared.drawA, prepared.drawB);
+            drawVideoSlots(context, prepared.drawA, prepared.drawB);
         }
         const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
         context.PSSetShaderResources(0U, static_cast<UINT>(nullViews.size()), nullViews.data());
     }
 
-    void drawVideoPair(ID3D11DeviceContext& context,
-                       const VideoDraw& drawA,
-                       const VideoDraw& drawB) const noexcept {
+    void drawVideoSlots(ID3D11DeviceContext& context,
+                        const VideoDraw& drawA,
+                        const VideoDraw& drawB) const noexcept {
         context.PSSetShader(nv12PixelShader_.Get(), nullptr, 0U);
         ID3D11SamplerState* const sampler = linearSampler_.Get();
         context.PSSetSamplers(0U, 1U, &sampler);
 
-        ID3D11Buffer* composeBuffer = composeBufferA_.Get();
-        ID3D11Buffer* colorBuffer = colorBufferA_.Get();
-        const std::array<ID3D11ShaderResourceView*, 2U> viewsA{drawA.yView, drawA.uvView};
-        context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
-        context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
-        context.PSSetShaderResources(0U, static_cast<UINT>(viewsA.size()), viewsA.data());
-        context.Draw(4U, 0U);
+        // Draw slot A if present (yView is non-null).
+        if (drawA.yView != nullptr && drawA.uvView != nullptr) {
+            ID3D11Buffer* composeBuffer = composeBufferA_.Get();
+            ID3D11Buffer* colorBuffer = colorBufferA_.Get();
+            const std::array<ID3D11ShaderResourceView*, 2U> viewsA{drawA.yView, drawA.uvView};
+            context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
+            context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
+            context.PSSetShaderResources(0U, static_cast<UINT>(viewsA.size()), viewsA.data());
+            context.Draw(4U, 0U);
+        }
 
-        composeBuffer = composeBufferB_.Get();
-        colorBuffer = colorBufferB_.Get();
-        const std::array<ID3D11ShaderResourceView*, 2U> viewsB{drawB.yView, drawB.uvView};
-        context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
-        context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
-        context.PSSetShaderResources(0U, static_cast<UINT>(viewsB.size()), viewsB.data());
-        context.Draw(4U, 0U);
+        // Draw slot B if present (yView is non-null).
+        if (drawB.yView != nullptr && drawB.uvView != nullptr) {
+            ID3D11Buffer* composeBuffer = composeBufferB_.Get();
+            ID3D11Buffer* colorBuffer = colorBufferB_.Get();
+            const std::array<ID3D11ShaderResourceView*, 2U> viewsB{drawB.yView, drawB.uvView};
+            context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
+            context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
+            context.PSSetShaderResources(0U, static_cast<UINT>(viewsB.size()), viewsB.data());
+            context.Draw(4U, 0U);
+        }
     }
 
     void drawDifference(ID3D11DeviceContext& context, const DifferenceDraw& draw) const noexcept {
@@ -960,11 +1013,11 @@ private:
             return drawBackground(state, lease);
         }
 
-        PreparedPairDraw prepared;
-        if (!preparePairDraw(state, *frontPublication_, lease, prepared)) {
+        PreparedSetDraw prepared;
+        if (!prepareSetDraw(state, *frontPublication_, lease, prepared)) {
             return false;
         }
-        drawPreparedPair(prepared, *lease.immediateContext.Get());
+        drawPreparedSet(prepared, *lease.immediateContext.Get());
         return true;
     }
 
@@ -983,38 +1036,38 @@ private:
         }
     }
 
-    [[nodiscard]] DualVideoRenderResult acknowledge(const FrameMailboxPublication& publication,
-                                                    const GpuFramePair& pair) noexcept {
+    [[nodiscard]] ComparisonRenderResult acknowledge(const FrameMailboxPublication& publication,
+                                                    const GpuFrameSet& set) noexcept {
         if (acknowledgementClosed_) {
-            return DualVideoRenderResult::Closed;
+            return ComparisonRenderResult::Closed;
         }
         if (publication.publicationSerial <= highestAcknowledgementSerial_) {
-            return pendingAcknowledgement_.has_value() ? DualVideoRenderResult::PresentedAckPending
-                                                       : DualVideoRenderResult::Presented;
+            return pendingAcknowledgement_.has_value() ? ComparisonRenderResult::PresentedAckPending
+                                                       : ComparisonRenderResult::Presented;
         }
         if (pendingAcknowledgement_.has_value()) {
-            return DualVideoRenderResult::PresentedAckPending;
+            return ComparisonRenderResult::PresentedAckPending;
         }
 
-        const application::FramePairPresented event{
-            .context = pair.context(),
-            .frameId = pair.frameId(),
+        const application::FrameSetPresented event{
+            .context = set.context(),
+            .frameId = set.frameId(),
         };
         highestAcknowledgementSerial_ = publication.publicationSerial;
         const PresentationAckPushResult result = acknowledgementMailbox_->tryPush(event);
         if (result == PresentationAckPushResult::Accepted) {
             notifyAcknowledgementPublished();
-            return DualVideoRenderResult::Presented;
+            return ComparisonRenderResult::Presented;
         }
         if (result == PresentationAckPushResult::Full) {
             pendingAcknowledgement_ = PendingAcknowledgement{
                 .publicationSerial = publication.publicationSerial,
                 .event = event,
             };
-            return DualVideoRenderResult::PresentedAckPending;
+            return ComparisonRenderResult::PresentedAckPending;
         }
         acknowledgementClosed_ = true;
-        return DualVideoRenderResult::Closed;
+        return ComparisonRenderResult::Closed;
     }
 
     void notifyAcknowledgementPublished() noexcept {
@@ -1025,7 +1078,7 @@ private:
 
     struct PendingAcknowledgement final {
         std::uint64_t publicationSerial = 0U;
-        application::FramePairPresented event;
+        application::FrameSetPresented event;
     };
 
     std::shared_ptr<GraphicsDeviceBroker> deviceBroker_;
@@ -1058,7 +1111,7 @@ private:
     ComPtr<ID3D11Buffer> differenceBuffer_;
 };
 
-D3d11DualVideoRenderer::D3d11DualVideoRenderer(
+D3d11ComparisonRenderer::D3d11ComparisonRenderer(
     std::shared_ptr<GraphicsDeviceBroker> deviceBroker,
     std::shared_ptr<FrameMailbox> frameMailbox,
     std::shared_ptr<PresentationAckMailbox> acknowledgementMailbox,
@@ -1068,13 +1121,13 @@ D3d11DualVideoRenderer::D3d11DualVideoRenderer(
                                    std::move(acknowledgementMailbox),
                                    std::move(activitySink))) {}
 
-D3d11DualVideoRenderer::~D3d11DualVideoRenderer() = default;
+D3d11ComparisonRenderer::~D3d11ComparisonRenderer() = default;
 
-DualVideoRenderResult D3d11DualVideoRenderer::render(const SurfaceRenderState& state) noexcept {
+ComparisonRenderResult D3d11ComparisonRenderer::render(const SurfaceRenderState& state) noexcept {
     return impl_->render(state);
 }
 
-void D3d11DualVideoRenderer::releaseResources() noexcept {
+void D3d11ComparisonRenderer::releaseResources() noexcept {
     impl_->releaseResources();
 }
 

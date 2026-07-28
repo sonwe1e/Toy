@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dvs/application/FramePair.h"
+#include "dvs/application/FrameSet.h"
 #include "dvs/application/RequestContext.h"
 #include "dvs/domain/FrameTimeline.h"
 #include "dvs/domain/MediaDescriptor.h"
@@ -8,7 +8,6 @@
 #include "dvs/domain/Project.h"
 #include "dvs/domain/SourceRelinkCandidate.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -16,6 +15,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 namespace dvs::application {
 
@@ -44,7 +44,6 @@ enum class CommandOutcome {
     Succeeded,
     Failed,
     Canceled,
-    AcceptedJob,
     Busy,
     Closed,
     TooLate,
@@ -89,19 +88,19 @@ struct CommandTerminal final {
 
 struct ProbeCompleted final {
     RequestContext context;
-    domain::SourceRole sourceRole;
+    domain::SourceId sourceId;
     domain::MediaDescriptor descriptor;
     // VFR sources publish one normalized, zero-anchored display-order timeline that the
     // coordinator shares with the frame provider. CFR sources leave this nullopt.
     std::optional<std::shared_ptr<const domain::FrameTimeline>> timeline;
 };
 
-struct FramePairReady final {
+struct FrameSetReady final {
     FrameRequestContext context;
-    FramePair pair;
+    FrameSet set;
 };
 
-struct FramePairPresented final {
+struct FrameSetPresented final {
     FrameRequestContext context;
     domain::FrameId frameId;
 };
@@ -135,11 +134,11 @@ struct SettingsSnapshot final {
 // source is reported here instead of rejecting an otherwise valid project, so the coordinator
 // can keep its edits available while it offers explicit relink.
 struct SourceRevalidationDiagnostic final {
-    domain::SourceRole sourceRole;
+    domain::SourceId sourceId;
     std::optional<domain::MediaError> error;
 };
 
-using SourceRevalidationDiagnostics = std::array<SourceRevalidationDiagnostic, 2>;
+using SourceRevalidationDiagnostics = std::vector<SourceRevalidationDiagnostic>;
 
 struct ProjectLoaded final {
     RequestContext context;
@@ -149,7 +148,7 @@ struct ProjectLoaded final {
 
 // This only confirms filesystem path normalization and identity capture. It does not assert
 // source compatibility or session readiness: the coordinator must run a fresh media probe and
-// call Project::replaceSources with a new ValidatedSourcePair before committing the change.
+// rebuild a ValidatedComparisonSet before committing the change.
 struct SourceRelinkPrepared final {
     RequestContext context;
     domain::SourceRelinkCandidate candidate;
@@ -167,8 +166,8 @@ struct SettingsLoaded final {
 using ApplicationEvent = std::variant<RequestTerminal,
                                       CommandTerminal,
                                       ProbeCompleted,
-                                      FramePairReady,
-                                      FramePairPresented,
+                                      FrameSetReady,
+                                      FrameSetPresented,
                                       GraphicsDeviceReady,
                                       GraphicsDeviceUnavailable,
                                       GraphicsDeviceLost,

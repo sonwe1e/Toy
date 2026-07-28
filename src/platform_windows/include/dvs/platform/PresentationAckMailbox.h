@@ -31,8 +31,8 @@ public:
     PresentationAckMailbox& operator=(PresentationAckMailbox&&) = delete;
 
     [[nodiscard]] PresentationAckPushResult
-    tryPush(const application::FramePairPresented& acknowledgement) noexcept;
-    [[nodiscard]] std::optional<application::FramePairPresented> tryPop() noexcept;
+    tryPush(const application::FrameSetPresented& acknowledgement) noexcept;
+    [[nodiscard]] std::optional<application::FrameSetPresented> tryPop() noexcept;
 
     // Closing is non-blocking. An entry already admitted by the producer may still become visible;
     // the consumer can drain every published entry after close.
@@ -41,7 +41,7 @@ public:
     [[nodiscard]] bool isDrained() const noexcept;
 
 private:
-    std::array<std::optional<application::FramePairPresented>, kCapacity> entries_{};
+    std::array<std::optional<application::FrameSetPresented>, kCapacity> entries_{};
     std::atomic<std::uint64_t> readSequence_{0U};
     // Bit 63 is the closed marker, bit 62 records an admitted producer, and the lower bits are the
     // monotonically increasing producer sequence. Publishing and closing therefore share one

@@ -111,7 +111,7 @@ private:
                         .context = application::EventContext{context},
                         .error = domain::makeMediaError(domain::MediaErrorCode::kProjectFileIo,
                                                         domain::MediaOperation::kProjectPersistence,
-                                                        domain::SourceRole::kProject,
+                                                        std::nullopt,
                                                         true),
                     }}}),
                 application::EventPostResult::Accepted);

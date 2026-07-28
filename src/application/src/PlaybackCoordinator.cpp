@@ -1,12 +1,13 @@
 #include "dvs/application/PlaybackCoordinator.h"
 
-#include "dvs/domain/SourcePairValidator.h"
+#include "dvs/domain/ComparisonValidator.h"
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -53,12 +54,12 @@ struct CommandIdentityHash final {
 };
 
 [[nodiscard]] domain::MediaError probeCoordinatorError(const domain::MediaErrorCode code,
-                                                       const domain::SourceRole sourceRole,
+                                                       std::optional<domain::SourceId> source,
                                                        std::string technicalDetail,
                                                        const bool recoverable = true) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kMediaProbe,
-                                  sourceRole,
+                                  source,
                                   recoverable,
                                   std::move(technicalDetail));
 }
@@ -68,7 +69,7 @@ struct CommandIdentityHash final {
                                                   const bool recoverable = true) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kMediaDecode,
-                                  domain::SourceRole::kPair,
+                                  std::nullopt,
                                   recoverable,
                                   std::move(technicalDetail));
 }
@@ -76,7 +77,7 @@ struct CommandIdentityHash final {
 [[nodiscard]] domain::MediaError presentationError(std::string technicalDetail) {
     return domain::makeMediaError(domain::MediaErrorCode::kFramePresentationTimedOut,
                                   domain::MediaOperation::kFramePresentation,
-                                  domain::SourceRole::kPair,
+                                  std::nullopt,
                                   true,
                                   std::move(technicalDetail));
 }
@@ -283,7 +284,7 @@ public:
     [[nodiscard]] EventPostResult postCritical(ApplicationEvent event) noexcept override {
         {
             std::unique_lock lock(ingressMutex_);
-            // A critical event is a terminal or a complete exact pair. It may wait for bounded
+            // A critical event is a terminal or a complete exact frame set. It may wait for bounded
             // queue space, but it must never be discarded merely because the UI is momentarily
             // behind; callers only see Closed once coordinator teardown starts.
             condition_.wait(lock, [this] {
@@ -331,7 +332,7 @@ private:
         CommandContext command;
         PlaybackRequestContext providerContext;
         std::optional<FrameRequestContext> frameContext;
-        std::optional<FramePair> pair;
+        std::optional<FrameSet> set;
         std::optional<domain::FrameId> expectedFrame;
         std::optional<std::uint64_t> presentationTimerId;
         bool framePublished = false;
@@ -341,25 +342,28 @@ private:
 
     struct PendingProbeSlot final {
         RequestContext context;
-        domain::SourceRole sourceRole;
+        domain::SourceId sourceId = 0;
+        std::filesystem::path sourcePath;
+        domain::ComparisonRole role = domain::ComparisonRole::kPrediction;
+        std::string displayName;
         std::optional<domain::MediaDescriptor> descriptor;
-        // VFR probes publish the shared Source A timeline; CFR probes leave this nullopt. Captured
-        // on first arrival so a stale duplicate ProbeCompleted cannot overwrite a good value.
+        // VFR probes publish the shared canonical-source timeline; CFR probes leave this nullopt.
+        // Captured on first arrival so a stale duplicate ProbeCompleted cannot overwrite a good
+        // value.
         std::optional<std::shared_ptr<const domain::FrameTimeline>> timeline;
         bool succeeded = false;
     };
 
     struct PendingProbe final {
         CommandContext command;
-        PendingProbeSlot sourceA;
-        PendingProbeSlot sourceB;
+        std::vector<PendingProbeSlot> slots;
         bool preservesReadySession = false;
     };
 
     struct PendingPlaybackFrame final {
         FrameRequestContext context;
         domain::FrameId expectedFrame;
-        std::optional<FramePair> pair;
+        std::optional<FrameSet> set;
         std::optional<std::uint64_t> presentationTimerId;
         bool framePublished = false;
         bool providerSucceeded = false;
@@ -474,6 +478,7 @@ private:
         state_.canonicalFrameCount = 0U;
         state_.lastError.reset();
         sources_.reset();
+        compatibilityReport_.reset();
         canonicalTimeline_.reset();
     }
 
@@ -499,10 +504,11 @@ private:
             failed.phase == PendingPhase::kOpeningFirstFrame ||
             failed.phase == PendingPhase::kClosingProvider) {
             sources_.reset();
+            compatibilityReport_.reset();
             canonicalTimeline_.reset();
             state_.sessionState = domain::SessionState::kError;
             state_.playbackState = domain::PlaybackState::kPaused;
-                state_.displayedFrame.reset();
+            state_.displayedFrame.reset();
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
         } else {
@@ -705,7 +711,7 @@ private:
             rejectCommand(command.context,
                           CommandOutcome::Failed,
                           coordinatorError(domain::MediaErrorCode::kInvalidArgument,
-                                           "Playback requires a ready direct source pair.",
+                                           "Playback requires a ready comparison set.",
                                            false));
             return;
         }
@@ -715,7 +721,7 @@ private:
                 CommandOutcome::Failed,
                 domain::makeMediaError(domain::MediaErrorCode::kGraphicsUnavailable,
                                        domain::MediaOperation::kGraphicsInitialization,
-                                       domain::SourceRole::kPair,
+                                       std::nullopt,
                                        true,
                                        "Playback requires an available graphics device."));
             return;
@@ -724,7 +730,7 @@ private:
             rejectCommand(command.context,
                           CommandOutcome::Failed,
                           coordinatorError(domain::MediaErrorCode::kInvalidArgument,
-                                           "A one-frame source pair cannot play continuously.",
+                                           "A one-frame comparison set cannot play continuously.",
                                            false));
             return;
         }
@@ -775,7 +781,7 @@ private:
         }
         PendingCommand& pending = *pending_;
         pending.phase = phase;
-        pending.pair.reset();
+        pending.set.reset();
         pending.expectedFrame = frameId;
         pending.presentationTimerId.reset();
         pending.framePublished = false;
@@ -821,56 +827,22 @@ private:
         }
     }
 
-    void beginOpen(const OpenDirectSourcesCommand& command,
-                   std::optional<std::shared_ptr<const domain::FrameTimeline>> runtimeTimeline) {
-        auto validated = domain::SourcePairValidator::validate(command.sourceA, command.sourceB);
-        if (!validated) {
-            if (state_.sessionState == domain::SessionState::kReady && sources_.has_value()) {
-                rejectCommand(command.context, CommandOutcome::Failed, validated.error());
-                return;
-            }
-            resetToEmpty();
-            state_.sessionState = domain::SessionState::kInvalid;
-            state_.playbackState = domain::PlaybackState::kPaused;
-                state_.displayedFrame.reset();
-            state_.requestedFrame.reset();
-            state_.canonicalFrameCount = 0U;
-            state_.lastError = validated.error();
-            publishSnapshot();
-            completeCommand(command.context, CommandOutcome::Failed, validated.error());
-            return;
-        }
-
-        // Build and retain the active canonical timeline for the source pair. CFR Source A carries
-        // its rational canonical rate and needs no runtime timeline; VFR Source A must reach the
-        // coordinator with the probed shared timeline. A direct open of a VFR Source A arrives
-        // without that runtime timeline, so it fails clearly here without disturbing an existing
-        // ready session.
-        const bool sourceAIsVfr = validated.value().sourceA().timingConfidence ==
-                                  domain::TimingConfidence::kVariableFrameRate;
-        std::optional<domain::CanonicalTimeline> activeTimeline;
-        if (sourceAIsVfr) {
-            if (!runtimeTimeline.has_value() || !*runtimeTimeline) {
-                rejectCommand(command.context,
-                              CommandOutcome::Failed,
-                              coordinatorError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                                               "A VFR source A requires a probed runtime timeline.",
-                                               false));
-                return;
-            }
-            activeTimeline = domain::CanonicalTimeline{*runtimeTimeline};
-        } else {
-            activeTimeline = domain::CanonicalTimeline{*validated.value().canonicalRate()};
-        }
-
+    // Shared post-validation open path. Stores the validated set and compatibility report, builds
+    // the provider request from the canonical timeline, and submits the open to the frame
+    // provider. Both the direct-descriptor and probed-paths entry points funnel through here.
+    void beginOpenValidated(CommandContext commandContext,
+                            domain::ValidatedComparisonSet set,
+                            domain::CompatibilityReport report,
+                            domain::CanonicalTimeline timeline) {
         if (sources_.has_value() || state_.displayedFrame.has_value()) {
             const PlaybackRequestContext previousScope = currentPlaybackScope();
             dependencies_.directFrameProvider->cancel(previousScope);
         }
         state_.sessionEpoch = increment(state_.sessionEpoch);
         state_.playbackGeneration = increment(state_.playbackGeneration);
-        sources_ = std::move(validated).value();
-        canonicalTimeline_ = std::move(activeTimeline);
+        sources_ = std::move(set);
+        compatibilityReport_ = std::move(report);
+        canonicalTimeline_ = std::move(timeline);
         state_.sessionState = domain::SessionState::kLoading;
         state_.playbackState = domain::PlaybackState::kSeeking;
         state_.displayedFrame.reset();
@@ -881,26 +853,69 @@ private:
         const PlaybackRequestContext context = makePlaybackContext();
         pending_ = PendingCommand{
             .phase = PendingPhase::kOpeningProvider,
-            .command = command.context,
+            .command = commandContext,
             .providerContext = context,
             .frameContext = std::nullopt,
-            .pair = std::nullopt,
+            .set = std::nullopt,
         };
         publishSnapshot();
 
         const FrameProviderOpenRequest request{
             .context = context,
-            .sourceA = sources_->sourceA(),
-            .sourceB = sources_->sourceB(),
+            .sources = std::vector<domain::ComparisonSource>(
+                sources_->sources().begin(), sources_->sources().end()),
             .timeline = *canonicalTimeline_,
         };
         if (dependencies_.directFrameProvider->submit(request, eventSink_) !=
             PortSubmitResult::Accepted) {
             failPending(
                 coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                 "The direct frame provider did not accept the source pair."),
+                                 "The direct frame provider did not accept the comparison set."),
                 CommandOutcome::Busy);
         }
+    }
+
+    // Validates a set of pre-probed descriptors and opens the provider. Used by the direct open
+    // path (CLI diagnostics and tests) where descriptors arrive already probed.
+    void beginOpenDirect(const OpenDirectComparisonCommand& command) {
+        auto validation = domain::ComparisonValidator::validate(command.sources);
+        if (!validation) {
+            if (state_.sessionState == domain::SessionState::kReady && sources_.has_value()) {
+                rejectCommand(command.context, CommandOutcome::Failed, validation.error());
+                return;
+            }
+            resetToEmpty();
+            state_.sessionState = domain::SessionState::kInvalid;
+            state_.playbackState = domain::PlaybackState::kPaused;
+            state_.displayedFrame.reset();
+            state_.requestedFrame.reset();
+            state_.canonicalFrameCount = 0U;
+            state_.lastError = validation.error();
+            publishSnapshot();
+            completeCommand(command.context, CommandOutcome::Failed, validation.error());
+            return;
+        }
+
+        // The canonical source's descriptor determines the timeline. A direct open of a VFR
+        // canonical source arrives without a probed runtime timeline, so it fails clearly here
+        // without disturbing an existing ready session.
+        const auto& set = validation.value().set;
+        const bool canonicalIsVfr = set.canonicalDescriptor().timingConfidence ==
+                                    domain::TimingConfidence::kVariableFrameRate;
+        if (canonicalIsVfr) {
+            rejectCommand(command.context,
+                          CommandOutcome::Failed,
+                          coordinatorError(domain::MediaErrorCode::kFrameTimelineInvalid,
+                                           "A VFR canonical source requires a probed runtime "
+                                           "timeline.",
+                                           false));
+            return;
+        }
+
+        beginOpenValidated(command.context,
+                           std::move(validation.value().set),
+                           std::move(validation.value().report),
+                           domain::CanonicalTimeline{*set.canonicalRate()});
     }
 
     void failProbe(domain::MediaError error,
@@ -911,15 +926,16 @@ private:
         }
         const PendingProbe pending = std::move(*pendingProbe_);
         pendingProbe_.reset();
-        dependencies_.mediaProbe->cancel(pending.sourceA.context);
-        dependencies_.mediaProbe->cancel(pending.sourceB.context);
+        for (const auto& slot : pending.slots) {
+            dependencies_.mediaProbe->cancel(slot.context);
+        }
 
         if (pending.preservesReadySession) {
             state_.lastError = error;
         } else {
             state_.sessionState = initialFailureState;
             state_.playbackState = domain::PlaybackState::kPaused;
-                state_.displayedFrame.reset();
+            state_.displayedFrame.reset();
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
             state_.lastError = error;
@@ -932,81 +948,197 @@ private:
         if (!pendingProbe_.has_value()) {
             return nullptr;
         }
-        if (pendingProbe_->sourceA.context == context) {
-            return &pendingProbe_->sourceA;
-        }
-        if (pendingProbe_->sourceB.context == context) {
-            return &pendingProbe_->sourceB;
+        for (auto& slot : pendingProbe_->slots) {
+            if (slot.context == context) {
+                return &slot;
+            }
         }
         return nullptr;
     }
 
     void finishProbeIfComplete() {
-        if (!pendingProbe_.has_value() || !pendingProbe_->sourceA.succeeded ||
-            !pendingProbe_->sourceB.succeeded) {
+        if (!pendingProbe_.has_value()) {
             return;
         }
-        if (!pendingProbe_->sourceA.descriptor.has_value() ||
-            !pendingProbe_->sourceB.descriptor.has_value()) {
-            failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                            domain::SourceRole::kPair,
-                                            "A probe succeeded without publishing its descriptor."),
-                      CommandOutcome::Failed,
-                      domain::SessionState::kError);
-            return;
+        for (const auto& slot : pendingProbe_->slots) {
+            if (!slot.succeeded || !slot.descriptor.has_value()) {
+                return;
+            }
         }
 
         PendingProbe completed = std::move(*pendingProbe_);
         pendingProbe_.reset();
-        // Source A carries the probed shared timeline into the open; Source B's timeline remains
-        // in the completed probe and is released when it goes out of scope.
-        beginOpen(
-            OpenDirectSourcesCommand{
-                .context = completed.command,
-                .sourceA = std::move(*completed.sourceA.descriptor),
-                .sourceB = std::move(*completed.sourceB.descriptor),
-            },
-            std::move(completed.sourceA.timeline));
+
+        // Build the ComparisonSource vector from the completed probe slots, preserving the
+        // submission-order source ids, roles, and display names from the original command.
+        std::vector<domain::ComparisonSource> comparisonSources;
+        comparisonSources.reserve(completed.slots.size());
+        for (auto& slot : completed.slots) {
+            comparisonSources.push_back(domain::ComparisonSource{
+                .id = slot.sourceId,
+                .role = slot.role,
+                .descriptor = std::move(*slot.descriptor),
+                .displayName = std::move(slot.displayName),
+            });
+        }
+
+        auto validation = domain::ComparisonValidator::validate(comparisonSources);
+        if (!validation) {
+            if (state_.sessionState == domain::SessionState::kReady && sources_.has_value()) {
+                state_.lastError = validation.error();
+                publishSnapshot();
+                completeCommand(completed.command, CommandOutcome::Failed, validation.error());
+            } else {
+                resetToEmpty();
+                state_.sessionState = domain::SessionState::kInvalid;
+                state_.playbackState = domain::PlaybackState::kPaused;
+                state_.displayedFrame.reset();
+                state_.requestedFrame.reset();
+                state_.canonicalFrameCount = 0U;
+                state_.lastError = validation.error();
+                publishSnapshot();
+                completeCommand(completed.command, CommandOutcome::Failed, validation.error());
+            }
+            return;
+        }
+
+        // Build the canonical timeline from the canonical source's descriptor and probe slot.
+        // CFR canonical sources carry their rational rate; VFR canonical sources carry the probed
+        // shared timeline published alongside the descriptor.
+        const auto& set = validation.value().set;
+        const domain::SourceId canonicalId = set.canonicalSourceId();
+        const bool canonicalIsVfr = set.canonicalDescriptor().timingConfidence ==
+                                    domain::TimingConfidence::kVariableFrameRate;
+
+        std::optional<domain::CanonicalTimeline> activeTimeline;
+        if (canonicalIsVfr) {
+            std::shared_ptr<const domain::FrameTimeline> canonicalTimelinePtr;
+            for (const auto& slot : completed.slots) {
+                if (slot.sourceId == canonicalId && slot.timeline.has_value() && *slot.timeline) {
+                    canonicalTimelinePtr = *slot.timeline;
+                    break;
+                }
+            }
+            if (!canonicalTimelinePtr) {
+                const domain::MediaError timelineError = probeCoordinatorError(
+                    domain::MediaErrorCode::kFrameTimelineInvalid,
+                    canonicalId,
+                    "The VFR canonical source probe did not publish a runtime timeline.",
+                    false);
+                if (state_.sessionState == domain::SessionState::kReady && sources_.has_value()) {
+                    state_.lastError = timelineError;
+                    publishSnapshot();
+                    completeCommand(completed.command, CommandOutcome::Failed, timelineError);
+                } else {
+                    resetToEmpty();
+                    state_.sessionState = domain::SessionState::kInvalid;
+                    state_.playbackState = domain::PlaybackState::kPaused;
+                    state_.displayedFrame.reset();
+                    state_.requestedFrame.reset();
+                    state_.canonicalFrameCount = 0U;
+                    state_.lastError = timelineError;
+                    publishSnapshot();
+                    completeCommand(completed.command, CommandOutcome::Failed, timelineError);
+                }
+                return;
+            }
+            activeTimeline = domain::CanonicalTimeline{std::move(canonicalTimelinePtr)};
+        } else {
+            if (!set.canonicalRate().has_value()) {
+                const domain::MediaError rateError = probeCoordinatorError(
+                    domain::MediaErrorCode::kInvalidCfrTiming,
+                    canonicalId,
+                    "The CFR canonical source is missing a rational rate.",
+                    false);
+                if (state_.sessionState == domain::SessionState::kReady && sources_.has_value()) {
+                    state_.lastError = rateError;
+                    publishSnapshot();
+                    completeCommand(completed.command, CommandOutcome::Failed, rateError);
+                } else {
+                    resetToEmpty();
+                    state_.sessionState = domain::SessionState::kInvalid;
+                    state_.playbackState = domain::PlaybackState::kPaused;
+                    state_.displayedFrame.reset();
+                    state_.requestedFrame.reset();
+                    state_.canonicalFrameCount = 0U;
+                    state_.lastError = rateError;
+                    publishSnapshot();
+                    completeCommand(completed.command, CommandOutcome::Failed, rateError);
+                }
+                return;
+            }
+            activeTimeline = domain::CanonicalTimeline{*set.canonicalRate()};
+        }
+
+        beginOpenValidated(completed.command,
+                           std::move(validation.value().set),
+                           std::move(validation.value().report),
+                           std::move(*activeTimeline));
     }
 
-    void beginOpenPaths(const OpenSourcePathsCommand& command) {
-        if (command.sourceAPath.empty() || command.sourceBPath.empty()) {
+    void beginOpenPaths(const OpenComparisonCommand& command) {
+        if (command.sources.empty()) {
             rejectCommand(command.context,
                           CommandOutcome::Failed,
                           probeCoordinatorError(domain::MediaErrorCode::kInvalidArgument,
-                                                domain::SourceRole::kPair,
-                                                "Both local source paths are required.",
+                                                std::nullopt,
+                                                "At least two source paths are required.",
                                                 false));
             return;
+        }
+        for (const auto& source : command.sources) {
+            if (source.path.empty()) {
+                rejectCommand(command.context,
+                              CommandOutcome::Failed,
+                              probeCoordinatorError(domain::MediaErrorCode::kInvalidArgument,
+                                                    std::nullopt,
+                                                    "All source paths are required.",
+                                                    false));
+                return;
+            }
         }
 
         const bool preservesReadySession = state_.sessionState == domain::SessionState::kReady &&
                                            sources_.has_value() &&
                                            state_.displayedFrame.has_value();
+
+        // Build one probe slot per submitted source. Source ids are assigned in submission order
+        // (0, 1, 2). Each slot gets its own request context for cancellation identity.
+        std::vector<PendingProbeSlot> slots;
+        slots.reserve(command.sources.size());
+        for (std::size_t index = 0; index < command.sources.size(); ++index) {
+            slots.push_back(PendingProbeSlot{
+                .context = makeRequestContext(),
+                .sourceId = static_cast<domain::SourceId>(index),
+                .sourcePath = command.sources[index].path,
+                .role = command.sources[index].role,
+                .displayName = command.sources[index].displayName,
+            });
+        }
+
         PendingProbe pending{
             .command = command.context,
-            .sourceA =
-                PendingProbeSlot{
-                    .context = makeRequestContext(),
-                    .sourceRole = domain::SourceRole::kA,
-                },
-            .sourceB =
-                PendingProbeSlot{
-                    .context = makeRequestContext(),
-                    .sourceRole = domain::SourceRole::kB,
-                },
+            .slots = std::move(slots),
             .preservesReadySession = preservesReadySession,
         };
-        const MediaProbeRequest requestA{
-            .context = pending.sourceA.context,
-            .sourceRole = pending.sourceA.sourceRole,
-            .sourcePath = command.sourceAPath,
-        };
-        const MediaProbeRequest requestB{
-            .context = pending.sourceB.context,
-            .sourceRole = pending.sourceB.sourceRole,
-            .sourcePath = command.sourceBPath,
-        };
+
+        // Same-path dedup: identical paths among the submitted sources share one probe whose
+        // descriptor fills every slot with that path. Only the first slot for each unique path
+        // has a probe submitted; shared slots are filled when the primary's probe completes.
+        std::vector<std::size_t> primaryIndices;
+        for (std::size_t index = 0; index < pending.slots.size(); ++index) {
+            bool isDuplicate = false;
+            for (const std::size_t primary : primaryIndices) {
+                if (pending.slots[primary].sourcePath == pending.slots[index].sourcePath) {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+            if (!isDuplicate) {
+                primaryIndices.push_back(index);
+            }
+        }
+
         pendingProbe_ = std::move(pending);
 
         if (!preservesReadySession) {
@@ -1018,24 +1150,24 @@ private:
             publishSnapshot();
         }
 
-        const PortSubmitResult acceptedA = dependencies_.mediaProbe->submit(requestA, eventSink_);
-        if (acceptedA != PortSubmitResult::Accepted) {
-            failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                            domain::SourceRole::kA,
-                                            "Source A probing was not accepted."),
-                      acceptedA == PortSubmitResult::Busy ? CommandOutcome::Busy
-                                                          : CommandOutcome::Closed,
-                      domain::SessionState::kError);
-            return;
-        }
-        const PortSubmitResult acceptedB = dependencies_.mediaProbe->submit(requestB, eventSink_);
-        if (acceptedB != PortSubmitResult::Accepted) {
-            failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                            domain::SourceRole::kB,
-                                            "Source B probing was not accepted."),
-                      acceptedB == PortSubmitResult::Busy ? CommandOutcome::Busy
-                                                          : CommandOutcome::Closed,
-                      domain::SessionState::kError);
+        for (const std::size_t primaryIndex : primaryIndices) {
+            PendingProbeSlot& primary = pendingProbe_->slots[primaryIndex];
+            const MediaProbeRequest request{
+                .context = primary.context,
+                .sourceId = primary.sourceId,
+                .sourcePath = primary.sourcePath,
+            };
+            const PortSubmitResult accepted =
+                dependencies_.mediaProbe->submit(request, eventSink_);
+            if (accepted != PortSubmitResult::Accepted) {
+                failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
+                                                primary.sourceId,
+                                                "Source probing was not accepted."),
+                          accepted == PortSubmitResult::Busy ? CommandOutcome::Busy
+                                                             : CommandOutcome::Closed,
+                          domain::SessionState::kError);
+                return;
+            }
         }
     }
 
@@ -1044,7 +1176,7 @@ private:
             rejectCommand(command,
                           CommandOutcome::Failed,
                           coordinatorError(domain::MediaErrorCode::kInvalidArgument,
-                                           "A frame seek requires a ready direct source pair.",
+                                           "A frame seek requires a ready comparison set.",
                                            false));
             return;
         }
@@ -1065,7 +1197,7 @@ private:
             .command = command,
             .providerContext = currentPlaybackScope(),
             .frameContext = std::nullopt,
-            .pair = std::nullopt,
+            .set = std::nullopt,
         };
         submitFirstOrSeekFrame(frameId, PendingPhase::kSeekingFrame);
     }
@@ -1113,7 +1245,7 @@ private:
             .command = command.context,
             .providerContext = providerContext,
             .frameContext = std::nullopt,
-            .pair = std::nullopt,
+            .set = std::nullopt,
         };
         publishSnapshot();
 
@@ -1156,9 +1288,9 @@ private:
         std::visit(
             [this](const auto& value) {
                 using Value = std::decay_t<decltype(value)>;
-                if constexpr (std::is_same_v<Value, OpenDirectSourcesCommand>) {
-                    beginOpen(value, std::nullopt);
-                } else if constexpr (std::is_same_v<Value, OpenSourcePathsCommand>) {
+                if constexpr (std::is_same_v<Value, OpenDirectComparisonCommand>) {
+                    beginOpenDirect(value);
+                } else if constexpr (std::is_same_v<Value, OpenComparisonCommand>) {
                     beginOpenPaths(value);
                 } else if constexpr (std::is_same_v<Value, SeekFrameCommand>) {
                     beginSeek(value.context, value.frameId);
@@ -1172,7 +1304,7 @@ private:
                             value.context,
                             CommandOutcome::Failed,
                             coordinatorError(domain::MediaErrorCode::kInvalidFrameId,
-                                             "The source pair has no canonical final frame.",
+                                             "The comparison set has no canonical final frame.",
                                              false));
                     } else {
                         beginSeek(value.context,
@@ -1225,7 +1357,7 @@ private:
     }
 
     void commitPresentedFrameIfComplete() {
-        if (!pending_.has_value() || !pending_->pair.has_value() || !pending_->framePublished ||
+        if (!pending_.has_value() || !pending_->set.has_value() || !pending_->framePublished ||
             !pending_->providerSucceeded || !pending_->framePresented ||
             !pending_->presentationTimerId.has_value()) {
             return;
@@ -1233,7 +1365,7 @@ private:
 
         static_cast<void>(dependencies_.deadlineScheduler->cancel(*pending_->presentationTimerId));
         const CommandContext command = pending_->command;
-        const domain::FrameId displayedFrame = pending_->pair->frameId();
+        const domain::FrameId displayedFrame = pending_->set->canonicalFrameId();
         pending_.reset();
         state_.sessionState = domain::SessionState::kReady;
         state_.playbackState = domain::PlaybackState::kPaused;
@@ -1254,7 +1386,7 @@ private:
             return;
         }
         PendingPlaybackFrame& frame = *playbackRun_->frame;
-        if (!frame.pair.has_value() || !frame.framePublished || !frame.providerSucceeded ||
+        if (!frame.set.has_value() || !frame.framePublished || !frame.providerSucceeded ||
             !frame.framePresented || !frame.presentationTimerId.has_value()) {
             return;
         }
@@ -1277,8 +1409,8 @@ private:
         }
 
         if (playbackRun_->restartFromEnd) {
-            // frame 0 of a restart-from-end just committed: re-anchor on the absolute
-            // Source A timeline at frame 0 and continue from frame 1.
+            // frame 0 of a restart-from-end just committed: re-anchor on the absolute canonical
+            // timeline at frame 0 and continue from frame 1.
             playbackRun_->restartFromEnd = false;
             playbackRun_->anchorFrame = domain::FrameId{0};
             playbackRun_->firstTarget = domain::FrameId{1};
@@ -1317,6 +1449,13 @@ private:
             if (PendingProbeSlot* const slot = probeSlot(*requestContext); slot != nullptr) {
                 if (std::holds_alternative<RequestSucceeded>(terminal)) {
                     slot->succeeded = true;
+                    // With same-path dedup, also mark shared slots (same path) as succeeded so
+                    // that finishProbeIfComplete sees every slot ready.
+                    for (auto& other : pendingProbe_->slots) {
+                        if (&other != slot && other.sourcePath == slot->sourcePath) {
+                            other.succeeded = true;
+                        }
+                    }
                     finishProbeIfComplete();
                     return;
                 }
@@ -1326,7 +1465,7 @@ private:
                 }
                 const auto& canceled = std::get<RequestCanceled>(terminal);
                 failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                                slot->sourceRole,
+                                                slot->sourceId,
                                                 "Media probing was canceled."),
                           canceled.reason == CancellationReason::Shutdown
                               ? CommandOutcome::Closed
@@ -1364,9 +1503,9 @@ private:
         if (slot == nullptr) {
             return;
         }
-        if (completed.sourceRole != slot->sourceRole) {
+        if (completed.sourceId != slot->sourceId) {
             failProbe(probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                            slot->sourceRole,
+                                            slot->sourceId,
                                             "A probe published a descriptor for the wrong source."),
                       CommandOutcome::Failed,
                       domain::SessionState::kError);
@@ -1391,7 +1530,7 @@ private:
                 if (!slot->timeline.has_value() || !*slot->timeline) {
                     failProbe(
                         probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                              slot->sourceRole,
+                                              slot->sourceId,
                                               "A VFR source must publish a runtime timeline."),
                         CommandOutcome::Failed,
                         domain::SessionState::kError);
@@ -1400,7 +1539,7 @@ private:
                 if ((*slot->timeline)->frameCount() != descriptor->frameCount.value) {
                     failProbe(probeCoordinatorError(
                                   domain::MediaErrorCode::kMediaProbeFailed,
-                                  slot->sourceRole,
+                                  slot->sourceId,
                                   "The VFR timeline length does not match the source frame count."),
                               CommandOutcome::Failed,
                               domain::SessionState::kError);
@@ -1409,37 +1548,50 @@ private:
             } else if (slot->timeline.has_value()) {
                 failProbe(
                     probeCoordinatorError(domain::MediaErrorCode::kMediaProbeFailed,
-                                          slot->sourceRole,
+                                          slot->sourceId,
                                           "A CFR source must not publish a runtime timeline."),
                     CommandOutcome::Failed,
                     domain::SessionState::kError);
                 return;
             }
         }
+
+        // Same-path dedup: copy the validated descriptor and timeline to every other slot that
+        // shares this probe's source path, so finishProbeIfComplete sees all slots filled after
+        // a single probe's payload and terminal.
+        const std::filesystem::path primaryPath = slot->sourcePath;
+        for (auto& other : pendingProbe_->slots) {
+            if (&other != slot && other.sourcePath == primaryPath &&
+                !other.descriptor.has_value()) {
+                other.descriptor = slot->descriptor;
+                other.timeline = slot->timeline;
+            }
+        }
+
         finishProbeIfComplete();
     }
 
-    void handleFramePair(const FramePairReady& ready) {
+    void handleFrameSet(const FrameSetReady& ready) {
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             ready.context == playbackRun_->frame->context) {
             PendingPlaybackFrame& frame = *playbackRun_->frame;
-            if (ready.pair.frameId() != frame.expectedFrame) {
+            if (ready.set.canonicalFrameId() != frame.expectedFrame) {
                 stopPlayback(coordinatorError(
                     domain::MediaErrorCode::kMediaDecodeFailed,
-                    "The provider published a mismatched sequential playback pair."));
+                    "The provider published a mismatched sequential playback frame set."));
                 return;
             }
             if (frame.framePublished) {
                 return;
             }
-            if (dependencies_.renderChannel->publish(ready.context, ready.pair) ==
+            if (dependencies_.renderChannel->publish(ready.context, ready.set) ==
                 RenderPublishResult::Closed) {
                 stopPlayback(
                     coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      "The render channel closed during sequential playback."));
                 return;
             }
-            frame.pair = ready.pair;
+            frame.set = ready.set;
             frame.framePublished = true;
             commitPlaybackFrameIfComplete();
             return;
@@ -1449,7 +1601,7 @@ private:
             return;
         }
         if (!pending_->expectedFrame.has_value() ||
-            ready.pair.frameId() != *pending_->expectedFrame) {
+            ready.set.canonicalFrameId() != *pending_->expectedFrame) {
             failPending(
                 coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
                                  "The provider published a different exact frame than requested."),
@@ -1459,21 +1611,21 @@ private:
         if (pending_->framePublished) {
             return;
         }
-        if (dependencies_.renderChannel->publish(ready.context, ready.pair) ==
+        if (dependencies_.renderChannel->publish(ready.context, ready.set) ==
             RenderPublishResult::Closed) {
             failPending(
                 coordinatorError(
                     domain::MediaErrorCode::kMediaDecodeFailed,
-                    "The render channel closed before it accepted the complete frame pair."),
+                    "The render channel closed before it accepted the complete frame set."),
                 CommandOutcome::Canceled);
             return;
         }
-        pending_->pair = ready.pair;
+        pending_->set = ready.set;
         pending_->framePublished = true;
         commitPresentedFrameIfComplete();
     }
 
-    void handleFramePresented(const FramePairPresented& presented) {
+    void handleFramePresented(const FrameSetPresented& presented) {
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             playbackRun_->frame->framePublished &&
             presented.context == playbackRun_->frame->context &&
@@ -1568,9 +1720,9 @@ private:
                     handleTerminal(value);
                 } else if constexpr (std::is_same_v<Value, ProbeCompleted>) {
                     handleProbeCompleted(value);
-                } else if constexpr (std::is_same_v<Value, FramePairReady>) {
-                    handleFramePair(value);
-                } else if constexpr (std::is_same_v<Value, FramePairPresented>) {
+                } else if constexpr (std::is_same_v<Value, FrameSetReady>) {
+                    handleFrameSet(value);
+                } else if constexpr (std::is_same_v<Value, FrameSetPresented>) {
                     handleFramePresented(value);
                 } else if constexpr (std::is_same_v<Value, DeadlineElapsed>) {
                     handleDeadline(value);
@@ -1644,8 +1796,9 @@ private:
             worker_.join();
         }
         if (pendingProbe_.has_value()) {
-            dependencies_.mediaProbe->cancel(pendingProbe_->sourceA.context);
-            dependencies_.mediaProbe->cancel(pendingProbe_->sourceB.context);
+            for (const auto& slot : pendingProbe_->slots) {
+                dependencies_.mediaProbe->cancel(slot.context);
+            }
         }
         if (pending_.has_value()) {
             if (pending_->presentationTimerId.has_value()) {
@@ -1667,7 +1820,8 @@ private:
     Dependencies dependencies_;
     std::shared_ptr<CoordinatorEventSinkGate> eventSink_;
     SessionSnapshot state_;
-    std::optional<domain::ValidatedSourcePair> sources_;
+    std::optional<domain::ValidatedComparisonSet> sources_;
+    std::optional<domain::CompatibilityReport> compatibilityReport_;
     std::optional<domain::CanonicalTimeline> canonicalTimeline_;
     std::optional<PendingCommand> pending_;
     std::optional<PendingProbe> pendingProbe_;
@@ -1697,6 +1851,7 @@ std::shared_ptr<PlaybackCoordinator> PlaybackCoordinator::create(const domain::S
         !dependencies.deadlineScheduler || !dependencies.clock || !dependencies.renderChannel) {
         return {};
     }
+
     return std::shared_ptr<PlaybackCoordinator>(
         new PlaybackCoordinator(sessionId, std::move(dependencies)));
 }

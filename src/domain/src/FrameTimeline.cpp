@@ -11,7 +11,7 @@ namespace {
 [[nodiscard]] MediaError timelineError(const MediaErrorCode code, std::string detail) {
     return makeMediaError(code,
                           MediaOperation::kMediaDescriptorValidation,
-                          SourceRole::kNone,
+                          std::nullopt,
                           false,
                           std::move(detail));
 }

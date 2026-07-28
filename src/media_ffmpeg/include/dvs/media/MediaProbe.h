@@ -25,7 +25,7 @@ public:
     // A synchronous inspection is useful to fixture and integration tests. UI code should submit
     // through the port so FFmpeg I/O is kept off coordinator and GUI threads.
     [[nodiscard]] static domain::Result<domain::MediaDescriptor>
-    inspect(const std::filesystem::path& sourcePath, domain::SourceRole sourceRole);
+    inspect(const std::filesystem::path& sourcePath, domain::SourceId sourceId);
 
     [[nodiscard]] application::PortSubmitResult
     submit(const application::MediaProbeRequest& request,

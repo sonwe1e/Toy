@@ -100,4 +100,9 @@ struct ProjectIdTag;
 
 using ProjectId = PersistentId<ProjectIdTag>;
 
+// SourceId identifies one loaded input within a comparison session. It lives with the other
+// identifiers (not in ComparisonSource.h) so error and event types can name a source without
+// pulling the media descriptor graph into every include.
+using SourceId = std::uint32_t;
+
 } // namespace dvs::domain

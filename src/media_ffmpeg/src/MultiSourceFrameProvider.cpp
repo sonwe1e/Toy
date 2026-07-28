@@ -1,7 +1,6 @@
-#include "dvs/media/DirectFrameProvider.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
 
 #include "dvs/domain/FrameTimeline.h"
-#include "dvs/domain/SourcePairValidator.h"
 #include "dvs/platform/FrameBudget.h"
 
 #include "SoftwareDecoder.h"
@@ -29,7 +28,7 @@ namespace {
 inline constexpr std::size_t kExactRequestSlots = 1U;
 inline constexpr std::size_t kSequentialRequestSlots = 2U;
 inline constexpr std::size_t kPrefetchRequestSlots = 8U;
-inline constexpr std::size_t kPairTableCapacity = 16U;
+inline constexpr std::size_t kSetTableCapacity = 16U;
 
 enum class ProviderOperationKind {
     kOpen,
@@ -97,12 +96,12 @@ struct ProviderOperation final {
 };
 
 [[nodiscard]] domain::MediaError providerError(const domain::MediaErrorCode code,
-                                               const domain::SourceRole sourceRole,
+                                               std::optional<domain::SourceId> sourceId,
                                                std::string technicalDetail,
                                                const bool recoverable = false) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kMediaDecode,
-                                  sourceRole,
+                                  sourceId,
                                   recoverable,
                                   std::move(technicalDetail));
 }
@@ -186,8 +185,8 @@ void postSucceeded(const std::shared_ptr<ProviderOperation>& operation) noexcept
                  }});
 }
 
-void postFramePairSucceeded(const std::shared_ptr<ProviderOperation>& operation,
-                            application::FramePair pair) noexcept {
+void postFrameSetSucceeded(const std::shared_ptr<ProviderOperation>& operation,
+                           application::FrameSet set) noexcept {
     if (!operation->claimTerminal()) {
         postCanceled(operation);
         return;
@@ -195,9 +194,9 @@ void postFramePairSucceeded(const std::shared_ptr<ProviderOperation>& operation,
     const application::FrameRequestContext context =
         std::get<application::FrameRequest>(operation->request).context;
     postCritical(operation->events,
-                 application::ApplicationEvent{application::FramePairReady{
+                 application::ApplicationEvent{application::FrameSetReady{
                      .context = context,
-                     .pair = std::move(pair),
+                     .set = std::move(set),
                  }});
     postCritical(operation->events,
                  application::ApplicationEvent{application::RequestSucceeded{
@@ -216,10 +215,10 @@ void postFramePairSucceeded(const std::shared_ptr<ProviderOperation>& operation,
 
 } // namespace
 
-class DirectFrameProvider::Impl final {
+class MultiSourceFrameProvider::Impl final {
 public:
     explicit Impl(platform::FrameBudget& frameBudget, const std::size_t requestCapacity)
-        : frameBudget_(frameBudget), queueCapacity_(std::max(kPairTableCapacity, requestCapacity)),
+        : frameBudget_(frameBudget), queueCapacity_(std::max(kSetTableCapacity, requestCapacity)),
           worker_([this] { run(); }) {}
 
     ~Impl() {
@@ -418,16 +417,15 @@ public:
 private:
     struct ActiveSession final {
         application::PlaybackRequestContext context;
-        domain::MediaDescriptor sourceA;
-        domain::MediaDescriptor sourceB;
+        std::vector<domain::ComparisonSource> sources;
         domain::CanonicalTimeline timeline;
     };
 
-    struct PairTableEntry final {
+    struct SetTableEntry final {
         application::FrameRequestContext context;
         domain::FrameId frameId;
         application::FrameRequestPriority priority;
-        application::FramePair pair;
+        application::FrameSet set;
         std::uint64_t insertionOrder;
     };
 
@@ -617,18 +615,16 @@ private:
     }
 
     void closeDecoders() noexcept {
-        if (decoderA_ != nullptr) {
-            decoderA_->close();
-            decoderA_.reset();
+        for (auto& decoder : decoders_) {
+            if (decoder != nullptr) {
+                decoder->close();
+            }
         }
-        if (decoderB_ != nullptr) {
-            decoderB_->close();
-            decoderB_.reset();
-        }
+        decoders_.clear();
         activeSession_.reset();
-        pairTable_.clear();
-        sequentialPairFrame_.reset();
-        sequentialPairReady_ = false;
+        setTable_.clear();
+        sequentialSetFrame_.reset();
+        sequentialSetReady_ = false;
     }
 
     void executeOpen(const std::shared_ptr<ProviderOperation>& operation) noexcept {
@@ -639,96 +635,82 @@ private:
 
         const auto& request = std::get<application::FrameProviderOpenRequest>(operation->request);
 
-        const auto validatedSources =
-            domain::SourcePairValidator::validate(request.sourceA, request.sourceB);
-        if (!validatedSources) {
-            domain::MediaError error = validatedSources.error();
-            error.operation = domain::MediaOperation::kMediaDecode;
-            postFailed(operation, std::move(error));
+        if (request.sources.size() < 2U || request.sources.size() > 3U) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     std::nullopt,
+                                     "The frame provider requires 2 or 3 comparison sources."));
             return;
         }
 
-        const domain::MediaDescriptor& validatedSourceA = validatedSources.value().sourceA();
+        const domain::MediaDescriptor& canonicalDescriptor = request.sources.front().descriptor;
         if (domain::isVariableFrameRate(request.timeline)) {
             const auto& variableTimeline =
                 std::get<std::shared_ptr<const domain::FrameTimeline>>(request.timeline);
             if (!variableTimeline) {
                 postFailed(operation,
                            providerError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                                         domain::SourceRole::kPair,
+                                         std::nullopt,
                                          "A variable-frame-rate timeline must be non-null."));
                 return;
             }
-            if (validatedSourceA.frameRate.has_value()) {
+            if (canonicalDescriptor.frameRate.has_value()) {
                 postFailed(
                     operation,
                     providerError(
                         domain::MediaErrorCode::kSourceFrameRateMismatch,
-                        domain::SourceRole::kPair,
-                        "A VFR timeline requires Source A to declare no rational frame rate."));
+                        std::nullopt,
+                        "A VFR timeline requires the canonical source to declare no rational frame rate."));
                 return;
             }
-            if (variableTimeline->frameCount() != validatedSourceA.frameCount.value) {
+            if (variableTimeline->frameCount() != canonicalDescriptor.frameCount.value) {
                 postFailed(operation,
                            providerError(domain::MediaErrorCode::kInvalidFrameCount,
-                                         domain::SourceRole::kPair,
-                                         "The VFR timeline frame count does not match the source "
-                                         "pair frame count."));
+                                         std::nullopt,
+                                         "The VFR timeline frame count does not match the canonical "
+                                         "source frame count."));
                 return;
             }
-        } else if (!validatedSourceA.frameRate.has_value() ||
+        } else if (!canonicalDescriptor.frameRate.has_value() ||
                    std::get<domain::RationalRate>(request.timeline) !=
-                       validatedSourceA.frameRate.value()) {
+                       canonicalDescriptor.frameRate.value()) {
             postFailed(operation,
                        providerError(
                            domain::MediaErrorCode::kSourceFrameRateMismatch,
-                           domain::SourceRole::kPair,
-                           "The rational timeline must match the non-null Source A frame rate."));
+                           std::nullopt,
+                           "The rational timeline must match the canonical source frame rate."));
             return;
         }
 
         closeDecoders();
         interruptRequested_.store(false, std::memory_order_release);
         try {
-            decoderA_ =
-                std::make_unique<internal::SoftwareDecoder>(domain::SourceRole::kA,
-                                                            validatedSources.value().sourceA(),
-                                                            frameBudget_,
-                                                            &interruptRequested_);
-            decoderB_ =
-                std::make_unique<internal::SoftwareDecoder>(domain::SourceRole::kB,
-                                                            validatedSources.value().sourceB(),
-                                                            frameBudget_,
-                                                            &interruptRequested_);
-
-            const domain::Status sourceAOpened = decoderA_->open(operation->cancellationRequested);
-            if (operation->isCanceled()) {
-                closeDecoders();
-                postCanceled(operation);
-                return;
-            }
-            if (!sourceAOpened) {
-                closeDecoders();
-                postFailed(operation, sourceAOpened.error());
-                return;
+            decoders_.reserve(request.sources.size());
+            for (std::size_t slot = 0; slot < request.sources.size(); ++slot) {
+                decoders_.push_back(
+                    std::make_unique<internal::SoftwareDecoder>(request.sources[slot].id,
+                                                                request.sources[slot].descriptor,
+                                                                frameBudget_,
+                                                                &interruptRequested_));
             }
 
-            const domain::Status sourceBOpened = decoderB_->open(operation->cancellationRequested);
-            if (operation->isCanceled()) {
-                closeDecoders();
-                postCanceled(operation);
-                return;
-            }
-            if (!sourceBOpened) {
-                closeDecoders();
-                postFailed(operation, sourceBOpened.error());
-                return;
+            for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
+                const domain::Status opened = decoders_[slot]->open(operation->cancellationRequested);
+                if (operation->isCanceled()) {
+                    closeDecoders();
+                    postCanceled(operation);
+                    return;
+                }
+                if (!opened) {
+                    closeDecoders();
+                    postFailed(operation, opened.error());
+                    return;
+                }
             }
 
             activeSession_ = ActiveSession{
                 .context = request.context,
-                .sourceA = validatedSources.value().sourceA(),
-                .sourceB = validatedSources.value().sourceB(),
+                .sources = request.sources,
                 .timeline = request.timeline,
             };
             {
@@ -745,50 +727,50 @@ private:
             closeDecoders();
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     domain::SourceRole::kPair,
-                                     "Unexpected direct provider open exception: " +
+                                     std::nullopt,
+                                     "Unexpected multi-source provider open exception: " +
                                          std::string{exception.what()},
                                      true));
         } catch (...) {
             closeDecoders();
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     domain::SourceRole::kPair,
-                                     "Unexpected non-standard direct provider open exception.",
+                                     std::nullopt,
+                                     "Unexpected non-standard multi-source provider open exception.",
                                      true));
         }
     }
 
-    void cachePair(const application::FrameRequest& request, const application::FramePair& pair) {
-        // Continuous playback has one pair in flight and never re-requests an already presented
+    void cacheSet(const application::FrameRequest& request, const application::FrameSet& set) {
+        // Continuous playback has one set in flight and never re-requests an already presented
         // sequential frame. Retaining those CPU resources would make memory grow with playback
-        // history and exhaust the shared budget before the fixed-size table can evict 4K pairs.
+        // history and exhaust the shared budget before the fixed-size table can evict 4K sets.
         // Exact and prefetch entries keep their existing reuse and eviction semantics.
         if (request.priority == application::FrameRequestPriority::Sequential) {
             return;
         }
 
-        const auto matchesRequest = [&request](const PairTableEntry& entry) {
+        const auto matchesRequest = [&request](const SetTableEntry& entry) {
             return entry.context == request.context && entry.frameId == request.frameId;
         };
-        pairTable_.erase(std::remove_if(pairTable_.begin(), pairTable_.end(), matchesRequest),
-                         pairTable_.end());
+        setTable_.erase(std::remove_if(setTable_.begin(), setTable_.end(), matchesRequest),
+                        setTable_.end());
 
         if (request.priority == application::FrameRequestPriority::Exact) {
-            pairTable_.erase(std::remove_if(pairTable_.begin(),
-                                            pairTable_.end(),
-                                            [](const PairTableEntry& entry) {
-                                                return entry.priority ==
-                                                       application::FrameRequestPriority::Exact;
-                                            }),
-                             pairTable_.end());
+            setTable_.erase(std::remove_if(setTable_.begin(),
+                                           setTable_.end(),
+                                           [](const SetTableEntry& entry) {
+                                               return entry.priority ==
+                                                      application::FrameRequestPriority::Exact;
+                                           }),
+                            setTable_.end());
         }
 
-        if (pairTable_.size() >= kPairTableCapacity) {
+        if (setTable_.size() >= kSetTableCapacity) {
             const auto evictable =
-                std::min_element(pairTable_.begin(),
-                                 pairTable_.end(),
-                                 [](const PairTableEntry& left, const PairTableEntry& right) {
+                std::min_element(setTable_.begin(),
+                                 setTable_.end(),
+                                 [](const SetTableEntry& left, const SetTableEntry& right) {
                                      const bool leftExact =
                                          left.priority == application::FrameRequestPriority::Exact;
                                      const bool rightExact =
@@ -798,32 +780,32 @@ private:
                                      }
                                      return left.insertionOrder < right.insertionOrder;
                                  });
-            if (evictable == pairTable_.end() ||
+            if (evictable == setTable_.end() ||
                 evictable->priority == application::FrameRequestPriority::Exact) {
                 return;
             }
-            pairTable_.erase(evictable);
+            setTable_.erase(evictable);
         }
 
-        pairTable_.push_back(PairTableEntry{
+        setTable_.push_back(SetTableEntry{
             .context = request.context,
             .frameId = request.frameId,
             .priority = request.priority,
-            .pair = pair,
-            .insertionOrder = nextPairInsertionOrder_++,
+            .set = set,
+            .insertionOrder = nextSetInsertionOrder_++,
         });
     }
 
-    [[nodiscard]] std::optional<application::FramePair>
-    cachedPair(const application::FrameRequest& request) const {
+    [[nodiscard]] std::optional<application::FrameSet>
+    cachedSet(const application::FrameRequest& request) const {
         const auto cached =
-            std::find_if(pairTable_.begin(), pairTable_.end(), [&request](const auto& entry) {
+            std::find_if(setTable_.begin(), setTable_.end(), [&request](const auto& entry) {
                 return entry.context == request.context && entry.frameId == request.frameId;
             });
-        if (cached == pairTable_.end()) {
+        if (cached == setTable_.end()) {
             return std::nullopt;
         }
-        return cached->pair;
+        return cached->set;
     }
 
     void executeFrame(const std::shared_ptr<ProviderOperation>& operation) noexcept {
@@ -832,11 +814,11 @@ private:
             return;
         }
         const auto& request = std::get<application::FrameRequest>(operation->request);
-        if (!activeSession_.has_value() || decoderA_ == nullptr || decoderB_ == nullptr) {
+        if (!activeSession_.has_value() || decoders_.empty()) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     domain::SourceRole::kPair,
-                                     "No direct source pair is open for this frame request.",
+                                     std::nullopt,
+                                     "No comparison sources are open for this frame request.",
                                      true));
             return;
         }
@@ -855,11 +837,11 @@ private:
         }
         if (!samePlaybackScope(request.context.playback, activeSession_->context)) {
             activeSession_->context = request.context.playback;
-            pairTable_.clear();
+            setTable_.clear();
         }
-        if (const std::optional<application::FramePair> cached = cachedPair(request)) {
-            sequentialPairReady_ = false;
-            postFramePairSucceeded(operation, *cached);
+        if (const std::optional<application::FrameSet> cached = cachedSet(request)) {
+            sequentialSetReady_ = false;
+            postFrameSetSucceeded(operation, *cached);
             return;
         }
 
@@ -868,7 +850,7 @@ private:
         if (!canonicalTime) {
             domain::MediaError error = canonicalTime.error();
             error.operation = domain::MediaOperation::kMediaDecode;
-            error.sourceRole = domain::SourceRole::kPair;
+            error.source = std::nullopt;
             postFailed(operation, std::move(error));
             return;
         }
@@ -876,49 +858,69 @@ private:
         interruptRequested_.store(false, std::memory_order_release);
         const bool continueSequentially =
             request.priority == application::FrameRequestPriority::Sequential &&
-            sequentialPairReady_ && sequentialPairFrame_.has_value() &&
-            request.frameId.value() > sequentialPairFrame_->value();
-        sequentialPairReady_ = false;
+            sequentialSetReady_ && sequentialSetFrame_.has_value() &&
+            request.frameId.value() > sequentialSetFrame_->value();
+        sequentialSetReady_ = false;
         try {
-            auto sourceA =
-                continueSequentially
-                    ? decoderA_->decodeSequential(request.frameId, operation->cancellationRequested)
-                    : decoderA_->decodeExact(request.frameId, operation->cancellationRequested);
-            if (operation->isCanceled()) {
-                postCanceled(operation);
-                return;
-            }
-            if (!sourceA) {
-                postFailed(operation, sourceA.error());
-                return;
+            std::vector<application::MappedSourceFrame> entries;
+            entries.reserve(decoders_.size());
+
+            for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
+                const domain::ComparisonSource& source = activeSession_->sources[slot];
+                const domain::SourceId sourceId = source.id;
+                const std::int64_t sourceFrameCount = source.descriptor.frameCount.value;
+
+                if (!request.frameId.isValid() || request.frameId.value() >= sourceFrameCount) {
+                    entries.push_back(application::MappedSourceFrame{
+                        .sourceId = sourceId,
+                        .sourceFrameId = std::nullopt,
+                        .frame = std::nullopt,
+                        .presentationTime = domain::MediaTime{0},
+                        .matchKind = application::FrameMatchKind::Missing,
+                        .alignmentConfidence = 1.0F,
+                    });
+                    continue;
+                }
+
+                auto decoded =
+                    continueSequentially
+                        ? decoders_[slot]->decodeSequential(request.frameId,
+                                                           operation->cancellationRequested)
+                        : decoders_[slot]->decodeExact(request.frameId,
+                                                       operation->cancellationRequested);
+                if (operation->isCanceled()) {
+                    postCanceled(operation);
+                    return;
+                }
+                if (!decoded) {
+                    entries.push_back(application::MappedSourceFrame{
+                        .sourceId = sourceId,
+                        .sourceFrameId = std::nullopt,
+                        .frame = std::nullopt,
+                        .presentationTime = domain::MediaTime{0},
+                        .matchKind = application::FrameMatchKind::Missing,
+                        .alignmentConfidence = 1.0F,
+                    });
+                    continue;
+                }
+
+                entries.push_back(application::MappedSourceFrame{
+                    .sourceId = sourceId,
+                    .sourceFrameId = request.frameId,
+                    .frame = std::move(decoded.value().handle),
+                    .presentationTime = decoded.value().presentationTime,
+                    .matchKind = application::FrameMatchKind::ExactIndex,
+                    .alignmentConfidence = 1.0F,
+                });
             }
 
-            auto sourceB =
-                continueSequentially
-                    ? decoderB_->decodeSequential(request.frameId, operation->cancellationRequested)
-                    : decoderB_->decodeExact(request.frameId, operation->cancellationRequested);
-            if (operation->isCanceled()) {
-                postCanceled(operation);
-                return;
-            }
-            if (!sourceB) {
-                postFailed(operation, sourceB.error());
-                return;
-            }
-
-            const std::optional<application::FramePair> pair =
-                application::FramePair::create(request.frameId,
-                                               canonicalTime.value(),
-                                               sourceA.value().handle,
-                                               sourceA.value().presentationTime,
-                                               sourceB.value().handle,
-                                               sourceB.value().presentationTime);
-            if (!pair) {
+            auto set = application::FrameSet::create(request.frameId, canonicalTime.value(), std::move(entries));
+            if (!set) {
                 postFailed(operation,
                            providerError(
                                domain::MediaErrorCode::kMediaDecodeFailed,
-                               domain::SourceRole::kPair,
-                               "The decoded source frames could not form a complete frame pair."));
+                               std::nullopt,
+                               "The decoded source frames could not form a valid frame set."));
                 return;
             }
             if (operation->isCanceled()) {
@@ -926,22 +928,22 @@ private:
                 return;
             }
 
-            sequentialPairFrame_ = request.frameId;
-            sequentialPairReady_ = true;
-            cachePair(request, *pair);
-            postFramePairSucceeded(operation, *pair);
+            sequentialSetFrame_ = request.frameId;
+            sequentialSetReady_ = true;
+            cacheSet(request, *set);
+            postFrameSetSucceeded(operation, *set);
         } catch (const std::exception& exception) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     domain::SourceRole::kPair,
-                                     "Unexpected direct frame decode exception: " +
+                                     std::nullopt,
+                                     "Unexpected multi-source frame decode exception: " +
                                          std::string{exception.what()},
                                      true));
         } catch (...) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     domain::SourceRole::kPair,
-                                     "Unexpected non-standard direct frame decode exception.",
+                                     std::nullopt,
+                                     "Unexpected non-standard multi-source frame decode exception.",
                                      true));
         }
     }
@@ -1040,44 +1042,43 @@ private:
     std::shared_ptr<ProviderOperation> activeOperation_;
     std::optional<domain::FrameId> latestExactFrame_;
     std::optional<application::PlaybackRequestContext> latestFrameContext_;
-    std::optional<domain::FrameId> sequentialPairFrame_;
-    bool sequentialPairReady_ = false;
+    std::optional<domain::FrameId> sequentialSetFrame_;
+    bool sequentialSetReady_ = false;
     bool closed_ = false;
     std::atomic<bool> interruptRequested_ = false;
     std::thread worker_;
 
-    std::unique_ptr<internal::SoftwareDecoder> decoderA_;
-    std::unique_ptr<internal::SoftwareDecoder> decoderB_;
+    std::vector<std::unique_ptr<internal::SoftwareDecoder>> decoders_;
     std::optional<ActiveSession> activeSession_;
-    std::deque<PairTableEntry> pairTable_;
-    std::uint64_t nextPairInsertionOrder_ = 0;
+    std::deque<SetTableEntry> setTable_;
+    std::uint64_t nextSetInsertionOrder_ = 0;
 };
 
-DirectFrameProvider::DirectFrameProvider(platform::FrameBudget& frameBudget,
-                                         const std::size_t requestCapacity)
+MultiSourceFrameProvider::MultiSourceFrameProvider(platform::FrameBudget& frameBudget,
+                                                   const std::size_t requestCapacity)
     : impl_(std::make_unique<Impl>(frameBudget, requestCapacity)) {}
 
-DirectFrameProvider::~DirectFrameProvider() = default;
+MultiSourceFrameProvider::~MultiSourceFrameProvider() = default;
 
 application::PortSubmitResult
-DirectFrameProvider::submit(const application::FrameProviderOpenRequest& request,
-                            std::shared_ptr<application::IApplicationEventSink> events) {
+MultiSourceFrameProvider::submit(const application::FrameProviderOpenRequest& request,
+                                 std::shared_ptr<application::IApplicationEventSink> events) {
     return impl_->submit(request, events);
 }
 
 application::PortSubmitResult
-DirectFrameProvider::submit(const application::FrameRequest& request,
-                            std::shared_ptr<application::IApplicationEventSink> events) {
+MultiSourceFrameProvider::submit(const application::FrameRequest& request,
+                                 std::shared_ptr<application::IApplicationEventSink> events) {
     return impl_->submit(request, events);
 }
 
 application::PortSubmitResult
-DirectFrameProvider::submit(const application::FrameProviderCloseRequest& request,
-                            std::shared_ptr<application::IApplicationEventSink> events) {
+MultiSourceFrameProvider::submit(const application::FrameProviderCloseRequest& request,
+                                 std::shared_ptr<application::IApplicationEventSink> events) {
     return impl_->submit(request, events);
 }
 
-void DirectFrameProvider::cancel(const application::PlaybackRequestContext& context) noexcept {
+void MultiSourceFrameProvider::cancel(const application::PlaybackRequestContext& context) noexcept {
     impl_->cancel(context);
 }
 

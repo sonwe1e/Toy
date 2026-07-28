@@ -440,7 +440,7 @@ Window {
                 text: qsTr("Open Pair")
                 enabled: root.hasSelectedSourceA && root.hasSelectedSourceB && root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canOpen)
                 Accessible.name: qsTr("Open selected source pair")
-                onClicked: root.controller.openPair(root.selectedSourceA, root.selectedSourceB)
+                onClicked: root.controller.openComparison(root.selectedSourceA, root.selectedSourceB)
                 anchors.verticalCenter: parent.verticalCenter
 
                 background: Rectangle {
@@ -627,16 +627,16 @@ Window {
 
         // The type is runtime-registered; startup smoke coverage verifies the registration.
         // qmllint disable import unqualified unresolved-type
-        DualVideoSurface {
+        ComparisonSurface {
             id: dualVideoSurface
 
             objectName: "dualVideoSurface"
             Accessible.name: qsTr("Dual video comparison surface")
-            viewMode: root.preferences ? root.preferences.viewMode : DualVideoSurface.SideBySide
-            differenceMetric: root.preferences ? root.preferences.differenceMetric : DualVideoSurface.RgbAbsolute
-            differenceGain: root.preferences ? root.preferences.differenceGain : DualVideoSurface.Gain1x
-            differenceReference: root.preferences ? root.preferences.differenceReference : DualVideoSurface.ReferenceA
-            differenceFilter: root.preferences ? root.preferences.differenceFilter : DualVideoSurface.Bilinear
+            viewMode: root.preferences ? root.preferences.viewMode : ComparisonSurface.SideBySide
+            differenceMetric: root.preferences ? root.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
+            differenceGain: root.preferences ? root.preferences.differenceGain : ComparisonSurface.Gain1x
+            differenceReference: root.preferences ? root.preferences.differenceReference : ComparisonSurface.ReferenceA
+            differenceFilter: root.preferences ? root.preferences.differenceFilter : ComparisonSurface.Bilinear
             anchors {
                 fill: parent
                 margins: 1

@@ -51,7 +51,7 @@ public:
     // Render-thread convenience: only an admitted acknowledgement wakes the relay. Full leaves
     // ownership with the caller so it can retry on the coalesced item update requested by pop().
     [[nodiscard]] platform::PresentationAckPushResult
-    tryPublishAcknowledgement(const application::FramePairPresented& acknowledgement) noexcept;
+    tryPublishAcknowledgement(const application::FrameSetPresented& acknowledgement) noexcept;
 
     void notifyFramePublished() noexcept override;
     void notifyAckPublished() noexcept override;

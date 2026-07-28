@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaError.h"
 #include "dvs/domain/Result.h"
 
@@ -24,7 +25,7 @@ struct TimelineCancellation final {
 
 struct TimestampIndexRequest final {
     std::filesystem::path sourcePath;
-    domain::SourceRole sourceRole = domain::SourceRole::kNone;
+    domain::SourceId sourceId = 0;
     domain::MediaOperation operation = domain::MediaOperation::kMediaProbe;
     std::optional<std::int64_t> expectedFrameCount;
     TimelineCancellation cancellation;
@@ -46,7 +47,7 @@ struct CfrVerificationRequest final {
     std::span<const std::int64_t> presentationTimestamps;
     TimelineRational timeBase;
     std::vector<FrameRateCandidate> candidates;
-    domain::SourceRole sourceRole = domain::SourceRole::kNone;
+    domain::SourceId sourceId = 0;
     domain::MediaOperation operation = domain::MediaOperation::kMediaProbe;
     TimelineCancellation cancellation;
 };
@@ -62,7 +63,7 @@ struct VerifiedCfrTiming final {
 validatePresentationTimestamps(std::vector<std::int64_t> packetTimestamps,
                                bool missingTimestampSeen,
                                std::optional<std::int64_t> expectedFrameCount,
-                               domain::SourceRole sourceRole,
+                               domain::SourceId sourceId,
                                domain::MediaOperation operation);
 
 [[nodiscard]] domain::Result<std::vector<std::int64_t>>

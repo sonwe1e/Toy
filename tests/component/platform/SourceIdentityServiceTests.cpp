@@ -49,12 +49,12 @@ private:
 
 TEST_F(SourceIdentityServiceTests, ReportsMissingSourcesAsRecoverableMediaProbeErrors) {
     const auto result = SourceIdentityService::fingerprint(
-        filePath("missing.mp4"), domain::SourceRole::kA, domain::MediaOperation::kMediaProbe);
+        filePath("missing.mp4"), domain::SourceId{0}, domain::MediaOperation::kMediaProbe);
 
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().code, domain::MediaErrorCode::kSourceMissing);
     EXPECT_EQ(result.error().operation, domain::MediaOperation::kMediaProbe);
-    EXPECT_EQ(result.error().sourceRole, domain::SourceRole::kA);
+    EXPECT_EQ(result.error().source, domain::SourceId{0});
     EXPECT_TRUE(result.error().recoverable);
 }
 
@@ -62,17 +62,17 @@ TEST_F(SourceIdentityServiceTests, ReportsMismatchesAsRecoverableMediaProbeError
     const std::filesystem::path source = filePath("changed.mp4");
     writeFile(source, "abc");
     const auto expected = SourceIdentityService::fingerprint(
-        source, domain::SourceRole::kB, domain::MediaOperation::kMediaProbe);
+        source, domain::SourceId{1}, domain::MediaOperation::kMediaProbe);
     ASSERT_TRUE(expected);
 
     writeFile(source, "xyz");
     const auto status = SourceIdentityService::verify(
-        source, expected.value(), domain::SourceRole::kB, domain::MediaOperation::kMediaProbe);
+        source, expected.value(), domain::SourceId{1}, domain::MediaOperation::kMediaProbe);
 
     ASSERT_FALSE(status);
     EXPECT_EQ(status.error().code, domain::MediaErrorCode::kSourceFingerprintMismatch);
     EXPECT_EQ(status.error().operation, domain::MediaOperation::kMediaProbe);
-    EXPECT_EQ(status.error().sourceRole, domain::SourceRole::kB);
+    EXPECT_EQ(status.error().source, domain::SourceId{1});
     EXPECT_TRUE(status.error().recoverable);
 }
 

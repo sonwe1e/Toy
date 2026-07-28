@@ -32,19 +32,31 @@ namespace {
     };
 }
 
-[[nodiscard]] ValidatedSourcePair
-makePair(const std::int64_t frameCount = 5,
-         const MediaExtent extentA = MediaExtent{.width = 1'920, .height = 1'080},
-         const MediaExtent extentB = MediaExtent{.width = 1'280, .height = 720}) {
+[[nodiscard]] ValidatedComparisonSet
+makeSet(const std::int64_t frameCount = 5,
+        const MediaExtent extentA = MediaExtent{.width = 1'920, .height = 1'080},
+        const MediaExtent extentB = MediaExtent{.width = 1'280, .height = 720}) {
     const RationalRate rate = makeRate();
-    auto result = SourcePairValidator::validate(makeDescriptor("a.mp4", rate, frameCount, extentA),
-                                                makeDescriptor("b.mp4", rate, frameCount, extentB));
+    auto result = ComparisonValidator::validate({
+        ComparisonSource{
+            .id = 0,
+            .role = ComparisonRole::kPrediction,
+            .descriptor = makeDescriptor("a.mp4", rate, frameCount, extentA),
+            .displayName = "a",
+        },
+        ComparisonSource{
+            .id = 1,
+            .role = ComparisonRole::kPrediction,
+            .descriptor = makeDescriptor("b.mp4", rate, frameCount, extentB),
+            .displayName = "b",
+        },
+    });
     EXPECT_TRUE(result.hasValue());
-    return std::move(result).value();
+    return std::move(result).value().set;
 }
 
 [[nodiscard]] Project makeProject(const std::int64_t frameCount = 5) {
-    auto result = Project::create(ProjectId{"project-1"}, "Project", makePair(frameCount));
+    auto result = Project::create(ProjectId{"project-1"}, "Project", makeSet(frameCount));
     EXPECT_TRUE(result.hasValue());
     return std::move(result).value();
 }
@@ -84,7 +96,7 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
     ProjectState persisted{
         .id = ProjectId{"project-restore"},
         .displayName = "Restored",
-        .sources = makePair(),
+        .sources = makeSet(),
         .inMark = FrameId{0},
         .outMark = FrameId{1},
         .lastDisplayedFrame = FrameId{0},
@@ -103,7 +115,7 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
     Project liveProject = makeProject();
     ASSERT_TRUE(liveProject.setInMark(FrameId{0}));
     ASSERT_TRUE(liveProject.setOutMark(FrameId{1}));
-    const auto replacement = liveProject.replaceSources(makePair());
+    const auto replacement = liveProject.replaceSources(makeSet());
     ASSERT_TRUE(replacement);
     ASSERT_TRUE(replacement.value().inMark().has_value());
     EXPECT_EQ(*replacement.value().inMark(), FrameId{0});
@@ -116,7 +128,7 @@ TEST(ProjectTests, RejectsInvalidSourceReplacementWithoutMutatingTheOriginalProj
     ASSERT_TRUE(project.setInMark(FrameId{3}));
     ASSERT_TRUE(project.setOutMark(FrameId{4}));
 
-    const auto rejected = project.replaceSources(makePair(3));
+    const auto rejected = project.replaceSources(makeSet(3));
     ASSERT_FALSE(rejected);
     EXPECT_EQ(rejected.error().code, MediaErrorCode::kFrameOutOfRange);
     EXPECT_EQ(project.sources().canonicalFrameCount(), 5);
@@ -126,11 +138,11 @@ TEST(ProjectTests, RejectsInvalidSourceReplacementWithoutMutatingTheOriginalProj
 }
 
 TEST(ProjectTests, RejectsInvalidCreationAndSupportsMarkAndWorkspaceMutations) {
-    const auto noId = Project::create(ProjectId{""}, "Project", makePair());
+    const auto noId = Project::create(ProjectId{""}, "Project", makeSet());
     ASSERT_FALSE(noId.hasValue());
     EXPECT_EQ(noId.error().code, MediaErrorCode::kInvalidArgument);
 
-    const auto noName = Project::create(ProjectId{"project"}, "", makePair());
+    const auto noName = Project::create(ProjectId{"project"}, "", makeSet());
     ASSERT_FALSE(noName.hasValue());
     EXPECT_EQ(noName.error().code, MediaErrorCode::kInvalidArgument);
 

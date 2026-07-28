@@ -9,11 +9,11 @@
 
 namespace dvs::platform {
 
-class GpuFramePair;
+class GpuFrameSet;
 
 enum class FrameMailboxPublishResult {
     Published,
-    InvalidPair,
+    InvalidSet,
     DeviceGenerationMismatch,
     PlaybackScopeRejected,
     ResourceExhausted,
@@ -21,7 +21,7 @@ enum class FrameMailboxPublishResult {
 };
 
 struct FrameMailboxPublication final {
-    std::shared_ptr<const GpuFramePair> pair;
+    std::shared_ptr<const GpuFrameSet> set;
     std::uint64_t publicationSerial = 0U;
 };
 
@@ -46,7 +46,7 @@ enum class FrameMailboxDrawStatus {
     Closed,
 };
 
-// A producer atomically replaces one complete GPU pair. The render consumer uses try_lock and
+// A producer atomically replaces one complete GPU frame set. The render consumer uses try_lock and
 // reports contention instead of waiting for publication, generation changes, or shutdown.
 class FrameMailbox final {
 public:
@@ -59,10 +59,10 @@ public:
     FrameMailbox& operator=(FrameMailbox&&) = delete;
 
     [[nodiscard]] FrameMailboxPublishResult
-    publish(const std::shared_ptr<const GpuFramePair>& pair) noexcept;
+    publish(const std::shared_ptr<const GpuFrameSet>& set) noexcept;
 
-    // The returned shared ownership pins both sources for an in-flight draw. Call validateForDraw
-    // immediately before issuing commands to reject a pair displaced meanwhile.
+    // The returned shared ownership pins all source frames for an in-flight draw. Call
+    // validateForDraw immediately before issuing commands to reject a set displaced meanwhile.
     [[nodiscard]] FrameMailboxReadResult
     tryLatest(domain::DeviceGeneration expectedDeviceGeneration) const noexcept;
     [[nodiscard]] FrameMailboxDrawStatus
@@ -70,7 +70,7 @@ public:
                     domain::DeviceGeneration expectedDeviceGeneration) const noexcept;
 
     // A scoped clear cannot remove a newer request. Advancing the device generation atomically
-    // clears every pair from the previous device and rejects non-monotonic generations.
+    // clears every set from the previous device and rejects non-monotonic generations.
     [[nodiscard]] bool clear(const application::PlaybackRequestContext& expectedScope) noexcept;
     [[nodiscard]] bool advanceDeviceGeneration(domain::DeviceGeneration deviceGeneration) noexcept;
 

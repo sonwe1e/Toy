@@ -1,5 +1,7 @@
 #include "dvs/persistence/ProjectJson.h"
 
+#include "dvs/domain/ComparisonValidator.h"
+
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -10,41 +12,42 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace dvs::persistence {
 namespace {
 
 using Json = nlohmann::json;
 
-constexpr std::int64_t kSchemaVersion = 1;
+constexpr std::int64_t kSchemaVersion = 2;
 
 [[nodiscard]] domain::MediaError persistenceError(const domain::MediaErrorCode code,
-                                                  const domain::SourceRole sourceRole,
+                                                  std::optional<domain::SourceId> sourceId,
                                                   std::string technicalDetail) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kProjectPersistence,
-                                  sourceRole,
+                                  sourceId,
                                   false,
                                   std::move(technicalDetail));
 }
 
 template <typename TValue>
-[[nodiscard]] domain::Result<TValue> invalidSchema(const domain::SourceRole sourceRole,
+[[nodiscard]] domain::Result<TValue> invalidSchema(std::optional<domain::SourceId> sourceId,
                                                    std::string technicalDetail) {
     return domain::Result<TValue>::failure(persistenceError(
-        domain::MediaErrorCode::kInvalidProjectSchema, sourceRole, std::move(technicalDetail)));
+        domain::MediaErrorCode::kInvalidProjectSchema, sourceId, std::move(technicalDetail)));
 }
 
 [[nodiscard]] domain::Result<const Json*> requiredMember(const Json& object,
                                                          const std::string_view field,
-                                                         const domain::SourceRole sourceRole) {
+                                                         std::optional<domain::SourceId> sourceId) {
     if (!object.is_object()) {
-        return invalidSchema<const Json*>(sourceRole, "Expected a JSON object.");
+        return invalidSchema<const Json*>(sourceId, "Expected a JSON object.");
     }
 
     const auto iterator = object.find(std::string{field});
     if (iterator == object.end()) {
-        return invalidSchema<const Json*>(sourceRole,
+        return invalidSchema<const Json*>(sourceId,
                                           "Missing required field: " + std::string{field} + ".");
     }
     return domain::Result<const Json*>::success(std::addressof(*iterator));
@@ -52,77 +55,77 @@ template <typename TValue>
 
 [[nodiscard]] domain::Result<const Json*> objectMember(const Json& object,
                                                        const std::string_view field,
-                                                       const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+                                                       std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<const Json*>::failure(member.error());
     }
     if (!member.value()->is_object()) {
         return invalidSchema<const Json*>(
-            sourceRole, "Field must be a JSON object: " + std::string{field} + ".");
+            sourceId, "Field must be a JSON object: " + std::string{field} + ".");
     }
     return member;
 }
 
 [[nodiscard]] domain::Result<const Json*>
-arrayMember(const Json& object, const std::string_view field, const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+arrayMember(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<const Json*>::failure(member.error());
     }
     if (!member.value()->is_array()) {
         return invalidSchema<const Json*>(
-            sourceRole, "Field must be a JSON array: " + std::string{field} + ".");
+            sourceId, "Field must be a JSON array: " + std::string{field} + ".");
     }
     return member;
 }
 
 [[nodiscard]] domain::Result<std::string> stringMember(const Json& object,
                                                        const std::string_view field,
-                                                       const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+                                                       std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<std::string>::failure(member.error());
     }
     if (!member.value()->is_string()) {
-        return invalidSchema<std::string>(sourceRole,
+        return invalidSchema<std::string>(sourceId,
                                           "Field must be a string: " + std::string{field} + ".");
     }
     return domain::Result<std::string>::success(member.value()->get<std::string>());
 }
 
 [[nodiscard]] domain::Result<bool>
-boolMember(const Json& object, const std::string_view field, const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+boolMember(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<bool>::failure(member.error());
     }
     if (!member.value()->is_boolean()) {
-        return invalidSchema<bool>(sourceRole,
+        return invalidSchema<bool>(sourceId,
                                    "Field must be a boolean: " + std::string{field} + ".");
     }
     return domain::Result<bool>::success(member.value()->get<bool>());
 }
 
 [[nodiscard]] domain::Result<std::int64_t>
-int64Value(const Json& value, const domain::SourceRole sourceRole, const std::string_view field) {
+int64Value(const Json& value, std::optional<domain::SourceId> sourceId, const std::string_view field) {
     if (value.is_number_unsigned()) {
         const std::uint64_t unsignedValue = value.get<std::uint64_t>();
         if (unsignedValue > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
             return invalidSchema<std::int64_t>(
-                sourceRole, "Integer value exceeds int64 range: " + std::string{field} + ".");
+                sourceId, "Integer value exceeds int64 range: " + std::string{field} + ".");
         }
         return domain::Result<std::int64_t>::success(static_cast<std::int64_t>(unsignedValue));
     }
     if (value.is_number_integer()) {
         return domain::Result<std::int64_t>::success(value.get<std::int64_t>());
     }
-    return invalidSchema<std::int64_t>(sourceRole,
+    return invalidSchema<std::int64_t>(sourceId,
                                        "Field must be an integer: " + std::string{field} + ".");
 }
 
 [[nodiscard]] domain::Result<std::uint64_t>
-uint64Value(const Json& value, const domain::SourceRole sourceRole, const std::string_view field) {
+uint64Value(const Json& value, std::optional<domain::SourceId> sourceId, const std::string_view field) {
     if (value.is_number_unsigned()) {
         return domain::Result<std::uint64_t>::success(value.get<std::uint64_t>());
     }
@@ -133,51 +136,51 @@ uint64Value(const Json& value, const domain::SourceRole sourceRole, const std::s
         }
     }
     return invalidSchema<std::uint64_t>(
-        sourceRole, "Field must be an unsigned integer: " + std::string{field} + ".");
+        sourceId, "Field must be an unsigned integer: " + std::string{field} + ".");
 }
 
 [[nodiscard]] domain::Result<std::int64_t>
-int64Member(const Json& object, const std::string_view field, const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+int64Member(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<std::int64_t>::failure(member.error());
     }
-    return int64Value(*member.value(), sourceRole, field);
+    return int64Value(*member.value(), sourceId, field);
 }
 
 [[nodiscard]] domain::Result<std::uint64_t> uint64Member(const Json& object,
                                                          const std::string_view field,
-                                                         const domain::SourceRole sourceRole) {
-    auto member = requiredMember(object, field, sourceRole);
+                                                         std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<std::uint64_t>::failure(member.error());
     }
-    return uint64Value(*member.value(), sourceRole, field);
+    return uint64Value(*member.value(), sourceId, field);
 }
 
 [[nodiscard]] domain::Result<std::uint32_t> uint32Member(const Json& object,
                                                          const std::string_view field,
-                                                         const domain::SourceRole sourceRole) {
-    auto value = uint64Member(object, field, sourceRole);
+                                                         std::optional<domain::SourceId> sourceId) {
+    auto value = uint64Member(object, field, sourceId);
     if (!value) {
         return domain::Result<std::uint32_t>::failure(value.error());
     }
     if (value.value() > std::numeric_limits<std::uint32_t>::max()) {
         return invalidSchema<std::uint32_t>(
-            sourceRole, "Integer value exceeds uint32 range: " + std::string{field} + ".");
+            sourceId, "Integer value exceeds uint32 range: " + std::string{field} + ".");
     }
     return domain::Result<std::uint32_t>::success(static_cast<std::uint32_t>(value.value()));
 }
 
 [[nodiscard]] domain::Result<std::uint8_t>
-uint8Member(const Json& object, const std::string_view field, const domain::SourceRole sourceRole) {
-    auto value = uint64Member(object, field, sourceRole);
+uint8Member(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+    auto value = uint64Member(object, field, sourceId);
     if (!value) {
         return domain::Result<std::uint8_t>::failure(value.error());
     }
     if (value.value() > std::numeric_limits<std::uint8_t>::max()) {
         return invalidSchema<std::uint8_t>(
-            sourceRole, "Integer value exceeds uint8 range: " + std::string{field} + ".");
+            sourceId, "Integer value exceeds uint8 range: " + std::string{field} + ".");
     }
     return domain::Result<std::uint8_t>::success(static_cast<std::uint8_t>(value.value()));
 }
@@ -185,7 +188,7 @@ uint8Member(const Json& object, const std::string_view field, const domain::Sour
 [[nodiscard]] domain::Result<std::filesystem::path>
 projectDirectoryFor(const std::filesystem::path& projectPath) {
     if (projectPath.empty()) {
-        return invalidSchema<std::filesystem::path>(domain::SourceRole::kProject,
+        return invalidSchema<std::filesystem::path>(std::nullopt,
                                                     "Project JSON requires a destination path.");
     }
 
@@ -194,12 +197,12 @@ projectDirectoryFor(const std::filesystem::path& projectPath) {
         std::filesystem::absolute(projectPath, errorCode);
     if (errorCode) {
         return invalidSchema<std::filesystem::path>(
-            domain::SourceRole::kProject, "Could not resolve the project destination path.");
+            std::nullopt, "Could not resolve the project destination path.");
     }
 
     const std::filesystem::path directory = absoluteProjectPath.parent_path();
     if (directory.empty()) {
-        return invalidSchema<std::filesystem::path>(domain::SourceRole::kProject,
+        return invalidSchema<std::filesystem::path>(std::nullopt,
                                                     "Project destination has no parent directory.");
     }
     return domain::Result<std::filesystem::path>::success(directory.lexically_normal());
@@ -217,9 +220,9 @@ projectDirectoryFor(const std::filesystem::path& projectPath) {
 [[nodiscard]] domain::Result<std::filesystem::path>
 normalizeSourcePath(const std::filesystem::path& sourcePath,
                     const std::filesystem::path& projectDirectory,
-                    const domain::SourceRole sourceRole) {
+                    std::optional<domain::SourceId> sourceId) {
     if (sourcePath.empty()) {
-        return invalidSchema<std::filesystem::path>(sourceRole, "Source path is empty.");
+        return invalidSchema<std::filesystem::path>(sourceId, "Source path is empty.");
     }
     if (sourcePath.is_relative()) {
         return domain::Result<std::filesystem::path>::success(
@@ -230,7 +233,7 @@ normalizeSourcePath(const std::filesystem::path& sourcePath,
     const std::filesystem::path absoluteSourcePath =
         std::filesystem::absolute(sourcePath, errorCode);
     if (errorCode) {
-        return invalidSchema<std::filesystem::path>(sourceRole, "Could not resolve source path.");
+        return invalidSchema<std::filesystem::path>(sourceId, "Could not resolve source path.");
     }
     return domain::Result<std::filesystem::path>::success(absoluteSourcePath.lexically_normal());
 }
@@ -238,8 +241,8 @@ normalizeSourcePath(const std::filesystem::path& sourcePath,
 [[nodiscard]] domain::Result<std::string>
 pathForDocument(const std::filesystem::path& sourcePath,
                 const std::filesystem::path& projectDirectory,
-                const domain::SourceRole sourceRole) {
-    auto normalizedSourcePath = normalizeSourcePath(sourcePath, projectDirectory, sourceRole);
+                std::optional<domain::SourceId> sourceId) {
+    auto normalizedSourcePath = normalizeSourcePath(sourcePath, projectDirectory, sourceId);
     if (!normalizedSourcePath) {
         return domain::Result<std::string>::failure(normalizedSourcePath.error());
     }
@@ -255,18 +258,18 @@ pathForDocument(const std::filesystem::path& sourcePath,
 [[nodiscard]] domain::Result<std::filesystem::path>
 pathFromDocument(const std::string_view storedPath,
                  const std::filesystem::path& projectDirectory,
-                 const domain::SourceRole sourceRole) {
+                 std::optional<domain::SourceId> sourceId) {
     if (storedPath.empty() || storedPath.find('\0') != std::string_view::npos) {
-        return invalidSchema<std::filesystem::path>(sourceRole,
+        return invalidSchema<std::filesystem::path>(sourceId,
                                                     "Persisted source path is invalid.");
     }
 
     const std::filesystem::path path{std::string{storedPath}};
     if (path.is_relative() && hasParentReference(path)) {
         return invalidSchema<std::filesystem::path>(
-            sourceRole, "Relative source paths may not escape the project directory.");
+            sourceId, "Relative source paths may not escape the project directory.");
     }
-    return normalizeSourcePath(path, projectDirectory, sourceRole);
+    return normalizeSourcePath(path, projectDirectory, sourceId);
 }
 
 [[nodiscard]] std::optional<domain::FrameCountOrigin>
@@ -472,27 +475,6 @@ mediaOperationFromId(const std::string_view identifier) noexcept {
     return std::nullopt;
 }
 
-[[nodiscard]] std::optional<domain::SourceRole>
-sourceRoleFromId(const std::string_view identifier) noexcept {
-    using Role = domain::SourceRole;
-    if (identifier == "none") {
-        return Role::kNone;
-    }
-    if (identifier == "a") {
-        return Role::kA;
-    }
-    if (identifier == "b") {
-        return Role::kB;
-    }
-    if (identifier == "pair") {
-        return Role::kPair;
-    }
-    if (identifier == "project") {
-        return Role::kProject;
-    }
-    return std::nullopt;
-}
-
 [[nodiscard]] Json encodeRate(const domain::RationalRate& rate) {
     return Json{
         {"numerator", rate.numerator()},
@@ -501,12 +483,12 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
 }
 
 [[nodiscard]] domain::Result<domain::RationalRate> decodeRate(const Json& document,
-                                                              const domain::SourceRole sourceRole) {
-    auto numerator = int64Member(document, "numerator", sourceRole);
+                                                              std::optional<domain::SourceId> sourceId) {
+    auto numerator = int64Member(document, "numerator", sourceId);
     if (!numerator) {
         return domain::Result<domain::RationalRate>::failure(numerator.error());
     }
-    auto denominator = int64Member(document, "denominator", sourceRole);
+    auto denominator = int64Member(document, "denominator", sourceId);
     if (!denominator) {
         return domain::Result<domain::RationalRate>::failure(denominator.error());
     }
@@ -514,7 +496,7 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
     auto rate = domain::RationalRate::create(numerator.value(), denominator.value());
     if (!rate) {
         return invalidSchema<domain::RationalRate>(
-            sourceRole, "Frame-rate numerator and denominator must form a positive rational rate.");
+            sourceId, "Frame-rate numerator and denominator must form a positive rational rate.");
     }
     return rate;
 }
@@ -527,15 +509,15 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
 }
 
 [[nodiscard]] domain::Result<std::optional<domain::RationalRate>> decodeOptionalRate(
-    const Json& document, const std::string_view field, const domain::SourceRole sourceRole) {
-    auto member = requiredMember(document, field, sourceRole);
+    const Json& document, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(document, field, sourceId);
     if (!member) {
         return domain::Result<std::optional<domain::RationalRate>>::failure(member.error());
     }
     if (member.value()->is_null()) {
         return domain::Result<std::optional<domain::RationalRate>>::success(std::nullopt);
     }
-    auto rate = decodeRate(*member.value(), sourceRole);
+    auto rate = decodeRate(*member.value(), sourceId);
     if (!rate) {
         return domain::Result<std::optional<domain::RationalRate>>::failure(rate.error());
     }
@@ -576,16 +558,16 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
 }
 
 [[nodiscard]] domain::Result<domain::SourceFileIdentity>
-decodeSourceIdentity(const Json& document, const domain::SourceRole sourceRole) {
-    auto byteSize = uint64Member(document, "byteSize", sourceRole);
+decodeSourceIdentity(const Json& document, std::optional<domain::SourceId> sourceId) {
+    auto byteSize = uint64Member(document, "byteSize", sourceId);
     if (!byteSize) {
         return domain::Result<domain::SourceFileIdentity>::failure(byteSize.error());
     }
-    auto modifiedUtcMilliseconds = int64Member(document, "modifiedUtcMilliseconds", sourceRole);
+    auto modifiedUtcMilliseconds = int64Member(document, "modifiedUtcMilliseconds", sourceId);
     if (!modifiedUtcMilliseconds) {
         return domain::Result<domain::SourceFileIdentity>::failure(modifiedUtcMilliseconds.error());
     }
-    auto fingerprint = stringMember(document, "fingerprintSha256", sourceRole);
+    auto fingerprint = stringMember(document, "fingerprintSha256", sourceId);
     if (!fingerprint) {
         return domain::Result<domain::SourceFileIdentity>::failure(fingerprint.error());
     }
@@ -597,7 +579,7 @@ decodeSourceIdentity(const Json& document, const domain::SourceRole sourceRole) 
     };
     if (!identity.isComplete()) {
         return invalidSchema<domain::SourceFileIdentity>(
-            sourceRole,
+            sourceId,
             "Source identity must contain a non-zero size and a 64-character SHA-256 value.");
     }
     return domain::Result<domain::SourceFileIdentity>::success(std::move(identity));
@@ -606,84 +588,84 @@ decodeSourceIdentity(const Json& document, const domain::SourceRole sourceRole) 
 [[nodiscard]] domain::Result<domain::MediaDescriptor>
 decodeSource(const Json& document,
              const std::filesystem::path& projectDirectory,
-             const domain::SourceRole sourceRole) {
+             std::optional<domain::SourceId> sourceId) {
     if (!document.is_object()) {
-        return invalidSchema<domain::MediaDescriptor>(sourceRole,
+        return invalidSchema<domain::MediaDescriptor>(sourceId,
                                                       "Source entry must be an object.");
     }
 
-    auto storedPath = stringMember(document, "path", sourceRole);
+    auto storedPath = stringMember(document, "path", sourceId);
     if (!storedPath) {
         return domain::Result<domain::MediaDescriptor>::failure(storedPath.error());
     }
-    auto normalizedPath = pathFromDocument(storedPath.value(), projectDirectory, sourceRole);
+    auto normalizedPath = pathFromDocument(storedPath.value(), projectDirectory, sourceId);
     if (!normalizedPath) {
         return domain::Result<domain::MediaDescriptor>::failure(normalizedPath.error());
     }
 
-    auto identityDocument = objectMember(document, "identity", sourceRole);
+    auto identityDocument = objectMember(document, "identity", sourceId);
     if (!identityDocument) {
         return domain::Result<domain::MediaDescriptor>::failure(identityDocument.error());
     }
-    auto identity = decodeSourceIdentity(*identityDocument.value(), sourceRole);
+    auto identity = decodeSourceIdentity(*identityDocument.value(), sourceId);
     if (!identity) {
         return domain::Result<domain::MediaDescriptor>::failure(identity.error());
     }
 
-    auto descriptorDocument = objectMember(document, "descriptor", sourceRole);
+    auto descriptorDocument = objectMember(document, "descriptor", sourceId);
     if (!descriptorDocument) {
         return domain::Result<domain::MediaDescriptor>::failure(descriptorDocument.error());
     }
     const Json& descriptor = *descriptorDocument.value();
 
-    auto extentDocument = objectMember(descriptor, "extent", sourceRole);
+    auto extentDocument = objectMember(descriptor, "extent", sourceId);
     if (!extentDocument) {
         return domain::Result<domain::MediaDescriptor>::failure(extentDocument.error());
     }
-    auto width = uint32Member(*extentDocument.value(), "width", sourceRole);
+    auto width = uint32Member(*extentDocument.value(), "width", sourceId);
     if (!width) {
         return domain::Result<domain::MediaDescriptor>::failure(width.error());
     }
-    auto height = uint32Member(*extentDocument.value(), "height", sourceRole);
+    auto height = uint32Member(*extentDocument.value(), "height", sourceId);
     if (!height) {
         return domain::Result<domain::MediaDescriptor>::failure(height.error());
     }
 
-    auto frameRate = decodeOptionalRate(descriptor, "frameRate", sourceRole);
+    auto frameRate = decodeOptionalRate(descriptor, "frameRate", sourceId);
     if (!frameRate) {
         return domain::Result<domain::MediaDescriptor>::failure(frameRate.error());
     }
 
-    auto frameCountDocument = objectMember(descriptor, "frameCount", sourceRole);
+    auto frameCountDocument = objectMember(descriptor, "frameCount", sourceId);
     if (!frameCountDocument) {
         return domain::Result<domain::MediaDescriptor>::failure(frameCountDocument.error());
     }
-    auto frameCount = int64Member(*frameCountDocument.value(), "value", sourceRole);
+    auto frameCount = int64Member(*frameCountDocument.value(), "value", sourceId);
     if (!frameCount) {
         return domain::Result<domain::MediaDescriptor>::failure(frameCount.error());
     }
-    auto frameCountOriginIdValue = stringMember(*frameCountDocument.value(), "origin", sourceRole);
+    auto frameCountOriginIdValue = stringMember(*frameCountDocument.value(), "origin", sourceId);
     if (!frameCountOriginIdValue) {
         return domain::Result<domain::MediaDescriptor>::failure(frameCountOriginIdValue.error());
     }
     const auto frameCountOrigin = frameCountOriginFromId(frameCountOriginIdValue.value());
     if (!frameCountOrigin.has_value()) {
-        return invalidSchema<domain::MediaDescriptor>(sourceRole, "Frame-count origin is unknown.");
+        return invalidSchema<domain::MediaDescriptor>(sourceId, "Frame-count origin is unknown.");
     }
 
-    auto duration = int64Member(descriptor, "durationMicroseconds", sourceRole);
+    auto duration = int64Member(descriptor, "durationMicroseconds", sourceId);
     if (!duration) {
         return domain::Result<domain::MediaDescriptor>::failure(duration.error());
     }
-    auto codecId = stringMember(descriptor, "codecId", sourceRole);
+    auto codecId = stringMember(descriptor, "codecId", sourceId);
     if (!codecId) {
         return domain::Result<domain::MediaDescriptor>::failure(codecId.error());
     }
-    auto pixelFormatId = stringMember(descriptor, "pixelFormatId", sourceRole);
+    auto pixelFormatId = stringMember(descriptor, "pixelFormatId", sourceId);
     if (!pixelFormatId) {
         return domain::Result<domain::MediaDescriptor>::failure(pixelFormatId.error());
     }
-    auto bitDepth = uint8Member(descriptor, "bitDepth", sourceRole);
+    auto bitDepth = uint8Member(descriptor, "bitDepth", sourceId);
     if (!bitDepth) {
         return domain::Result<domain::MediaDescriptor>::failure(bitDepth.error());
     }
@@ -696,26 +678,26 @@ decodeSource(const Json& document,
     };
     if (const auto colorIterator = descriptor.find("color"); colorIterator != descriptor.end()) {
         if (!colorIterator->is_object()) {
-            return invalidSchema<domain::MediaDescriptor>(sourceRole,
+            return invalidSchema<domain::MediaDescriptor>(sourceId,
                                                           "Color metadata must be an object.");
         }
-        auto matrixId = stringMember(*colorIterator, "matrix", sourceRole);
+        auto matrixId = stringMember(*colorIterator, "matrix", sourceId);
         if (!matrixId) {
             return domain::Result<domain::MediaDescriptor>::failure(matrixId.error());
         }
         const auto matrix = colorMatrixFromId(matrixId.value());
         if (!matrix.has_value()) {
-            return invalidSchema<domain::MediaDescriptor>(sourceRole, "Color matrix is unknown.");
+            return invalidSchema<domain::MediaDescriptor>(sourceId, "Color matrix is unknown.");
         }
-        auto rangeId = stringMember(*colorIterator, "range", sourceRole);
+        auto rangeId = stringMember(*colorIterator, "range", sourceId);
         if (!rangeId) {
             return domain::Result<domain::MediaDescriptor>::failure(rangeId.error());
         }
         const auto range = colorRangeFromId(rangeId.value());
         if (!range.has_value()) {
-            return invalidSchema<domain::MediaDescriptor>(sourceRole, "Color range is unknown.");
+            return invalidSchema<domain::MediaDescriptor>(sourceId, "Color range is unknown.");
         }
-        auto matrixInferred = boolMember(*colorIterator, "matrixInferred", sourceRole);
+        auto matrixInferred = boolMember(*colorIterator, "matrixInferred", sourceId);
         if (!matrixInferred) {
             return domain::Result<domain::MediaDescriptor>::failure(matrixInferred.error());
         }
@@ -726,26 +708,26 @@ decodeSource(const Json& document,
         };
     }
 
-    auto capabilitiesDocument = objectMember(descriptor, "decodeCapabilities", sourceRole);
+    auto capabilitiesDocument = objectMember(descriptor, "decodeCapabilities", sourceId);
     if (!capabilitiesDocument) {
         return domain::Result<domain::MediaDescriptor>::failure(capabilitiesDocument.error());
     }
-    auto softwareDecode = boolMember(*capabilitiesDocument.value(), "softwareDecode", sourceRole);
+    auto softwareDecode = boolMember(*capabilitiesDocument.value(), "softwareDecode", sourceId);
     if (!softwareDecode) {
         return domain::Result<domain::MediaDescriptor>::failure(softwareDecode.error());
     }
-    auto d3d11VaDecode = boolMember(*capabilitiesDocument.value(), "d3d11VaDecode", sourceRole);
+    auto d3d11VaDecode = boolMember(*capabilitiesDocument.value(), "d3d11VaDecode", sourceId);
     if (!d3d11VaDecode) {
         return domain::Result<domain::MediaDescriptor>::failure(d3d11VaDecode.error());
     }
 
-    auto timingConfidenceIdValue = stringMember(descriptor, "timingConfidence", sourceRole);
+    auto timingConfidenceIdValue = stringMember(descriptor, "timingConfidence", sourceId);
     if (!timingConfidenceIdValue) {
         return domain::Result<domain::MediaDescriptor>::failure(timingConfidenceIdValue.error());
     }
     const auto timingConfidence = timingConfidenceFromId(timingConfidenceIdValue.value());
     if (!timingConfidence.has_value()) {
-        return invalidSchema<domain::MediaDescriptor>(sourceRole, "Timing confidence is unknown.");
+        return invalidSchema<domain::MediaDescriptor>(sourceId, "Timing confidence is unknown.");
     }
 
     domain::MediaDescriptor decoded{
@@ -772,25 +754,28 @@ decodeSource(const Json& document,
     };
     auto validated = domain::validateMediaDescriptor(std::move(decoded));
     if (!validated) {
-        return invalidSchema<domain::MediaDescriptor>(sourceRole, "Source descriptor is invalid.");
+        return invalidSchema<domain::MediaDescriptor>(sourceId, "Source descriptor is invalid.");
     }
     return validated;
 }
 
-[[nodiscard]] domain::Result<Json> encodeSource(const domain::MediaDescriptor& descriptor,
-                                                const std::filesystem::path& projectDirectory,
-                                                const domain::SourceRole sourceRole) {
+[[nodiscard]] domain::Result<Json> encodeSource(const domain::ComparisonSource& source,
+                                                const std::filesystem::path& projectDirectory) {
+    const auto& descriptor = source.descriptor;
     if (!descriptor.sourceIdentity.has_value() || !descriptor.sourceIdentity->isComplete()) {
         return invalidSchema<Json>(
-            sourceRole, "Schema-1 persistence requires a complete source file identity.");
+            source.id, "Schema-2 persistence requires a complete source file identity.");
     }
-    auto storedPath = pathForDocument(descriptor.normalizedPath, projectDirectory, sourceRole);
+    auto storedPath = pathForDocument(descriptor.normalizedPath, projectDirectory, source.id);
     if (!storedPath) {
         return domain::Result<Json>::failure(storedPath.error());
     }
 
     const domain::SourceFileIdentity& identity = *descriptor.sourceIdentity;
     return domain::Result<Json>::success(Json{
+        {"id", source.id},
+        {"role", source.role == domain::ComparisonRole::kReference ? "reference" : "prediction"},
+        {"displayName", source.displayName},
         {"path", std::move(storedPath).value()},
         {"identity",
          Json{
@@ -804,38 +789,36 @@ decodeSource(const Json& document,
 
 [[nodiscard]] domain::Result<std::optional<domain::FrameId>>
 decodeNullableFrame(const Json& document, const std::string_view field) {
-    constexpr domain::SourceRole kProjectRole = domain::SourceRole::kProject;
-    auto value = requiredMember(document, field, kProjectRole);
+    auto value = requiredMember(document, field, std::nullopt);
     if (!value) {
         return domain::Result<std::optional<domain::FrameId>>::failure(value.error());
     }
     if (value.value()->is_null()) {
         return domain::Result<std::optional<domain::FrameId>>::success(std::nullopt);
     }
-    auto frameValue = int64Value(*value.value(), kProjectRole, field);
+    auto frameValue = int64Value(*value.value(), std::nullopt, field);
     if (!frameValue) {
         return domain::Result<std::optional<domain::FrameId>>::failure(frameValue.error());
     }
     const domain::FrameId frameId{frameValue.value()};
     if (!frameId.isValid()) {
         return invalidSchema<std::optional<domain::FrameId>>(
-            kProjectRole, "Persisted frame ID is outside the canonical range.");
+            std::nullopt, "Persisted frame ID is outside the canonical range.");
     }
     return domain::Result<std::optional<domain::FrameId>>::success(frameId);
 }
 
 [[nodiscard]] domain::Result<domain::WorkspaceState> decodeWorkspace(const Json& document) {
-    constexpr domain::SourceRole kProjectRole = domain::SourceRole::kProject;
     if (!document.is_object()) {
         return invalidSchema<domain::WorkspaceState>(
-            kProjectRole, "Workspace must be a JSON object of string values.");
+            std::nullopt, "Workspace must be a JSON object of string values.");
     }
 
     domain::WorkspaceState workspace;
     for (auto iterator = document.begin(); iterator != document.end(); ++iterator) {
         if (iterator.key().empty() || !iterator.value().is_string()) {
             return invalidSchema<domain::WorkspaceState>(
-                kProjectRole,
+                std::nullopt,
                 "Workspace keys must be non-empty and workspace values must be strings.");
         }
         workspace.emplace(iterator.key(), iterator.value().get<std::string>());
@@ -847,7 +830,7 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
     Json document = Json::object();
     for (const auto& [key, value] : workspace) {
         if (key.empty()) {
-            return invalidSchema<Json>(domain::SourceRole::kProject,
+            return invalidSchema<Json>(std::nullopt,
                                        "Workspace keys must be non-empty.");
         }
         document[key] = value;
@@ -862,16 +845,15 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
         return domain::Result<Json>::failure(projectDirectory.error());
     }
 
-    auto sourceA =
-        encodeSource(project.sources().sourceA(), projectDirectory.value(), domain::SourceRole::kA);
-    if (!sourceA) {
-        return domain::Result<Json>::failure(sourceA.error());
+    Json sourcesArray = Json::array();
+    for (const auto& source : project.sources().sources()) {
+        auto encoded = encodeSource(source, projectDirectory.value());
+        if (!encoded) {
+            return domain::Result<Json>::failure(encoded.error());
+        }
+        sourcesArray.push_back(std::move(encoded).value());
     }
-    auto sourceB =
-        encodeSource(project.sources().sourceB(), projectDirectory.value(), domain::SourceRole::kB);
-    if (!sourceB) {
-        return domain::Result<Json>::failure(sourceB.error());
-    }
+
     auto workspace = encodeWorkspace(project.workspaceState());
     if (!workspace) {
         return domain::Result<Json>::failure(workspace.error());
@@ -886,6 +868,11 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
         outMark = project.outMark()->value();
     }
 
+    Json referenceSourceId = nullptr;
+    if (project.sources().referenceSourceId().has_value()) {
+        referenceSourceId = *project.sources().referenceSourceId();
+    }
+
     return domain::Result<Json>::success(Json{
         {"schemaVersion", kSchemaVersion},
         {"project",
@@ -893,16 +880,8 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
              {"id", project.id().value()},
              {"displayName", project.displayName()},
          }},
-        {"sources",
-         Json{
-             {"a", std::move(sourceA).value()},
-             {"b", std::move(sourceB).value()},
-         }},
-        {"canonicalTimeline",
-         Json{
-             {"frameRate", encodeOptionalRate(project.sources().canonicalRate())},
-             {"frameCount", project.sources().canonicalFrameCount()},
-         }},
+        {"sources", std::move(sourcesArray)},
+        {"referenceSourceId", referenceSourceId},
         {"marks",
          Json{
              {"inFrame", std::move(inMark)},
@@ -915,88 +894,130 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
 
 [[nodiscard]] domain::Result<domain::Project>
 decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
-    constexpr domain::SourceRole kProjectRole = domain::SourceRole::kProject;
     if (!document.is_object()) {
-        return invalidSchema<domain::Project>(kProjectRole, "Project document must be an object.");
+        return invalidSchema<domain::Project>(std::nullopt, "Project document must be an object.");
     }
 
-    auto schemaVersion = int64Member(document, "schemaVersion", kProjectRole);
+    auto schemaVersion = int64Member(document, "schemaVersion", std::nullopt);
     if (!schemaVersion) {
         return domain::Result<domain::Project>::failure(schemaVersion.error());
+    }
+    if (schemaVersion.value() == 1) {
+        return domain::Result<domain::Project>::failure(
+            persistenceError(domain::MediaErrorCode::kUnsupportedProjectSchema,
+                             std::nullopt,
+                             "Legacy A/B schema-1 documents are not migrated."));
     }
     if (schemaVersion.value() != kSchemaVersion) {
         return domain::Result<domain::Project>::failure(
             persistenceError(domain::MediaErrorCode::kUnsupportedProjectSchema,
-                             kProjectRole,
-                             "Only project schema version 1 is supported."));
+                             std::nullopt,
+                             "Only project schema version 2 is supported."));
     }
 
     auto projectDirectory = projectDirectoryFor(projectPath);
     if (!projectDirectory) {
         return domain::Result<domain::Project>::failure(projectDirectory.error());
     }
-    auto projectDocument = objectMember(document, "project", kProjectRole);
+    auto projectDocument = objectMember(document, "project", std::nullopt);
     if (!projectDocument) {
         return domain::Result<domain::Project>::failure(projectDocument.error());
     }
-    auto id = stringMember(*projectDocument.value(), "id", kProjectRole);
+    auto id = stringMember(*projectDocument.value(), "id", std::nullopt);
     if (!id) {
         return domain::Result<domain::Project>::failure(id.error());
     }
-    auto displayName = stringMember(*projectDocument.value(), "displayName", kProjectRole);
+    auto displayName = stringMember(*projectDocument.value(), "displayName", std::nullopt);
     if (!displayName) {
         return domain::Result<domain::Project>::failure(displayName.error());
     }
 
-    auto sourcesDocument = objectMember(document, "sources", kProjectRole);
-    if (!sourcesDocument) {
-        return domain::Result<domain::Project>::failure(sourcesDocument.error());
+    auto sourcesArray = arrayMember(document, "sources", std::nullopt);
+    if (!sourcesArray) {
+        return domain::Result<domain::Project>::failure(sourcesArray.error());
     }
-    auto sourceADocument = objectMember(*sourcesDocument.value(), "a", domain::SourceRole::kA);
-    if (!sourceADocument) {
-        return domain::Result<domain::Project>::failure(sourceADocument.error());
-    }
-    auto sourceBDocument = objectMember(*sourcesDocument.value(), "b", domain::SourceRole::kB);
-    if (!sourceBDocument) {
-        return domain::Result<domain::Project>::failure(sourceBDocument.error());
-    }
-    auto sourceA =
-        decodeSource(*sourceADocument.value(), projectDirectory.value(), domain::SourceRole::kA);
-    if (!sourceA) {
-        return domain::Result<domain::Project>::failure(sourceA.error());
-    }
-    auto sourceB =
-        decodeSource(*sourceBDocument.value(), projectDirectory.value(), domain::SourceRole::kB);
-    if (!sourceB) {
-        return domain::Result<domain::Project>::failure(sourceB.error());
-    }
-    auto sources = domain::SourcePairValidator::validate(sourceA.value(), sourceB.value());
-    if (!sources) {
-        return domain::Result<domain::Project>::failure(sources.error());
-    }
-
-    auto canonicalTimeline = objectMember(document, "canonicalTimeline", kProjectRole);
-    if (!canonicalTimeline) {
-        return domain::Result<domain::Project>::failure(canonicalTimeline.error());
-    }
-    auto canonicalRate =
-        decodeOptionalRate(*canonicalTimeline.value(), "frameRate", domain::SourceRole::kPair);
-    if (!canonicalRate) {
-        return domain::Result<domain::Project>::failure(canonicalRate.error());
-    }
-    auto canonicalFrameCount =
-        int64Member(*canonicalTimeline.value(), "frameCount", domain::SourceRole::kPair);
-    if (!canonicalFrameCount) {
-        return domain::Result<domain::Project>::failure(canonicalFrameCount.error());
-    }
-    if (sources.value().canonicalRate() != canonicalRate.value() ||
-        sources.value().canonicalFrameCount() != canonicalFrameCount.value()) {
+    const auto& sourcesList = *sourcesArray.value();
+    if (sourcesList.size() < 2 || sourcesList.size() > 3) {
         return invalidSchema<domain::Project>(
-            domain::SourceRole::kPair,
-            "Canonical timeline does not match the validated source descriptors.");
+            std::nullopt,
+            "Sources array must contain 2-3 entries; got " +
+                std::to_string(sourcesList.size()) + ".");
     }
 
-    auto marksDocument = objectMember(document, "marks", kProjectRole);
+    std::optional<domain::SourceId> referenceSourceId;
+    auto refIdMember = requiredMember(document, "referenceSourceId", std::nullopt);
+    if (!refIdMember) {
+        return domain::Result<domain::Project>::failure(refIdMember.error());
+    }
+    if (refIdMember.value()->is_null()) {
+        referenceSourceId = std::nullopt;
+    } else {
+        auto refId = uint32Member(document, "referenceSourceId", std::nullopt);
+        if (!refId) {
+            return domain::Result<domain::Project>::failure(refId.error());
+        }
+        referenceSourceId = refId.value();
+    }
+
+    std::vector<domain::ComparisonSource> sources;
+    bool foundReferenceMatch = false;
+    for (std::size_t i = 0; i < sourcesList.size(); ++i) {
+        const auto& entry = sourcesList[i];
+        std::optional<domain::SourceId> sid{static_cast<domain::SourceId>(i)};
+
+        auto idVal = uint32Member(entry, "id", sid);
+        if (!idVal) {
+            return domain::Result<domain::Project>::failure(idVal.error());
+        }
+        auto roleId = stringMember(entry, "role", sid);
+        if (!roleId) {
+            return domain::Result<domain::Project>::failure(roleId.error());
+        }
+        domain::ComparisonRole role;
+        if (roleId.value() == "reference") {
+            role = domain::ComparisonRole::kReference;
+        } else if (roleId.value() == "prediction") {
+            role = domain::ComparisonRole::kPrediction;
+        } else {
+            return invalidSchema<domain::Project>(
+                sid, "Unknown comparison role: " + roleId.value() + ".");
+        }
+        auto dn = stringMember(entry, "displayName", sid);
+        if (!dn) {
+            return domain::Result<domain::Project>::failure(dn.error());
+        }
+
+        auto descriptor = decodeSource(entry, projectDirectory.value(), sid);
+        if (!descriptor) {
+            return domain::Result<domain::Project>::failure(descriptor.error());
+        }
+
+        if (referenceSourceId.has_value() && *referenceSourceId == idVal.value()) {
+            foundReferenceMatch = true;
+            role = domain::ComparisonRole::kReference;
+        }
+
+        sources.push_back(domain::ComparisonSource{
+            .id = idVal.value(),
+            .role = role,
+            .descriptor = std::move(descriptor).value(),
+            .displayName = std::move(dn).value(),
+        });
+    }
+
+    if (referenceSourceId.has_value() && !foundReferenceMatch) {
+        return invalidSchema<domain::Project>(
+            std::nullopt,
+            "referenceSourceId " + std::to_string(*referenceSourceId) +
+                " does not match any source entry id.");
+    }
+
+    auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    if (!validated) {
+        return domain::Result<domain::Project>::failure(validated.error());
+    }
+
+    auto marksDocument = objectMember(document, "marks", std::nullopt);
     if (!marksDocument) {
         return domain::Result<domain::Project>::failure(marksDocument.error());
     }
@@ -1008,17 +1029,17 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     if (!outMark) {
         return domain::Result<domain::Project>::failure(outMark.error());
     }
-    auto lastDisplayedFrame = int64Member(document, "lastDisplayedFrame", kProjectRole);
+    auto lastDisplayedFrame = int64Member(document, "lastDisplayedFrame", std::nullopt);
     if (!lastDisplayedFrame) {
         return domain::Result<domain::Project>::failure(lastDisplayedFrame.error());
     }
     const domain::FrameId lastFrame{lastDisplayedFrame.value()};
     if (!lastFrame.isValid()) {
         return invalidSchema<domain::Project>(
-            kProjectRole, "Last displayed frame is outside the canonical range.");
+            std::nullopt, "Last displayed frame is outside the canonical range.");
     }
 
-    auto workspaceDocument = objectMember(document, "workspace", kProjectRole);
+    auto workspaceDocument = objectMember(document, "workspace", std::nullopt);
     if (!workspaceDocument) {
         return domain::Result<domain::Project>::failure(workspaceDocument.error());
     }
@@ -1030,7 +1051,7 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     domain::ProjectState state{
         .id = domain::ProjectId{std::move(id).value()},
         .displayName = std::move(displayName).value(),
-        .sources = std::move(sources).value(),
+        .sources = std::move(validated).value().set,
         .inMark = std::move(inMark).value(),
         .outMark = std::move(outMark).value(),
         .lastDisplayedFrame = lastFrame,
@@ -1055,7 +1076,7 @@ domain::Result<std::string> ProjectJson::encodeText(const domain::Project& proje
     } catch (const std::exception&) {
         return domain::Result<std::string>::failure(
             persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                             domain::SourceRole::kProject,
+                             std::nullopt,
                              "Could not serialize project JSON."));
     }
 }
@@ -1065,7 +1086,7 @@ domain::Result<domain::Project> ProjectJson::decodeText(const std::string_view d
     try {
         return decodeDocument(Json::parse(std::string{documentText}), projectPath);
     } catch (const std::exception&) {
-        return invalidSchema<domain::Project>(domain::SourceRole::kProject,
+        return invalidSchema<domain::Project>(std::nullopt,
                                               "Project document is not valid UTF-8 JSON.");
     }
 }

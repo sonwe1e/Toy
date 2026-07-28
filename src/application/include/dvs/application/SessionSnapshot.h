@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dvs/application/FramePair.h"
+#include "dvs/application/FrameSet.h"
 #include "dvs/application/RequestContext.h"
 #include "dvs/domain/MediaError.h"
 

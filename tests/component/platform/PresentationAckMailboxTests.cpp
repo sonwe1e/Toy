@@ -10,8 +10,8 @@
 namespace dvs::platform {
 namespace {
 
-[[nodiscard]] application::FramePairPresented makeAcknowledgement(const std::uint64_t value) {
-    return application::FramePairPresented{
+[[nodiscard]] application::FrameSetPresented makeAcknowledgement(const std::uint64_t value) {
+    return application::FrameSetPresented{
         .context =
             application::FrameRequestContext{
                 .playback =
@@ -30,23 +30,23 @@ namespace {
     };
 }
 
-void expectAcknowledgement(const application::FramePairPresented& actual,
-                           const application::FramePairPresented& expected) {
+void expectAcknowledgement(const application::FrameSetPresented& actual,
+                           const application::FrameSetPresented& expected) {
     EXPECT_EQ(actual.context, expected.context);
     EXPECT_EQ(actual.frameId, expected.frameId);
 }
 
 TEST(PresentationAckMailboxTests, PreservesTwoEntriesUnderPressureWithoutOverwriting) {
     PresentationAckMailbox mailbox;
-    const application::FramePairPresented first = makeAcknowledgement(1U);
-    const application::FramePairPresented second = makeAcknowledgement(2U);
-    const application::FramePairPresented third = makeAcknowledgement(3U);
+    const application::FrameSetPresented first = makeAcknowledgement(1U);
+    const application::FrameSetPresented second = makeAcknowledgement(2U);
+    const application::FrameSetPresented third = makeAcknowledgement(3U);
 
     ASSERT_EQ(mailbox.tryPush(first), PresentationAckPushResult::Accepted);
     ASSERT_EQ(mailbox.tryPush(second), PresentationAckPushResult::Accepted);
     EXPECT_EQ(mailbox.tryPush(third), PresentationAckPushResult::Full);
 
-    std::optional<application::FramePairPresented> popped = mailbox.tryPop();
+    std::optional<application::FrameSetPresented> popped = mailbox.tryPop();
     ASSERT_TRUE(popped.has_value());
     expectAcknowledgement(*popped, first);
     ASSERT_EQ(mailbox.tryPush(third), PresentationAckPushResult::Accepted);
@@ -62,15 +62,15 @@ TEST(PresentationAckMailboxTests, PreservesTwoEntriesUnderPressureWithoutOverwri
 
 TEST(PresentationAckMailboxTests, CloseRejectsNewEntriesButAllowsQueuedEntriesToDrain) {
     PresentationAckMailbox mailbox;
-    const application::FramePairPresented first = makeAcknowledgement(1U);
-    const application::FramePairPresented second = makeAcknowledgement(2U);
+    const application::FrameSetPresented first = makeAcknowledgement(1U);
+    const application::FrameSetPresented second = makeAcknowledgement(2U);
     ASSERT_EQ(mailbox.tryPush(first), PresentationAckPushResult::Accepted);
 
     mailbox.close();
     EXPECT_TRUE(mailbox.isClosed());
     EXPECT_FALSE(mailbox.isDrained());
     EXPECT_EQ(mailbox.tryPush(second), PresentationAckPushResult::Closed);
-    const std::optional<application::FramePairPresented> popped = mailbox.tryPop();
+    const std::optional<application::FrameSetPresented> popped = mailbox.tryPop();
     ASSERT_TRUE(popped.has_value());
     expectAcknowledgement(*popped, first);
     EXPECT_FALSE(mailbox.tryPop().has_value());
@@ -84,7 +84,7 @@ TEST(PresentationAckMailboxTests, SingleProducerAndConsumerTransferEveryEntryInO
 
     std::thread producer([&mailbox] {
         for (std::uint64_t index = 0; index < kAcknowledgementCount; ++index) {
-            const application::FramePairPresented acknowledgement = makeAcknowledgement(index);
+            const application::FrameSetPresented acknowledgement = makeAcknowledgement(index);
             while (mailbox.tryPush(acknowledgement) == PresentationAckPushResult::Full) {
                 std::this_thread::yield();
             }
@@ -92,7 +92,7 @@ TEST(PresentationAckMailboxTests, SingleProducerAndConsumerTransferEveryEntryInO
     });
 
     for (std::uint64_t index = 0; index < kAcknowledgementCount; ++index) {
-        std::optional<application::FramePairPresented> acknowledgement;
+        std::optional<application::FrameSetPresented> acknowledgement;
         while (!(acknowledgement = mailbox.tryPop())) {
             std::this_thread::yield();
         }
@@ -105,7 +105,7 @@ TEST(PresentationAckMailboxTests, SingleProducerAndConsumerTransferEveryEntryInO
 TEST(PresentationAckMailboxTests, ConcurrentCloseEitherPublishesBeforeCloseOrRejectsAtomically) {
     for (std::uint64_t iteration = 0U; iteration < 100U; ++iteration) {
         PresentationAckMailbox mailbox;
-        const application::FramePairPresented acknowledgement = makeAcknowledgement(iteration);
+        const application::FrameSetPresented acknowledgement = makeAcknowledgement(iteration);
         std::atomic<bool> start{false};
         PresentationAckPushResult pushResult = PresentationAckPushResult::Full;
 
@@ -119,7 +119,7 @@ TEST(PresentationAckMailboxTests, ConcurrentCloseEitherPublishesBeforeCloseOrRej
         mailbox.close();
         producer.join();
 
-        const std::optional<application::FramePairPresented> popped = mailbox.tryPop();
+        const std::optional<application::FrameSetPresented> popped = mailbox.tryPop();
         if (pushResult == PresentationAckPushResult::Accepted) {
             ASSERT_TRUE(popped.has_value());
             expectAcknowledgement(*popped, acknowledgement);

@@ -1,4 +1,5 @@
-#include "dvs/platform/D3d11DualVideoRenderer.h"
+#include "dvs/application/FrameSet.h"
+#include "dvs/platform/D3d11ComparisonRenderer.h"
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/FrameMailbox.h"
 #include "dvs/platform/FrameResourceFactory.h"
@@ -6,7 +7,7 @@
 #include "dvs/platform/GraphicsDeviceBroker.h"
 #include "dvs/platform/PresentationAckMailbox.h"
 #include "dvs/platform/RenderActivitySink.h"
-#include "dvs/ui/DualVideoSurface.h"
+#include "dvs/ui/ComparisonSurface.h"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -64,17 +65,17 @@ using namespace std::chrono_literals;
     return QColor{channel(rgb[0U]), channel(rgb[1U]), channel(rgb[2U])};
 }
 
-[[nodiscard]] float differenceGainValue(const DualVideoSurface::DifferenceGain gain) {
+[[nodiscard]] float differenceGainValue(const ComparisonSurface::DifferenceGain gain) {
     switch (gain) {
-    case DualVideoSurface::Gain1x:
+    case ComparisonSurface::Gain1x:
         return 1.0F;
-    case DualVideoSurface::Gain2x:
+    case ComparisonSurface::Gain2x:
         return 2.0F;
-    case DualVideoSurface::Gain4x:
+    case ComparisonSurface::Gain4x:
         return 4.0F;
-    case DualVideoSurface::Gain8x:
+    case ComparisonSurface::Gain8x:
         return 8.0F;
-    case DualVideoSurface::Gain16x:
+    case ComparisonSurface::Gain16x:
         return 16.0F;
     }
     return 1.0F;
@@ -84,8 +85,8 @@ using namespace std::chrono_literals;
                                              const std::array<std::uint8_t, 3U>& sampleA,
                                              const domain::ColorMetadata& metadataB,
                                              const std::array<std::uint8_t, 3U>& sampleB,
-                                             const DualVideoSurface::DifferenceMetric metric,
-                                             const DualVideoSurface::DifferenceGain gain) {
+                                             const ComparisonSurface::DifferenceMetric metric,
+                                             const ComparisonSurface::DifferenceGain gain) {
     const auto rgb = [](const domain::ColorMetadata& metadata,
                         const std::array<std::uint8_t, 3U>& sample) {
         return applyColorTransform(platform::nv12ColorTransform(metadata),
@@ -100,10 +101,10 @@ using namespace std::chrono_literals;
     const std::array<float, 3U> rgbB = rgb(metadataB, sampleB);
     const float multiplier = differenceGainValue(gain);
     std::array<float, 3U> result{};
-    if (metric == DualVideoSurface::Luma) {
+    if (metric == ComparisonSurface::Luma) {
         const float difference = multiplier * std::abs(luma(rgbA) - luma(rgbB));
         result = {difference, difference, difference};
-    } else if (metric == DualVideoSurface::Chroma) {
+    } else if (metric == ComparisonSurface::Chroma) {
         const float lumaA = luma(rgbA);
         const float lumaB = luma(rgbB);
         const float cbA = (rgbA[2U] - lumaA) / 1.8556F;
@@ -115,7 +116,7 @@ using namespace std::chrono_literals;
         for (std::size_t index = 0U; index < result.size(); ++index) {
             result[index] = multiplier * std::abs(rgbA[index] - rgbB[index]);
         }
-        if (metric == DualVideoSurface::Heatmap) {
+        if (metric == ComparisonSurface::Heatmap) {
             const float value =
                 std::clamp(std::max({result[0U], result[1U], result[2U]}), 0.0F, 1.0F);
             result = {std::clamp(value * 3.0F, 0.0F, 1.0F),
@@ -154,7 +155,7 @@ void expectColorNear(const QColor& actual, const QColor& expected, const int tol
     return maximum;
 }
 
-TEST(DualVideoSurfaceGeometryTests, SplitsEveryOddPhysicalPixelWithoutAGap) {
+TEST(ComparisonSurfaceGeometryTests, SplitsEveryOddPhysicalPixelWithoutAGap) {
     const platform::SurfaceSplitLayout split =
         platform::computeSurfaceSplit(101.0F, 60.0F, 101U, 60U);
 
@@ -166,7 +167,7 @@ TEST(DualVideoSurfaceGeometryTests, SplitsEveryOddPhysicalPixelWithoutAGap) {
     EXPECT_FLOAT_EQ(split.right.height, 60.0F);
 }
 
-TEST(DualVideoSurfaceGeometryTests, AspectFitsUnequalSourcesWithinTheirOwnHalves) {
+TEST(ComparisonSurfaceGeometryTests, AspectFitsUnequalSourcesWithinTheirOwnHalves) {
     const platform::SurfaceRect bounds{
         .x = 50.0F,
         .y = 0.0F,
@@ -184,7 +185,7 @@ TEST(DualVideoSurfaceGeometryTests, AspectFitsUnequalSourcesWithinTheirOwnHalves
     EXPECT_NEAR(portrait.x, 58.125F, 0.001F);
 }
 
-TEST(DualVideoSurfaceGeometryTests, ConvertsAndClampsBottomLeftScissorToD3dViewport) {
+TEST(ComparisonSurfaceGeometryTests, ConvertsAndClampsBottomLeftScissorToD3dViewport) {
     const std::optional<platform::D3dScissorRect> converted = platform::d3dScissorFromBottomLeft(
         platform::SurfaceScissorRect{
             .left = -5,
@@ -220,7 +221,7 @@ TEST(DualVideoSurfaceGeometryTests, ConvertsAndClampsBottomLeftScissorToD3dViewp
                      .has_value());
 }
 
-TEST(DualVideoSurfaceGeometryTests, RejectsUnknownPresentationOptions) {
+TEST(ComparisonSurfaceGeometryTests, RejectsUnknownPresentationOptions) {
     platform::SurfaceRenderState state{
         .logicalWidth = 100.0F,
         .logicalHeight = 60.0F,
@@ -245,7 +246,7 @@ TEST(DualVideoSurfaceGeometryTests, RejectsUnknownPresentationOptions) {
     EXPECT_FALSE(state.isValid());
 }
 
-TEST(DualVideoSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
+TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
     const domain::ColorMetadata bt601{
         .matrix = domain::ColorMatrix::kBt601,
         .range = domain::ColorRange::kFull,
@@ -270,7 +271,7 @@ TEST(DualVideoSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatr
     EXPECT_NEAR(rgb709[2U], 0.0361F, 0.0002F);
 }
 
-TEST(DualVideoSurfaceColorTests, NormalizesLimitedRangeBlackAndWhiteForBothMatrices) {
+TEST(ComparisonSurfaceColorTests, NormalizesLimitedRangeBlackAndWhiteForBothMatrices) {
     for (const domain::ColorMatrix matrix :
          {domain::ColorMatrix::kBt601, domain::ColorMatrix::kBt709}) {
         const domain::ColorMetadata metadata{
@@ -292,51 +293,51 @@ TEST(DualVideoSurfaceColorTests, NormalizesLimitedRangeBlackAndWhiteForBothMatri
     }
 }
 
-TEST(DualVideoSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOnlyOnChange) {
-    DualVideoSurface surface;
+TEST(ComparisonSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOnlyOnChange) {
+    ComparisonSurface surface;
 
-    EXPECT_EQ(surface.viewMode(), DualVideoSurface::SideBySide);
-    EXPECT_EQ(surface.differenceMetric(), DualVideoSurface::RgbAbsolute);
-    EXPECT_EQ(surface.differenceGain(), DualVideoSurface::Gain1x);
-    EXPECT_EQ(surface.differenceReference(), DualVideoSurface::ReferenceA);
-    EXPECT_EQ(surface.differenceFilter(), DualVideoSurface::Bilinear);
+    EXPECT_EQ(surface.viewMode(), ComparisonSurface::SideBySide);
+    EXPECT_EQ(surface.differenceMetric(), ComparisonSurface::RgbAbsolute);
+    EXPECT_EQ(surface.differenceGain(), ComparisonSurface::Gain1x);
+    EXPECT_EQ(surface.differenceReference(), ComparisonSurface::ReferenceA);
+    EXPECT_EQ(surface.differenceFilter(), ComparisonSurface::Bilinear);
 
     int viewModeChanges = 0;
     int metricChanges = 0;
     int gainChanges = 0;
     int referenceChanges = 0;
     int filterChanges = 0;
-    QObject::connect(&surface, &DualVideoSurface::viewModeChanged, [&] { ++viewModeChanges; });
+    QObject::connect(&surface, &ComparisonSurface::viewModeChanged, [&] { ++viewModeChanges; });
     QObject::connect(
-        &surface, &DualVideoSurface::differenceMetricChanged, [&] { ++metricChanges; });
-    QObject::connect(&surface, &DualVideoSurface::differenceGainChanged, [&] { ++gainChanges; });
+        &surface, &ComparisonSurface::differenceMetricChanged, [&] { ++metricChanges; });
+    QObject::connect(&surface, &ComparisonSurface::differenceGainChanged, [&] { ++gainChanges; });
     QObject::connect(
-        &surface, &DualVideoSurface::differenceReferenceChanged, [&] { ++referenceChanges; });
+        &surface, &ComparisonSurface::differenceReferenceChanged, [&] { ++referenceChanges; });
     QObject::connect(
-        &surface, &DualVideoSurface::differenceFilterChanged, [&] { ++filterChanges; });
+        &surface, &ComparisonSurface::differenceFilterChanged, [&] { ++filterChanges; });
 
-    surface.setViewMode(DualVideoSurface::Difference);
-    surface.setDifferenceMetric(DualVideoSurface::Heatmap);
-    surface.setDifferenceGain(DualVideoSurface::Gain16x);
-    surface.setDifferenceReference(DualVideoSurface::ReferenceB);
-    surface.setDifferenceFilter(DualVideoSurface::Bicubic);
+    surface.setViewMode(ComparisonSurface::Difference);
+    surface.setDifferenceMetric(ComparisonSurface::Heatmap);
+    surface.setDifferenceGain(ComparisonSurface::Gain16x);
+    surface.setDifferenceReference(ComparisonSurface::ReferenceB);
+    surface.setDifferenceFilter(ComparisonSurface::Bicubic);
 
-    EXPECT_EQ(surface.viewMode(), DualVideoSurface::Difference);
-    EXPECT_EQ(surface.differenceMetric(), DualVideoSurface::Heatmap);
-    EXPECT_EQ(surface.differenceGain(), DualVideoSurface::Gain16x);
-    EXPECT_EQ(surface.differenceReference(), DualVideoSurface::ReferenceB);
-    EXPECT_EQ(surface.differenceFilter(), DualVideoSurface::Bicubic);
+    EXPECT_EQ(surface.viewMode(), ComparisonSurface::Difference);
+    EXPECT_EQ(surface.differenceMetric(), ComparisonSurface::Heatmap);
+    EXPECT_EQ(surface.differenceGain(), ComparisonSurface::Gain16x);
+    EXPECT_EQ(surface.differenceReference(), ComparisonSurface::ReferenceB);
+    EXPECT_EQ(surface.differenceFilter(), ComparisonSurface::Bicubic);
     EXPECT_EQ(viewModeChanges, 1);
     EXPECT_EQ(metricChanges, 1);
     EXPECT_EQ(gainChanges, 1);
     EXPECT_EQ(referenceChanges, 1);
     EXPECT_EQ(filterChanges, 1);
 
-    surface.setViewMode(DualVideoSurface::Difference);
-    surface.setDifferenceMetric(DualVideoSurface::Heatmap);
-    surface.setDifferenceGain(DualVideoSurface::Gain16x);
-    surface.setDifferenceReference(DualVideoSurface::ReferenceB);
-    surface.setDifferenceFilter(DualVideoSurface::Bicubic);
+    surface.setViewMode(ComparisonSurface::Difference);
+    surface.setDifferenceMetric(ComparisonSurface::Heatmap);
+    surface.setDifferenceGain(ComparisonSurface::Gain16x);
+    surface.setDifferenceReference(ComparisonSurface::ReferenceB);
+    surface.setDifferenceFilter(ComparisonSurface::Bicubic);
     EXPECT_EQ(viewModeChanges, 1);
     EXPECT_EQ(metricChanges, 1);
     EXPECT_EQ(gainChanges, 1);
@@ -427,11 +428,11 @@ makeHorizontalLumaFrame(platform::FrameResourceFactory& factory,
     return factory.createCpuNv12(layout, color, std::span{yPlane}, std::span{uvPlane});
 }
 
-[[nodiscard]] std::optional<application::FramePair>
-makeHorizontalLumaPair(platform::FrameBudget& budget,
-                       const domain::FrameId frameId,
-                       const std::span<const std::uint8_t> columnsA,
-                       const std::span<const std::uint8_t> columnsB) {
+[[nodiscard]] std::optional<application::FrameSet>
+makeHorizontalLumaSet(platform::FrameBudget& budget,
+                      const domain::FrameId frameId,
+                      const std::span<const std::uint8_t> columnsA,
+                      const std::span<const std::uint8_t> columnsB) {
     if (columnsA.size() != columnsB.size()) {
         return std::nullopt;
     }
@@ -448,25 +449,38 @@ makeHorizontalLumaPair(platform::FrameBudget& budget,
     if (!frameA.has_value() || !frameB.has_value()) {
         return std::nullopt;
     }
-    return application::FramePair::create(frameId,
-                                          domain::MediaTime{0},
-                                          *frameA,
-                                          domain::MediaTime{0},
-                                          *frameB,
-                                          domain::MediaTime{0});
+    return application::FrameSet::create(
+        frameId,
+        domain::MediaTime{0},
+        {
+            application::MappedSourceFrame{
+                .sourceId = 0U,
+                .sourceFrameId = domain::FrameId{frameId.value()},
+                .frame = *frameA,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+            application::MappedSourceFrame{
+                .sourceId = 1U,
+                .sourceFrameId = domain::FrameId{frameId.value()},
+                .frame = *frameB,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+        });
 }
 
-[[nodiscard]] std::optional<application::FramePair>
-makeSolidPairWithMetadata(platform::FrameBudget& budget,
-                          const domain::FrameId frameId,
-                          const std::uint8_t leftY,
-                          const std::uint8_t leftU,
-                          const std::uint8_t leftV,
-                          const domain::ColorMetadata& leftColor,
-                          const std::uint8_t rightY,
-                          const std::uint8_t rightU,
-                          const std::uint8_t rightV,
-                          const domain::ColorMetadata& rightColor) {
+[[nodiscard]] std::optional<application::FrameSet>
+makeSolidSetWithMetadata(platform::FrameBudget& budget,
+                         const domain::FrameId frameId,
+                         const std::uint8_t leftY,
+                         const std::uint8_t leftU,
+                         const std::uint8_t leftV,
+                         const domain::ColorMetadata& leftColor,
+                         const std::uint8_t rightY,
+                         const std::uint8_t rightU,
+                         const std::uint8_t rightV,
+                         const domain::ColorMetadata& rightColor) {
     platform::FrameResourceFactory factory{budget};
     const std::optional<application::FrameHandle> left =
         makeSolidFrame(factory, 16U, 9U, leftY, leftU, leftV, leftColor);
@@ -475,19 +489,32 @@ makeSolidPairWithMetadata(platform::FrameBudget& budget,
     if (!left.has_value() || !right.has_value()) {
         return std::nullopt;
     }
-    return application::FramePair::create(frameId,
-                                          domain::MediaTime{0},
-                                          *left,
-                                          domain::MediaTime{0},
-                                          *right,
-                                          domain::MediaTime{0});
+    return application::FrameSet::create(
+        frameId,
+        domain::MediaTime{0},
+        {
+            application::MappedSourceFrame{
+                .sourceId = 0U,
+                .sourceFrameId = domain::FrameId{frameId.value()},
+                .frame = *left,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+            application::MappedSourceFrame{
+                .sourceId = 1U,
+                .sourceFrameId = domain::FrameId{frameId.value()},
+                .frame = *right,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+        });
 }
 
-[[nodiscard]] std::optional<application::FramePair> makeSolidPair(platform::FrameBudget& budget,
-                                                                  const domain::FrameId frameId,
-                                                                  const std::uint8_t leftY,
-                                                                  const std::uint8_t rightY) {
-    return makeSolidPairWithMetadata(budget,
+[[nodiscard]] std::optional<application::FrameSet> makeSolidSet(platform::FrameBudget& budget,
+                                                                 const domain::FrameId frameId,
+                                                                 const std::uint8_t leftY,
+                                                                 const std::uint8_t rightY) {
+    return makeSolidSetWithMetadata(budget,
                                      frameId,
                                      leftY,
                                      128U,
@@ -613,19 +640,19 @@ public:
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox;
     std::shared_ptr<CountingActivitySink> activitySink;
     QQuickWindow window;
-    DualVideoSurface surface;
+    ComparisonSurface surface;
     bool attached = false;
 };
 
-[[nodiscard]] application::FramePairPresented
+[[nodiscard]] application::FrameSetPresented
 makeDummyAcknowledgement(const std::uint64_t requestId) {
-    return application::FramePairPresented{
+    return application::FrameSetPresented{
         .context = makeContext(requestId),
         .frameId = domain::FrameId{static_cast<std::int64_t>(requestId)},
     };
 }
 
-TEST(DualVideoSurfaceWarpTests, RendersUnequalAspectNv12AcrossAnOddSplitWithoutABlackSeam) {
+TEST(ComparisonSurfaceWarpTests, RendersUnequalAspectNv12AcrossAnOddSplitWithoutABlackSeam) {
     SurfaceWarpHarness harness;
     ASSERT_TRUE(harness.start());
     if (!harness.ensureOddPhysicalWidth()) {
@@ -635,8 +662,8 @@ TEST(DualVideoSurfaceWarpTests, RendersUnequalAspectNv12AcrossAnOddSplitWithoutA
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
     const application::FrameRequestContext context = makeContext();
-    std::optional<application::FramePair> pair =
-        makeSolidPair(*budget, domain::FrameId{7}, 235U, 128U);
+    std::optional<application::FrameSet> pair =
+        makeSolidSet(*budget, domain::FrameId{7}, 235U, 128U);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(context, std::move(*pair)), platform::GpuTransferSubmitResult::Accepted);
     ASSERT_TRUE(actor.waitUntilIdle(5s));
@@ -659,7 +686,7 @@ TEST(DualVideoSurfaceWarpTests, RendersUnequalAspectNv12AcrossAnOddSplitWithoutA
     EXPECT_GT(right.blue(), 115);
     EXPECT_LT(right.blue(), 140);
 
-    const std::optional<application::FramePairPresented> acknowledgement =
+    const std::optional<application::FrameSetPresented> acknowledgement =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(acknowledgement.has_value());
     EXPECT_EQ(acknowledgement->frameId, domain::FrameId{7});
@@ -686,7 +713,7 @@ TEST(DualVideoSurfaceWarpTests, RendersUnequalAspectNv12AcrossAnOddSplitWithoutA
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, CoversTheEntireBackgroundWithBlack) {
+TEST(ComparisonSurfaceWarpTests, CoversTheEntireBackgroundWithBlack) {
     SurfaceWarpHarness harness;
     ASSERT_TRUE(harness.start());
 
@@ -705,7 +732,7 @@ TEST(DualVideoSurfaceWarpTests, CoversTheEntireBackgroundWithBlack) {
     harness.releaseRenderer();
 }
 
-TEST(DualVideoSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelShader) {
+TEST(ComparisonSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelShader) {
     SurfaceWarpHarness harness;
     ASSERT_TRUE(harness.start());
 
@@ -739,7 +766,7 @@ TEST(DualVideoSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelS
                                 const domain::FrameId frameId,
                                 const domain::ColorMetadata& leftMetadata,
                                 const domain::ColorMetadata& rightMetadata) {
-        std::optional<application::FramePair> pair = makeSolidPairWithMetadata(
+        std::optional<application::FrameSet> pair = makeSolidSetWithMetadata(
             *budget, frameId, y, u, v, leftMetadata, y, u, v, rightMetadata);
         ASSERT_TRUE(pair.has_value());
         ASSERT_EQ(actor.submit(makeContext(requestId), std::move(*pair)),
@@ -752,7 +779,7 @@ TEST(DualVideoSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelS
                         expectedNv12Color(leftMetadata, y, u, v));
         expectColorNear(image.pixelColor(image.width() * 3 / 4, image.height() / 2),
                         expectedNv12Color(rightMetadata, y, u, v));
-        const std::optional<application::FramePairPresented> acknowledgement =
+        const std::optional<application::FrameSetPresented> acknowledgement =
             harness.acknowledgementMailbox->tryPop();
         ASSERT_TRUE(acknowledgement.has_value());
         EXPECT_EQ(acknowledgement->frameId, frameId);
@@ -764,10 +791,10 @@ TEST(DualVideoSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelS
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests,
+TEST(ComparisonSurfaceWarpTests,
      RendersEveryDifferenceMetricGainAndFilterWithoutDuplicateAcknowledgement) {
     SurfaceWarpHarness harness;
-    harness.surface.setViewMode(DualVideoSurface::Difference);
+    harness.surface.setViewMode(ComparisonSurface::Difference);
     ASSERT_TRUE(harness.start());
 
     constexpr std::array<std::uint8_t, 3U> sampleA{128U, 64U, 192U};
@@ -785,7 +812,7 @@ TEST(DualVideoSurfaceWarpTests,
 
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> pair = makeSolidPairWithMetadata(*budget,
+    std::optional<application::FrameSet> pair = makeSolidSetWithMetadata(*budget,
                                                                            domain::FrameId{30},
                                                                            sampleA[0U],
                                                                            sampleA[1U],
@@ -808,30 +835,30 @@ TEST(DualVideoSurfaceWarpTests,
                                             sampleA,
                                             metadataB,
                                             sampleB,
-                                            DualVideoSurface::RgbAbsolute,
-                                            DualVideoSurface::Gain1x),
+                                            ComparisonSurface::RgbAbsolute,
+                                            ComparisonSurface::Gain1x),
                     4);
-    const std::optional<application::FramePairPresented> acknowledgement =
+    const std::optional<application::FrameSetPresented> acknowledgement =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(acknowledgement.has_value());
     EXPECT_EQ(acknowledgement->frameId, domain::FrameId{30});
 
     constexpr std::array metrics{
-        DualVideoSurface::RgbAbsolute,
-        DualVideoSurface::Luma,
-        DualVideoSurface::Chroma,
-        DualVideoSurface::Heatmap,
+        ComparisonSurface::RgbAbsolute,
+        ComparisonSurface::Luma,
+        ComparisonSurface::Chroma,
+        ComparisonSurface::Heatmap,
     };
     constexpr std::array gains{
-        DualVideoSurface::Gain1x,
-        DualVideoSurface::Gain2x,
-        DualVideoSurface::Gain4x,
-        DualVideoSurface::Gain8x,
-        DualVideoSurface::Gain16x,
+        ComparisonSurface::Gain1x,
+        ComparisonSurface::Gain2x,
+        ComparisonSurface::Gain4x,
+        ComparisonSurface::Gain8x,
+        ComparisonSurface::Gain16x,
     };
-    for (const DualVideoSurface::DifferenceMetric metric : metrics) {
+    for (const ComparisonSurface::DifferenceMetric metric : metrics) {
         harness.surface.setDifferenceMetric(metric);
-        for (const DualVideoSurface::DifferenceGain gain : gains) {
+        for (const ComparisonSurface::DifferenceGain gain : gains) {
             harness.surface.setDifferenceGain(gain);
             const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
             ASSERT_FALSE(image.isNull());
@@ -842,14 +869,14 @@ TEST(DualVideoSurfaceWarpTests,
         }
     }
 
-    harness.surface.setDifferenceMetric(DualVideoSurface::RgbAbsolute);
-    harness.surface.setDifferenceGain(DualVideoSurface::Gain1x);
+    harness.surface.setDifferenceMetric(ComparisonSurface::RgbAbsolute);
+    harness.surface.setDifferenceGain(ComparisonSurface::Gain1x);
     constexpr std::array filters{
-        DualVideoSurface::Nearest,
-        DualVideoSurface::Bilinear,
-        DualVideoSurface::Bicubic,
+        ComparisonSurface::Nearest,
+        ComparisonSurface::Bilinear,
+        ComparisonSurface::Bicubic,
     };
-    for (const DualVideoSurface::DifferenceFilter filter : filters) {
+    for (const ComparisonSurface::DifferenceFilter filter : filters) {
         harness.surface.setDifferenceFilter(filter);
         const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
         ASSERT_FALSE(image.isNull());
@@ -858,8 +885,8 @@ TEST(DualVideoSurfaceWarpTests,
                                                 sampleA,
                                                 metadataB,
                                                 sampleB,
-                                                DualVideoSurface::RgbAbsolute,
-                                                DualVideoSurface::Gain1x),
+                                                ComparisonSurface::RgbAbsolute,
+                                                ComparisonSurface::Gain1x),
                         5);
     }
 
@@ -867,8 +894,8 @@ TEST(DualVideoSurfaceWarpTests,
                                                             sampleA,
                                                             metadataB,
                                                             sampleB,
-                                                            DualVideoSurface::RgbAbsolute,
-                                                            DualVideoSurface::Gain1x);
+                                                            ComparisonSurface::RgbAbsolute,
+                                                            ComparisonSurface::Gain1x);
     harness.surface.setOpacity(0.5);
     const QImage translucent = harness.grab().convertToFormat(QImage::Format_RGBA8888);
     ASSERT_FALSE(translucent.isNull());
@@ -885,16 +912,16 @@ TEST(DualVideoSurfaceWarpTests,
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents) {
+TEST(ComparisonSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents) {
     SurfaceWarpHarness harness;
-    harness.surface.setViewMode(DualVideoSurface::Difference);
-    harness.surface.setDifferenceGain(DualVideoSurface::Gain4x);
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceGain(ComparisonSurface::Gain4x);
     ASSERT_TRUE(harness.start());
 
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> pair =
-        makeSolidPair(*budget, domain::FrameId{31}, 235U, 64U);
+    std::optional<application::FrameSet> pair =
+        makeSolidSet(*budget, domain::FrameId{31}, 235U, 64U);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(31U), std::move(*pair)),
               platform::GpuTransferSubmitResult::Accepted);
@@ -908,7 +935,7 @@ TEST(DualVideoSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents)
     EXPECT_GT(leftA.red() + leftA.green() + leftA.blue(), 20);
     ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
-    harness.surface.setDifferenceReference(DualVideoSurface::ReferenceB);
+    harness.surface.setDifferenceReference(ComparisonSurface::ReferenceB);
     const QImage referenceB = harness.grab().convertToFormat(QImage::Format_RGBA8888);
     ASSERT_FALSE(referenceB.isNull());
     const QColor topB = referenceB.pixelColor(referenceB.width() / 2, 1);
@@ -923,10 +950,10 @@ TEST(DualVideoSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents)
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, RendersIdenticalFramesBlackForEveryDifferenceMetric) {
+TEST(ComparisonSurfaceWarpTests, RendersIdenticalFramesBlackForEveryDifferenceMetric) {
     SurfaceWarpHarness harness;
-    harness.surface.setViewMode(DualVideoSurface::Difference);
-    harness.surface.setDifferenceGain(DualVideoSurface::Gain16x);
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceGain(ComparisonSurface::Gain16x);
     ASSERT_TRUE(harness.start());
 
     const domain::ColorMetadata metadata{
@@ -936,7 +963,7 @@ TEST(DualVideoSurfaceWarpTests, RendersIdenticalFramesBlackForEveryDifferenceMet
     };
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> pair = makeSolidPairWithMetadata(
+    std::optional<application::FrameSet> pair = makeSolidSetWithMetadata(
         *budget, domain::FrameId{32}, 128U, 91U, 173U, metadata, 128U, 91U, 173U, metadata);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(32U), std::move(*pair)),
@@ -944,19 +971,19 @@ TEST(DualVideoSurfaceWarpTests, RendersIdenticalFramesBlackForEveryDifferenceMet
     ASSERT_TRUE(actor.waitUntilIdle(5s));
 
     constexpr std::array metrics{
-        DualVideoSurface::RgbAbsolute,
-        DualVideoSurface::Luma,
-        DualVideoSurface::Chroma,
-        DualVideoSurface::Heatmap,
+        ComparisonSurface::RgbAbsolute,
+        ComparisonSurface::Luma,
+        ComparisonSurface::Chroma,
+        ComparisonSurface::Heatmap,
     };
-    for (const DualVideoSurface::DifferenceMetric metric : metrics) {
+    for (const ComparisonSurface::DifferenceMetric metric : metrics) {
         harness.surface.setDifferenceMetric(metric);
         const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
         ASSERT_FALSE(image.isNull());
         expectColorNear(
             image.pixelColor(image.width() / 2, image.height() / 2), QColor{0, 0, 0}, 2);
     }
-    const std::optional<application::FramePairPresented> acknowledgement =
+    const std::optional<application::FrameSetPresented> acknowledgement =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(acknowledgement.has_value());
     EXPECT_EQ(acknowledgement->frameId, domain::FrameId{32});
@@ -968,27 +995,27 @@ TEST(DualVideoSurfaceWarpTests, RendersIdenticalFramesBlackForEveryDifferenceMet
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, AppliesDistinctDeterministicSpatialFilters) {
+TEST(ComparisonSurfaceWarpTests, AppliesDistinctDeterministicSpatialFilters) {
     SurfaceWarpHarness harness;
-    harness.surface.setViewMode(DualVideoSurface::Difference);
+    harness.surface.setViewMode(ComparisonSurface::Difference);
     ASSERT_TRUE(harness.start());
 
     constexpr std::array<std::uint8_t, 8U> patternA{0U, 255U, 0U, 255U, 0U, 255U, 0U, 255U};
     constexpr std::array<std::uint8_t, 8U> patternB{};
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> pair = makeHorizontalLumaPair(
+    std::optional<application::FrameSet> pair = makeHorizontalLumaSet(
         *budget, domain::FrameId{33}, std::span{patternA}, std::span{patternB});
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(33U), std::move(*pair)),
               platform::GpuTransferSubmitResult::Accepted);
     ASSERT_TRUE(actor.waitUntilIdle(5s));
 
-    harness.surface.setDifferenceFilter(DualVideoSurface::Nearest);
+    harness.surface.setDifferenceFilter(ComparisonSurface::Nearest);
     const QImage nearest = harness.grab().convertToFormat(QImage::Format_RGBA8888);
-    harness.surface.setDifferenceFilter(DualVideoSurface::Bilinear);
+    harness.surface.setDifferenceFilter(ComparisonSurface::Bilinear);
     const QImage bilinear = harness.grab().convertToFormat(QImage::Format_RGBA8888);
-    harness.surface.setDifferenceFilter(DualVideoSurface::Bicubic);
+    harness.surface.setDifferenceFilter(ComparisonSurface::Bicubic);
     const QImage bicubic = harness.grab().convertToFormat(QImage::Format_RGBA8888);
     const QImage bicubicAgain = harness.grab().convertToFormat(QImage::Format_RGBA8888);
     ASSERT_FALSE(nearest.isNull());
@@ -999,7 +1026,7 @@ TEST(DualVideoSurfaceWarpTests, AppliesDistinctDeterministicSpatialFilters) {
     EXPECT_GT(maximumRgbDifference(bilinear, bicubic), 2);
     EXPECT_LE(maximumRgbDifference(bicubic, bicubicAgain), 1);
 
-    const std::optional<application::FramePairPresented> acknowledgement =
+    const std::optional<application::FrameSetPresented> acknowledgement =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(acknowledgement.has_value());
     EXPECT_EQ(acknowledgement->frameId, domain::FrameId{33});
@@ -1011,20 +1038,20 @@ TEST(DualVideoSurfaceWarpTests, AppliesDistinctDeterministicSpatialFilters) {
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, HonorsAncestorScissorInDifferenceMode) {
+TEST(ComparisonSurfaceWarpTests, HonorsAncestorScissorInDifferenceMode) {
     SurfaceWarpHarness harness;
     QQuickItem clipper{harness.window.contentItem()};
     clipper.setSize(QSizeF{51.0, 64.0});
     clipper.setClip(true);
     harness.surface.setParentItem(&clipper);
-    harness.surface.setViewMode(DualVideoSurface::Difference);
-    harness.surface.setDifferenceGain(DualVideoSurface::Gain4x);
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceGain(ComparisonSurface::Gain4x);
     ASSERT_TRUE(harness.start());
 
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> pair =
-        makeSolidPair(*budget, domain::FrameId{34}, 235U, 64U);
+    std::optional<application::FrameSet> pair =
+        makeSolidSet(*budget, domain::FrameId{34}, 235U, 64U);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(34U), std::move(*pair)),
               platform::GpuTransferSubmitResult::Accepted);
@@ -1043,7 +1070,7 @@ TEST(DualVideoSurfaceWarpTests, HonorsAncestorScissorInDifferenceMode) {
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(DualVideoSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAFullQueueOnce) {
+TEST(ComparisonSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAFullQueueOnce) {
     SurfaceWarpHarness harness;
     ASSERT_TRUE(harness.start());
 
@@ -1054,8 +1081,8 @@ TEST(DualVideoSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAF
 
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
-    std::optional<application::FramePair> first =
-        makeSolidPair(*budget, domain::FrameId{10}, 64U, 64U);
+    std::optional<application::FrameSet> first =
+        makeSolidSet(*budget, domain::FrameId{10}, 64U, 64U);
     ASSERT_TRUE(first.has_value());
     ASSERT_EQ(actor.submit(makeContext(10U), std::move(*first)),
               platform::GpuTransferSubmitResult::Accepted);
@@ -1067,14 +1094,14 @@ TEST(DualVideoSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAF
     EXPECT_EQ(harness.activitySink->acknowledgementNotifications.load(std::memory_order_relaxed),
               0U);
 
-    std::optional<application::FramePair> second =
-        makeSolidPair(*budget, domain::FrameId{11}, 128U, 128U);
+    std::optional<application::FrameSet> second =
+        makeSolidSet(*budget, domain::FrameId{11}, 128U, 128U);
     ASSERT_TRUE(second.has_value());
     ASSERT_EQ(actor.submit(makeContext(11U), std::move(*second)),
               platform::GpuTransferSubmitResult::Accepted);
     ASSERT_TRUE(actor.waitUntilIdle(5s));
-    std::optional<application::FramePair> third =
-        makeSolidPair(*budget, domain::FrameId{12}, 192U, 192U);
+    std::optional<application::FrameSet> third =
+        makeSolidSet(*budget, domain::FrameId{12}, 192U, 192U);
     ASSERT_TRUE(third.has_value());
     ASSERT_EQ(actor.submit(makeContext(12U), std::move(*third)),
               platform::GpuTransferSubmitResult::Accepted);
@@ -1086,7 +1113,7 @@ TEST(DualVideoSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAF
               90);
     EXPECT_EQ(harness.activitySink->acknowledgementNotifications.load(std::memory_order_relaxed),
               0U);
-    const std::optional<application::FramePairPresented> dummyA =
+    const std::optional<application::FrameSetPresented> dummyA =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(dummyA.has_value());
     EXPECT_EQ(dummyA->frameId, domain::FrameId{91});
@@ -1096,17 +1123,17 @@ TEST(DualVideoSurfaceWarpTests, AcknowledgesOnlyTheLatestReplacementAndRetriesAF
     EXPECT_GT(latest.pixelColor(latest.width() / 4, latest.height() / 2).red(), 180);
     EXPECT_EQ(harness.activitySink->acknowledgementNotifications.load(std::memory_order_relaxed),
               1U);
-    const std::optional<application::FramePairPresented> dummyB =
+    const std::optional<application::FrameSetPresented> dummyB =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(dummyB.has_value());
     EXPECT_EQ(dummyB->frameId, domain::FrameId{92});
-    const std::optional<application::FramePairPresented> presented =
+    const std::optional<application::FrameSetPresented> presented =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(presented.has_value());
     EXPECT_EQ(presented->frameId, domain::FrameId{10});
 
     ASSERT_FALSE(harness.grab().isNull());
-    const std::optional<application::FramePairPresented> latestPresented =
+    const std::optional<application::FrameSetPresented> latestPresented =
         harness.acknowledgementMailbox->tryPop();
     ASSERT_TRUE(latestPresented.has_value());
     EXPECT_EQ(latestPresented->frameId, domain::FrameId{12});

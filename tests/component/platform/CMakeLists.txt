@@ -38,7 +38,7 @@ add_executable(
     dvs_graphics_device_broker_component_tests
     GpuTransferActorTests.cpp
     GraphicsDeviceBrokerTests.cpp
-    ../ui/DualVideoSurfaceTests.cpp
+    ../ui/ComparisonSurfaceTests.cpp
     ../ui/RenderAckRelayTests.cpp
 )
 target_link_libraries(

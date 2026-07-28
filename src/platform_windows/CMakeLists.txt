@@ -6,12 +6,12 @@ add_library(
         src/FrameBudget.cpp
         src/CpuNv12FrameResource.cpp
         src/D3d11GpuFrameBacking.cpp
-        src/D3d11DualVideoRenderer.cpp
+        src/D3d11ComparisonRenderer.cpp
         src/D3d11RenderChannel.cpp
         src/FrameResourceFactory.cpp
         src/FrameMailbox.cpp
         src/GraphicsDeviceBroker.cpp
-        src/GpuFramePair.cpp
+        src/GpuFrameSet.cpp
         src/GpuFrameResource.cpp
         src/GpuTransferActor.cpp
         src/PresentationAckMailbox.cpp

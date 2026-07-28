@@ -68,26 +68,18 @@ enum class MediaOperation {
     kFramePresentation,
 };
 
-enum class SourceRole {
-    kNone,
-    kA,
-    kB,
-    kPair,
-    kProject,
-};
-
 [[nodiscard]] std::string_view stableId(SessionState state) noexcept;
 [[nodiscard]] std::string_view stableId(PlaybackState state) noexcept;
 [[nodiscard]] std::string_view stableId(MediaErrorCode code) noexcept;
 [[nodiscard]] std::string_view stableId(MediaOperation operation) noexcept;
-[[nodiscard]] std::string_view stableId(SourceRole sourceRole) noexcept;
 
 // The UI maps userMessageKey to localized presentation text. technicalDetail stays diagnostic and
-// must never be used as a user-visible label.
+// must never be used as a user-visible label. When the error belongs to one loaded source, its
+// session source id is carried; session-wide errors leave it empty.
 struct MediaError final {
     MediaErrorCode code = MediaErrorCode::kInvalidArgument;
     MediaOperation operation = MediaOperation::kProjectMutation;
-    SourceRole sourceRole = SourceRole::kNone;
+    std::optional<SourceId> source;
     std::optional<RequestId> requestId;
     bool recoverable = false;
     std::string userMessageKey;
@@ -96,7 +88,7 @@ struct MediaError final {
 
 [[nodiscard]] MediaError makeMediaError(MediaErrorCode code,
                                         MediaOperation operation,
-                                        SourceRole sourceRole,
+                                        std::optional<SourceId> source,
                                         bool recoverable,
                                         std::string technicalDetail = {},
                                         std::optional<RequestId> requestId = std::nullopt);

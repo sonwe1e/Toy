@@ -129,7 +129,7 @@ private:
 
 TEST(MediaProbeTests, VerifiesCfrH264WithNormalizedMetadata) {
     const auto result =
-        MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), domain::SourceRole::kA);
+        MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -151,7 +151,7 @@ TEST(MediaProbeTests, VerifiesCfrH264WithNormalizedMetadata) {
 
 TEST(MediaProbeTests, VerifiesCfrWhenContainerRateDeclarationsDisagree) {
     const auto result = MediaProbe::inspect(fixture("h264_disputed_metadata_320x180_30fps_12.mp4"),
-                                            domain::SourceRole::kA);
+                                            0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -164,7 +164,7 @@ TEST(MediaProbeTests, VerifiesCfrWhenContainerRateDeclarationsDisagree) {
 
 TEST(MediaProbeTests, AcceptsH265AndKeepsDifferentSourceGeometry) {
     const auto result =
-        MediaProbe::inspect(fixture("h265_b_160x90_30fps_12.mp4"), domain::SourceRole::kB);
+        MediaProbe::inspect(fixture("h265_b_160x90_30fps_12.mp4"), 1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -178,7 +178,7 @@ TEST(MediaProbeTests, AcceptsH265AndKeepsDifferentSourceGeometry) {
 
 TEST(MediaProbeTests, AcceptsMpeg4Part2WhenFfmpegProvidesTheDecoder) {
     const auto result =
-        MediaProbe::inspect(fixture("mpeg4_64x48_30fps_12.mp4"), domain::SourceRole::kA);
+        MediaProbe::inspect(fixture("mpeg4_64x48_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -192,7 +192,7 @@ TEST(MediaProbeTests, AcceptsMpeg4Part2WhenFfmpegProvidesTheDecoder) {
 
 TEST(MediaProbeTests, CountsAnUnreportedFrameTotalFromThePresentationTimestampIndex) {
     const auto result =
-        MediaProbe::inspect(fixture("h264_no_count_64x48_30fps_12.mkv"), domain::SourceRole::kB);
+        MediaProbe::inspect(fixture("h264_no_count_64x48_30fps_12.mkv"), 1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -204,7 +204,7 @@ TEST(MediaProbeTests, CountsAnUnreportedFrameTotalFromThePresentationTimestampIn
 
 TEST(MediaProbeTests, VerifiesCfrForNonzeroStartFromNormalizedIndex) {
     const auto result = MediaProbe::inspect(fixture("h264_nonzero_start_64x48_30fps_12.mp4"),
-                                            domain::SourceRole::kB);
+                                            1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -217,7 +217,7 @@ TEST(MediaProbeTests, VerifiesCfrForNonzeroStartFromNormalizedIndex) {
 
 TEST(MediaProbeTests, ClassifiesVariableFrameRateWhenNoCandidateMatches) {
     const auto result =
-        MediaProbe::inspect(fixture("h264_vfr_320x180_12.mp4"), domain::SourceRole::kA);
+        MediaProbe::inspect(fixture("h264_vfr_320x180_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -230,7 +230,7 @@ TEST(MediaProbeTests, ClassifiesVariableFrameRateWhenNoCandidateMatches) {
 
 TEST(MediaProbeTests, ClassifiesMiddlePtsGapAsValidVfrAndPreservesFrameCount) {
     const auto result = MediaProbe::inspect(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"),
-                                            domain::SourceRole::kA);
+                                            0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -243,7 +243,7 @@ TEST(MediaProbeTests, ClassifiesMiddlePtsGapAsValidVfrAndPreservesFrameCount) {
 
 TEST(MediaProbeTests, ClassifiesEndPtsGapAsValidVfrAndPreservesFrameCount) {
     const auto result =
-        MediaProbe::inspect(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), domain::SourceRole::kA);
+        MediaProbe::inspect(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -256,13 +256,13 @@ TEST(MediaProbeTests, ClassifiesEndPtsGapAsValidVfrAndPreservesFrameCount) {
 
 TEST(MediaProbeTests, RejectsUnsupportedTenBitPixelFormats) {
     const auto tenBit =
-        MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), domain::SourceRole::kB);
+        MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U);
     ASSERT_FALSE(tenBit);
     EXPECT_EQ(tenBit.error().code, domain::MediaErrorCode::kUnsupportedPixelFormat);
 }
 
 TEST(MediaProbeTests, RejectsCorruptMediaBeforeItCanProduceADescriptor) {
-    const auto result = MediaProbe::inspect(fixture("corrupt_h264.mp4"), domain::SourceRole::kA);
+    const auto result = MediaProbe::inspect(fixture("corrupt_h264.mp4"), 0U);
 
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().code, domain::MediaErrorCode::kMediaOpenFailed);
@@ -273,7 +273,7 @@ TEST(MediaProbeTests, PostsPayloadThenOneSuccessfulTerminalThroughWeakEventSink)
     auto events = std::make_shared<RecordingEventSink>();
     const application::MediaProbeRequest request{
         .context = makeContext(98),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
         .sourcePath = fixture("h264_a_320x180_30fps_12.mp4"),
     };
 
@@ -287,7 +287,7 @@ TEST(MediaProbeTests, PostsPayloadThenOneSuccessfulTerminalThroughWeakEventSink)
 
     const auto& completion = std::get<application::ProbeCompleted>(recorded[0]);
     EXPECT_EQ(completion.context, request.context);
-    EXPECT_EQ(completion.sourceRole, domain::SourceRole::kA);
+    EXPECT_EQ(completion.sourceId, 0U);
     EXPECT_TRUE(completion.descriptor.isValid());
     EXPECT_EQ(completion.descriptor.frameCount.value, 12);
 }
@@ -297,7 +297,7 @@ TEST(MediaProbeTests, DropsCompletionSafelyAfterEventSinkExpires) {
     auto events = std::make_shared<RecordingEventSink>();
     const application::MediaProbeRequest request{
         .context = makeContext(99),
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
         .sourcePath = fixture("h264_b_160x90_30fps_12.mp4"),
     };
 
@@ -316,12 +316,12 @@ TEST(MediaProbeTests, AdmitsTwoWorkersAndPostsOneTerminalForEachRequest) {
     auto events = std::make_shared<RecordingEventSink>();
     const application::MediaProbeRequest canceledRequest{
         .context = makeContext(100),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
         .sourcePath = fixture("h264_a_320x180_30fps_12.mp4"),
     };
     const application::MediaProbeRequest completedRequest{
         .context = makeContext(101),
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
         .sourcePath = fixture("h264_b_160x90_30fps_12.mp4"),
     };
 

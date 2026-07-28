@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dvs/application/FramePair.h"
+#include "dvs/application/FrameSet.h"
 #include "dvs/application/RequestContext.h"
 
 #include <chrono>
@@ -19,16 +19,16 @@ class IRenderActivitySink;
 enum class GpuTransferSubmitResult {
     Accepted,
     Replaced,
-    InvalidPair,
+    InvalidSet,
     StaleContext,
     DeviceUnavailable,
     Closed,
 };
 
 struct GpuTransferStatistics final {
-    std::uint64_t submittedPairs = 0U;
-    std::uint64_t replacedPairs = 0U;
-    std::uint64_t publishedPairs = 0U;
+    std::uint64_t submittedSets = 0U;
+    std::uint64_t replacedSets = 0U;
+    std::uint64_t publishedSets = 0U;
     std::uint64_t retiredResources = 0U;
     std::uint64_t deviceLossReports = 0U;
     std::thread::id workerThread;
@@ -51,7 +51,7 @@ public:
     GpuTransferActor& operator=(GpuTransferActor&&) = delete;
 
     [[nodiscard]] GpuTransferSubmitResult submit(const application::FrameRequestContext& context,
-                                                 application::FramePair pair) noexcept;
+                                                 application::FrameSet set) noexcept;
 
     // Linearized with final mailbox publication. The mailbox tombstone is installed before return,
     // so an already-running upload cannot republish the cleared playback scope.

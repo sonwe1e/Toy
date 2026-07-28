@@ -2,7 +2,7 @@ add_library(
     dvs_media_ffmpeg
     STATIC
         src/Module.cpp
-        src/DirectFrameProvider.cpp
+        src/MultiSourceFrameProvider.cpp
         src/FrameTimelineIndex.cpp
         src/MediaProbe.cpp
         src/SoftwareDecoder.cpp

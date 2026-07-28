@@ -7,17 +7,17 @@ namespace {
 
 [[nodiscard]] Status projectFailure(const MediaErrorCode code,
                                     const MediaOperation operation,
-                                    const SourceRole sourceRole,
+                                    const std::optional<SourceId> source,
                                     std::string technicalDetail) {
     return Status::failure(
-        makeMediaError(code, operation, sourceRole, false, std::move(technicalDetail)));
+        makeMediaError(code, operation, source, false, std::move(technicalDetail)));
 }
 
 } // namespace
 
 Project::Project(ProjectId id,
                  std::string displayName,
-                 ValidatedSourcePair sources,
+                 ValidatedComparisonSet sources,
                  std::optional<FrameId> inMark,
                  std::optional<FrameId> outMark,
                  const FrameId lastDisplayedFrame,
@@ -27,18 +27,18 @@ Project::Project(ProjectId id,
       workspaceState_(std::move(workspaceState)) {}
 
 Result<Project>
-Project::create(ProjectId id, std::string displayName, ValidatedSourcePair sources) {
+Project::create(ProjectId id, std::string displayName, ValidatedComparisonSet sources) {
     if (!id.isValid()) {
         return Result<Project>::failure(makeMediaError(MediaErrorCode::kInvalidArgument,
                                                        MediaOperation::kProjectMutation,
-                                                       SourceRole::kProject,
+                                                       std::nullopt,
                                                        false,
                                                        "Project ID must be non-empty."));
     }
     if (displayName.empty()) {
         return Result<Project>::failure(makeMediaError(MediaErrorCode::kInvalidArgument,
                                                        MediaOperation::kProjectMutation,
-                                                       SourceRole::kProject,
+                                                       std::nullopt,
                                                        false,
                                                        "Project display name must be non-empty."));
     }
@@ -58,7 +58,7 @@ Result<Project> Project::restorePersisted(ProjectState persisted) {
     return rebuild(std::move(persisted));
 }
 
-Result<Project> Project::replaceSources(ValidatedSourcePair sources) const {
+Result<Project> Project::replaceSources(ValidatedComparisonSet sources) const {
     return rebuild(ProjectState{
         .id = id_,
         .displayName = displayName_,
@@ -107,7 +107,7 @@ const std::string& Project::displayName() const noexcept {
     return displayName_;
 }
 
-const ValidatedSourcePair& Project::sources() const noexcept {
+const ValidatedComparisonSet& Project::sources() const noexcept {
     return sources_;
 }
 
@@ -167,7 +167,7 @@ Status Project::validateFrame(const FrameId frameId, const MediaOperation operat
     if (!frameId.isValid() || frameId.value() >= sources_.canonicalFrameCount()) {
         return projectFailure(MediaErrorCode::kFrameOutOfRange,
                               operation,
-                              SourceRole::kProject,
+                              std::nullopt,
                               "Frame ID lies outside the canonical source timeline.");
     }
     return Status::success();

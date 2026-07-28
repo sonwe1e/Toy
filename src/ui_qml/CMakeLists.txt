@@ -1,12 +1,12 @@
 add_library(
     dvs_ui_qml
     STATIC
-        include/dvs/ui/DualVideoSurface.h
+        include/dvs/ui/ComparisonSurface.h
         include/dvs/ui/ReviewController.h
         include/dvs/ui/ReviewPreferencesController.h
         src/DesktopApplication.cpp
         src/DirectCompare.cpp
-        src/DualVideoSurface.cpp
+        src/ComparisonSurface.cpp
         src/GraphicsBackend.cpp
         src/Module.cpp
         src/RenderAckRelay.cpp

@@ -91,7 +91,7 @@ constexpr std::size_t kMaximumSources = 3U;
 [[nodiscard]] MediaError setFailure(const MediaErrorCode code, std::string technicalDetail) {
     return makeMediaError(code,
                           MediaOperation::kSourcePairValidation,
-                          SourceRole::kNone,
+                          std::nullopt,
                           false,
                           std::move(technicalDetail));
 }
@@ -171,7 +171,7 @@ Result<ComparisonValidation> ComparisonValidator::validate(std::vector<Compariso
             return Result<ComparisonValidation>::failure(
                 makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                                MediaOperation::kSourcePairValidation,
-                               SourceRole::kNone,
+                               SourceId{source.id},
                                false,
                                "Source " + std::to_string(source.id) + " descriptor is invalid."));
         }

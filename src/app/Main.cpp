@@ -72,7 +72,7 @@ runDesktop(int& argc,
     if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
         !desktop.load(*runtime->controller(),
                       *runtime->preferences(),
-                      [&runtime](dvs::ui::DualVideoSurface& surface) {
+                      [&runtime](dvs::ui::ComparisonSurface& surface) {
                           return runtime->attachSurface(surface);
                       })) {
         std::cerr << "DVS_UI_LOAD_FAILED\n";

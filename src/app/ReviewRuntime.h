@@ -3,7 +3,7 @@
 #include <memory>
 
 namespace dvs::ui {
-class DualVideoSurface;
+class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
 } // namespace dvs::ui
@@ -25,7 +25,7 @@ public:
 
     [[nodiscard]] ui::ReviewController* controller() noexcept;
     [[nodiscard]] ui::ReviewPreferencesController* preferences() noexcept;
-    [[nodiscard]] bool attachSurface(ui::DualVideoSurface& surface) noexcept;
+    [[nodiscard]] bool attachSurface(ui::ComparisonSurface& surface) noexcept;
 
     // GUI-thread phase. Stops UI ingress and detaches non-owning QML/render references without
     // waiting on media, render, or acknowledgement workers.

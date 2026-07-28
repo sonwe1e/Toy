@@ -1,6 +1,6 @@
-#include "dvs/ui/DualVideoSurface.h"
+#include "dvs/ui/ComparisonSurface.h"
 
-#include "dvs/platform/D3d11DualVideoRenderer.h"
+#include "dvs/platform/D3d11ComparisonRenderer.h"
 #include "dvs/platform/FrameMailbox.h"
 #include "dvs/platform/GraphicsDeviceBroker.h"
 #include "dvs/platform/PresentationAckMailbox.h"
@@ -21,7 +21,7 @@
 
 namespace dvs::ui {
 
-class DualVideoSurface::Services final {
+class ComparisonSurface::Services final {
 public:
     Services(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue,
              std::shared_ptr<platform::FrameMailbox> frameMailboxValue,
@@ -51,63 +51,63 @@ struct PresentationOptions final {
 };
 
 [[nodiscard]] platform::SurfaceViewMode
-nativeViewMode(const DualVideoSurface::ViewMode value) noexcept {
-    return value == DualVideoSurface::Difference ? platform::SurfaceViewMode::Difference
-                                                 : platform::SurfaceViewMode::SideBySide;
+nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
+    return value == ComparisonSurface::Difference ? platform::SurfaceViewMode::Difference
+                                                  : platform::SurfaceViewMode::SideBySide;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceMetric
-nativeDifferenceMetric(const DualVideoSurface::DifferenceMetric value) noexcept {
+nativeDifferenceMetric(const ComparisonSurface::DifferenceMetric value) noexcept {
     switch (value) {
-    case DualVideoSurface::RgbAbsolute:
+    case ComparisonSurface::RgbAbsolute:
         return platform::SurfaceDifferenceMetric::RgbAbsolute;
-    case DualVideoSurface::Luma:
+    case ComparisonSurface::Luma:
         return platform::SurfaceDifferenceMetric::Luma;
-    case DualVideoSurface::Chroma:
+    case ComparisonSurface::Chroma:
         return platform::SurfaceDifferenceMetric::Chroma;
-    case DualVideoSurface::Heatmap:
+    case ComparisonSurface::Heatmap:
         return platform::SurfaceDifferenceMetric::Heatmap;
     }
     return platform::SurfaceDifferenceMetric::RgbAbsolute;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceGain
-nativeDifferenceGain(const DualVideoSurface::DifferenceGain value) noexcept {
+nativeDifferenceGain(const ComparisonSurface::DifferenceGain value) noexcept {
     switch (value) {
-    case DualVideoSurface::Gain1x:
+    case ComparisonSurface::Gain1x:
         return platform::SurfaceDifferenceGain::Gain1x;
-    case DualVideoSurface::Gain2x:
+    case ComparisonSurface::Gain2x:
         return platform::SurfaceDifferenceGain::Gain2x;
-    case DualVideoSurface::Gain4x:
+    case ComparisonSurface::Gain4x:
         return platform::SurfaceDifferenceGain::Gain4x;
-    case DualVideoSurface::Gain8x:
+    case ComparisonSurface::Gain8x:
         return platform::SurfaceDifferenceGain::Gain8x;
-    case DualVideoSurface::Gain16x:
+    case ComparisonSurface::Gain16x:
         return platform::SurfaceDifferenceGain::Gain16x;
     }
     return platform::SurfaceDifferenceGain::Gain1x;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceReference
-nativeDifferenceReference(const DualVideoSurface::DifferenceReference value) noexcept {
-    return value == DualVideoSurface::ReferenceB ? platform::SurfaceDifferenceReference::SourceB
-                                                 : platform::SurfaceDifferenceReference::SourceA;
+nativeDifferenceReference(const ComparisonSurface::DifferenceReference value) noexcept {
+    return value == ComparisonSurface::ReferenceB ? platform::SurfaceDifferenceReference::SourceB
+                                                  : platform::SurfaceDifferenceReference::SourceA;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceFilter
-nativeDifferenceFilter(const DualVideoSurface::DifferenceFilter value) noexcept {
+nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept {
     switch (value) {
-    case DualVideoSurface::Nearest:
+    case ComparisonSurface::Nearest:
         return platform::SurfaceDifferenceFilter::Nearest;
-    case DualVideoSurface::Bilinear:
+    case ComparisonSurface::Bilinear:
         return platform::SurfaceDifferenceFilter::Bilinear;
-    case DualVideoSurface::Bicubic:
+    case ComparisonSurface::Bicubic:
         return platform::SurfaceDifferenceFilter::Bicubic;
     }
     return platform::SurfaceDifferenceFilter::Bilinear;
 }
 
-[[nodiscard]] PresentationOptions presentationOptions(const DualVideoSurface& surface) noexcept {
+[[nodiscard]] PresentationOptions presentationOptions(const ComparisonSurface& surface) noexcept {
     return PresentationOptions{
         .viewMode = nativeViewMode(surface.viewMode()),
         .differenceMetric = nativeDifferenceMetric(surface.differenceMetric()),
@@ -137,10 +137,10 @@ nativeDifferenceFilter(const DualVideoSurface::DifferenceFilter value) noexcept 
 
 } // namespace
 
-class DualVideoRenderNode final : public QSGRenderNode {
+class ComparisonRenderNode final : public QSGRenderNode {
 public:
-    DualVideoRenderNode(QQuickWindow& window,
-                        const std::shared_ptr<const DualVideoSurface::Services>& services)
+    ComparisonRenderNode(QQuickWindow& window,
+                         const std::shared_ptr<const ComparisonSurface::Services>& services)
         : window_(window), services_(services), renderer_(services_->deviceBroker,
                                                           services_->frameMailbox,
                                                           services_->acknowledgementMailbox,
@@ -155,7 +155,7 @@ public:
     }
 
     [[nodiscard]] bool
-    usesServices(const std::shared_ptr<const DualVideoSurface::Services>& services) const noexcept {
+    usesServices(const std::shared_ptr<const ComparisonSurface::Services>& services) const noexcept {
         return services_ == services;
     }
 
@@ -218,24 +218,24 @@ public:
 
 private:
     QQuickWindow& window_;
-    std::shared_ptr<const DualVideoSurface::Services> services_;
-    platform::D3d11DualVideoRenderer renderer_;
+    std::shared_ptr<const ComparisonSurface::Services> services_;
+    platform::D3d11ComparisonRenderer renderer_;
     QRectF bounds_;
     qreal devicePixelRatio_ = 1.0;
     PresentationOptions presentationOptions_;
 };
 
-DualVideoSurface::DualVideoSurface(QQuickItem* const parent) : QQuickItem(parent) {
+ComparisonSurface::ComparisonSurface(QQuickItem* const parent) : QQuickItem(parent) {
     setFlag(ItemHasContents, true);
 }
 
-DualVideoSurface::~DualVideoSurface() = default;
+ComparisonSurface::~ComparisonSurface() = default;
 
-DualVideoSurface::ViewMode DualVideoSurface::viewMode() const noexcept {
+ComparisonSurface::ViewMode ComparisonSurface::viewMode() const noexcept {
     return viewMode_;
 }
 
-void DualVideoSurface::setViewMode(const ViewMode value) {
+void ComparisonSurface::setViewMode(const ViewMode value) {
     if ((value != SideBySide && value != Difference) || viewMode_ == value) {
         return;
     }
@@ -244,11 +244,11 @@ void DualVideoSurface::setViewMode(const ViewMode value) {
     update();
 }
 
-DualVideoSurface::DifferenceMetric DualVideoSurface::differenceMetric() const noexcept {
+ComparisonSurface::DifferenceMetric ComparisonSurface::differenceMetric() const noexcept {
     return differenceMetric_;
 }
 
-void DualVideoSurface::setDifferenceMetric(const DifferenceMetric value) {
+void ComparisonSurface::setDifferenceMetric(const DifferenceMetric value) {
     if ((value != RgbAbsolute && value != Luma && value != Chroma && value != Heatmap) ||
         differenceMetric_ == value) {
         return;
@@ -258,11 +258,11 @@ void DualVideoSurface::setDifferenceMetric(const DifferenceMetric value) {
     update();
 }
 
-DualVideoSurface::DifferenceGain DualVideoSurface::differenceGain() const noexcept {
+ComparisonSurface::DifferenceGain ComparisonSurface::differenceGain() const noexcept {
     return differenceGain_;
 }
 
-void DualVideoSurface::setDifferenceGain(const DifferenceGain value) {
+void ComparisonSurface::setDifferenceGain(const DifferenceGain value) {
     if ((value != Gain1x && value != Gain2x && value != Gain4x && value != Gain8x &&
          value != Gain16x) ||
         differenceGain_ == value) {
@@ -273,11 +273,11 @@ void DualVideoSurface::setDifferenceGain(const DifferenceGain value) {
     update();
 }
 
-DualVideoSurface::DifferenceReference DualVideoSurface::differenceReference() const noexcept {
+ComparisonSurface::DifferenceReference ComparisonSurface::differenceReference() const noexcept {
     return differenceReference_;
 }
 
-void DualVideoSurface::setDifferenceReference(const DifferenceReference value) {
+void ComparisonSurface::setDifferenceReference(const DifferenceReference value) {
     if ((value != ReferenceA && value != ReferenceB) || differenceReference_ == value) {
         return;
     }
@@ -286,12 +286,13 @@ void DualVideoSurface::setDifferenceReference(const DifferenceReference value) {
     update();
 }
 
-DualVideoSurface::DifferenceFilter DualVideoSurface::differenceFilter() const noexcept {
+ComparisonSurface::DifferenceFilter ComparisonSurface::differenceFilter() const noexcept {
     return differenceFilter_;
 }
 
-void DualVideoSurface::setDifferenceFilter(const DifferenceFilter value) {
-    if ((value != Nearest && value != Bilinear && value != Bicubic) || differenceFilter_ == value) {
+void ComparisonSurface::setDifferenceFilter(const DifferenceFilter value) {
+    if ((value != Nearest && value != Bilinear && value != Bicubic) ||
+        differenceFilter_ == value) {
         return;
     }
     differenceFilter_ = value;
@@ -299,7 +300,7 @@ void DualVideoSurface::setDifferenceFilter(const DifferenceFilter value) {
     update();
 }
 
-bool DualVideoSurface::attachRendererServices(
+bool ComparisonSurface::attachRendererServices(
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
     std::shared_ptr<platform::FrameMailbox> frameMailbox,
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox,
@@ -315,29 +316,29 @@ bool DualVideoSurface::attachRendererServices(
     return true;
 }
 
-void DualVideoSurface::detachRendererServices() noexcept {
+void ComparisonSurface::detachRendererServices() noexcept {
     services_.reset();
     update();
 }
 
-bool DualVideoSurface::hasRendererServices() const noexcept {
+bool ComparisonSurface::hasRendererServices() const noexcept {
     return services_ != nullptr;
 }
 
-QSGNode* DualVideoSurface::updatePaintNode(QSGNode* const oldNode, UpdatePaintNodeData*) {
+QSGNode* ComparisonSurface::updatePaintNode(QSGNode* const oldNode, UpdatePaintNodeData*) {
     QQuickWindow* const itemWindow = window();
     if (!services_ || itemWindow == nullptr || width() <= 0.0 || height() <= 0.0) {
         delete oldNode;
         return nullptr;
     }
 
-    auto* node = static_cast<DualVideoRenderNode*>(oldNode);
+    auto* node = static_cast<ComparisonRenderNode*>(oldNode);
     if (node != nullptr && !node->usesServices(services_)) {
         delete node;
         node = nullptr;
     }
     if (node == nullptr) {
-        node = new DualVideoRenderNode{*itemWindow, services_};
+        node = new ComparisonRenderNode{*itemWindow, services_};
     }
 
     node->synchronize(
@@ -345,7 +346,7 @@ QSGNode* DualVideoSurface::updatePaintNode(QSGNode* const oldNode, UpdatePaintNo
     return node;
 }
 
-void DualVideoSurface::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) {
+void ComparisonSurface::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     if (newGeometry.size() != oldGeometry.size()) {
         update();

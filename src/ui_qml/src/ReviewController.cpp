@@ -116,7 +116,7 @@ public:
         return view_;
     }
 
-    [[nodiscard]] bool openPair(const QUrl& sourceA, const QUrl& sourceB) {
+    [[nodiscard]] bool openComparison(const QUrl& first, const QUrl& second) {
         if (!onOwnerThread() || stopped_) {
             return false;
         }
@@ -128,8 +128,8 @@ public:
         LocalFileValidation validatedA;
         LocalFileValidation validatedB;
         try {
-            validatedA = validateLocalFile(sourceA);
-            validatedB = validateLocalFile(sourceB);
+            validatedA = validateLocalFile(first);
+            validatedB = validateLocalFile(second);
         } catch (...) {
             validatedA = LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
             validatedB = LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
@@ -149,10 +149,21 @@ public:
             failClosed();
             return false;
         }
-        return dispatch(application::OpenSourcePathsCommand{
+        return dispatch(application::OpenComparisonCommand{
             .context = *context,
-            .sourceAPath = sourceA_->path,
-            .sourceBPath = sourceB_->path,
+            .sources =
+                {
+                    application::OpenComparisonSource{
+                        .path = sourceA_->path,
+                        .role = domain::ComparisonRole::kPrediction,
+                        .displayName = sourceA_->filename.toStdString(),
+                    },
+                    application::OpenComparisonSource{
+                        .path = sourceB_->path,
+                        .role = domain::ComparisonRole::kPrediction,
+                        .displayName = sourceB_->filename.toStdString(),
+                    },
+                },
         });
     }
 
@@ -308,22 +319,17 @@ private:
 
             if (snapshot_->lastError.has_value()) {
                 const QString key = QString::fromStdString(snapshot_->lastError->userMessageKey);
-                switch (snapshot_->lastError->sourceRole) {
-                case domain::SourceRole::kA:
+                const std::optional<domain::SourceId> errorSource = snapshot_->lastError->source;
+                if (errorSource.has_value() && *errorSource == 0U) {
                     if (next.sourceAErrorKey.isEmpty()) {
                         next.sourceAErrorKey = key;
                     }
-                    break;
-                case domain::SourceRole::kB:
+                } else if (errorSource.has_value() && *errorSource == 1U) {
                     if (next.sourceBErrorKey.isEmpty()) {
                         next.sourceBErrorKey = key;
                     }
-                    break;
-                case domain::SourceRole::kNone:
-                case domain::SourceRole::kPair:
-                case domain::SourceRole::kProject:
+                } else {
                     next.pairErrorKey = key;
-                    break;
                 }
             }
         }
@@ -532,8 +538,8 @@ bool ReviewController::canPause() const noexcept {
     return impl_->view().canPause;
 }
 
-bool ReviewController::openPair(const QUrl& sourceA, const QUrl& sourceB) {
-    return impl_->openPair(sourceA, sourceB);
+bool ReviewController::openComparison(const QUrl& first, const QUrl& second) {
+    return impl_->openComparison(first, second);
 }
 
 bool ReviewController::first() {

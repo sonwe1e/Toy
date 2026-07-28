@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/Result.h"
 #include "dvs/domain/SourceRelinkCandidate.h"
 
@@ -13,7 +14,7 @@ namespace dvs::persistence {
 class ProjectRelinkService final {
 public:
     [[nodiscard]] static domain::Result<domain::SourceRelinkCandidate>
-    prepare(domain::SourceRole sourceRole, const std::filesystem::path& newSourcePath);
+    prepare(domain::SourceId sourceId, const std::filesystem::path& newSourcePath);
 };
 
 } // namespace dvs::persistence

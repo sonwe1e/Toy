@@ -160,7 +160,7 @@ void runRelay(const std::shared_ptr<RelayState>& state) noexcept {
 
     std::uint64_t observedWake = state->wakeSequence.load(std::memory_order_acquire);
     for (;;) {
-        while (std::optional<application::FramePairPresented> acknowledgement =
+        while (std::optional<application::FrameSetPresented> acknowledgement =
                    state->acknowledgementMailbox->tryPop()) {
             state->acknowledgementsPopped.fetch_add(1U, std::memory_order_relaxed);
 
@@ -250,7 +250,7 @@ public:
     }
 
     [[nodiscard]] platform::PresentationAckPushResult
-    tryPublishAcknowledgement(const application::FramePairPresented& acknowledgement) noexcept {
+    tryPublishAcknowledgement(const application::FrameSetPresented& acknowledgement) noexcept {
         const platform::PresentationAckPushResult result =
             state_->acknowledgementMailbox->tryPush(acknowledgement);
         if (result == platform::PresentationAckPushResult::Accepted) {
@@ -334,7 +334,7 @@ void RenderAckRelay::detach() noexcept {
 }
 
 platform::PresentationAckPushResult RenderAckRelay::tryPublishAcknowledgement(
-    const application::FramePairPresented& acknowledgement) noexcept {
+    const application::FrameSetPresented& acknowledgement) noexcept {
     return impl_->tryPublishAcknowledgement(acknowledgement);
 }
 

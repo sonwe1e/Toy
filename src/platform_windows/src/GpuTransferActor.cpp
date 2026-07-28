@@ -7,8 +7,8 @@
 #include "dvs/platform/RenderActivitySink.h"
 
 #include "D3d11GpuFrameBacking.h"
-#include "GpuFramePair.h"
 #include "GpuFrameResource.h"
+#include "GpuFrameSet.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -26,6 +26,7 @@
 #include <stdexcept>
 #include <thread>
 #include <utility>
+#include <vector>
 #include <wrl/client.h>
 
 namespace dvs::platform {
@@ -88,6 +89,7 @@ struct VisiblePlaneLayout final {
 };
 
 struct CpuSourceView final {
+    domain::SourceId sourceId = 0;
     std::shared_ptr<const CpuNv12FrameResource> resource;
     application::FrameGeometry geometry;
     VisiblePlaneLayout y;
@@ -95,14 +97,13 @@ struct CpuSourceView final {
     std::size_t gpuBytes = 0U;
 };
 
-struct CpuPairView final {
-    CpuSourceView sourceA;
-    CpuSourceView sourceB;
+struct CpuSetView final {
+    std::vector<CpuSourceView> sources;
     std::size_t stagingBytes = 0U;
 };
 
 [[nodiscard]] std::optional<CpuSourceView>
-inspectSource(const application::FrameHandle& handle) noexcept {
+inspectSource(const domain::SourceId sourceId, const application::FrameHandle& handle) noexcept {
     const auto resource = std::dynamic_pointer_cast<const CpuNv12FrameResource>(handle.resource());
     if (!resource || !handle.isValid() || !resource->colorMetadata().isValid()) {
         return std::nullopt;
@@ -146,6 +147,7 @@ inspectSource(const application::FrameHandle& handle) noexcept {
     }
 
     return CpuSourceView{
+        .sourceId = sourceId,
         .resource = std::move(resource),
         .geometry = handle.geometry(),
         .y = y,
@@ -154,31 +156,44 @@ inspectSource(const application::FrameHandle& handle) noexcept {
     };
 }
 
-[[nodiscard]] std::optional<CpuPairView> inspectPair(const application::FramePair& pair) noexcept {
-    if (!pair.frameId().isValid()) {
+[[nodiscard]] std::optional<CpuSetView> inspectSet(const application::FrameSet& set) noexcept {
+    if (!set.canonicalFrameId().isValid()) {
         return std::nullopt;
     }
-    std::optional<CpuSourceView> sourceA = inspectSource(pair.frameA());
-    std::optional<CpuSourceView> sourceB = inspectSource(pair.frameB());
-    if (!sourceA || !sourceB) {
-        return std::nullopt;
+
+    std::vector<CpuSourceView> sources;
+    std::size_t stagingBytes = 0U;
+
+    for (const application::MappedSourceFrame& entry : set.sources()) {
+        // Skip Missing entries — they carry no frame to upload.
+        if (!entry.hasFrame()) {
+            continue;
+        }
+
+        std::optional<CpuSourceView> source = inspectSource(entry.sourceId, *entry.frame);
+        if (!source) {
+            return std::nullopt;
+        }
+
+        const std::optional<std::size_t> newStagingBytes =
+            checkedSum(stagingBytes, source->gpuBytes);
+        if (!newStagingBytes) {
+            return std::nullopt;
+        }
+        stagingBytes = *newStagingBytes;
+        sources.push_back(std::move(*source));
     }
-    const std::optional<std::size_t> stagingBytes =
-        checkedSum(sourceA->gpuBytes, sourceB->gpuBytes);
-    if (!stagingBytes) {
-        return std::nullopt;
-    }
-    return CpuPairView{
-        .sourceA = std::move(*sourceA),
-        .sourceB = std::move(*sourceB),
-        .stagingBytes = *stagingBytes,
+
+    return CpuSetView{
+        .sources = std::move(sources),
+        .stagingBytes = stagingBytes,
     };
 }
 
 struct TransferTask final {
     application::FrameRequestContext context;
-    application::FramePair pair;
-    CpuPairView cpu;
+    application::FrameSet set;
+    CpuSetView cpu;
 };
 
 struct UploadPlane final {
@@ -394,74 +409,71 @@ struct GpuTransferState final {
 [[nodiscard]] UploadResult uploadCpuPlanes(const std::shared_ptr<GpuTransferState>& state,
                                            const GraphicsDeviceLease& lease,
                                            const TransferTask& task,
-                                           UploadSource& sourceA,
-                                           UploadSource& sourceB) noexcept {
+                                           std::vector<UploadSource>& sources) noexcept {
     ID3D11Device* const device = lease.device.Get();
     ID3D11DeviceContext* const context = lease.immediateContext.Get();
-    const Nv12FrameLayout& layoutA = sourceA.cpu->resource->layout();
-    const Nv12FrameLayout& layoutB = sourceB.cpu->resource->layout();
 
-    UploadResult result = mapPlane(state,
-                                   device,
-                                   context,
-                                   task.context,
-                                   sourceA.y,
-                                   sourceA.cpu->resource->yPlane(),
-                                   layoutA.yStride);
-    if (result.kind != UploadResultKind::Published) {
-        return result;
+    for (UploadSource& source : sources) {
+        const Nv12FrameLayout& layout = source.cpu->resource->layout();
+
+        UploadResult result = mapPlane(state,
+                                       device,
+                                       context,
+                                       task.context,
+                                       source.y,
+                                       source.cpu->resource->yPlane(),
+                                       layout.yStride);
+        if (result.kind != UploadResultKind::Published) {
+            return result;
+        }
+        result = mapPlane(state,
+                          device,
+                          context,
+                          task.context,
+                          source.uv,
+                          source.cpu->resource->uvPlane(),
+                          layout.uvStride);
+        if (result.kind != UploadResultKind::Published) {
+            return result;
+        }
     }
-    result = mapPlane(state,
-                      device,
-                      context,
-                      task.context,
-                      sourceA.uv,
-                      sourceA.cpu->resource->uvPlane(),
-                      layoutA.uvStride);
-    if (result.kind != UploadResultKind::Published) {
-        return result;
-    }
-    result = mapPlane(state,
-                      device,
-                      context,
-                      task.context,
-                      sourceB.y,
-                      sourceB.cpu->resource->yPlane(),
-                      layoutB.yStride);
-    if (result.kind != UploadResultKind::Published) {
-        return result;
-    }
-    return mapPlane(state,
-                    device,
-                    context,
-                    task.context,
-                    sourceB.uv,
-                    sourceB.cpu->resource->uvPlane(),
-                    layoutB.uvStride);
+    return UploadResult{.kind = UploadResultKind::Published};
 }
 
 [[nodiscard]] UploadResult waitForFences(const std::shared_ptr<GpuTransferState>& state,
                                          const GraphicsDeviceLease& lease,
                                          const application::FrameRequestContext& taskContext,
-                                         ID3D11Query* const fenceA,
-                                         ID3D11Query* const fenceB) noexcept {
-    bool completeA = false;
-    bool completeB = false;
-    while (!completeA || !completeB) {
+                                         std::vector<UploadSource>& sources) noexcept {
+    std::vector<bool> complete(sources.size(), false);
+    std::size_t completeCount = 0U;
+
+    while (completeCount < sources.size()) {
         if (!isTaskCurrent(state, taskContext)) {
             return UploadResult{.kind = UploadResultKind::Cancelled};
         }
 
-        const HRESULT resultA = completeA
-                                    ? S_OK
-                                    : lease.immediateContext->GetData(
-                                          fenceA, nullptr, 0U, D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        const HRESULT resultB = completeB
-                                    ? S_OK
-                                    : lease.immediateContext->GetData(
-                                          fenceB, nullptr, 0U, D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        if (FAILED(resultA) || FAILED(resultB)) {
-            const HRESULT failedResult = FAILED(resultA) ? resultA : resultB;
+        HRESULT failedResult = S_OK;
+        bool anyFailed = false;
+
+        for (std::size_t index = 0U; index < sources.size(); ++index) {
+            if (complete[index]) {
+                continue;
+            }
+
+            const HRESULT result = lease.immediateContext->GetData(
+                sources[index].fence.Get(), nullptr, 0U, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+            if (FAILED(result)) {
+                failedResult = result;
+                anyFailed = true;
+                break;
+            }
+            if (result == S_OK) {
+                complete[index] = true;
+                ++completeCount;
+            }
+        }
+
+        if (anyFailed) {
             if (const std::optional<HRESULT> removal =
                     deviceLossReason(lease.device.Get(), failedResult)) {
                 return UploadResult{
@@ -471,9 +483,8 @@ struct GpuTransferState final {
             }
             return UploadResult{.kind = UploadResultKind::Failed};
         }
-        completeA = resultA == S_OK;
-        completeB = resultB == S_OK;
-        if ((!completeA || !completeB) && waitBrieflyOrCancelled(state, taskContext)) {
+
+        if (completeCount < sources.size() && waitBrieflyOrCancelled(state, taskContext)) {
             return UploadResult{.kind = UploadResultKind::Cancelled};
         }
     }
@@ -491,7 +502,7 @@ struct GpuTransferState final {
 makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
                 const TransferTask& task,
                 UploadSource& upload,
-                const domain::SourceRole sourceRole) noexcept {
+                const domain::SourceId sourceId) noexcept {
     if (!upload.gpuReservation || upload.cpu == nullptr) {
         return {};
     }
@@ -516,11 +527,12 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
 
     GpuFrameAllocation allocation{std::move(*upload.gpuReservation), std::move(backing)};
     upload.gpuReservation.reset();
+
     return GpuFrameResource::createDeferred(
         GpuFrameIdentity{
             .context = task.context,
-            .frameId = task.pair.frameId(),
-            .sourceRole = sourceRole,
+            .frameId = task.set.canonicalFrameId(),
+            .sourceId = sourceId,
         },
         upload.cpu->geometry,
         upload.cpu->resource->colorMetadata(),
@@ -537,29 +549,39 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         return UploadResult{.kind = UploadResultKind::Cancelled};
     }
 
+    // This phase supports up to 2 sources; additional sources are not yet supported.
+    if (task.cpu.sources.size() > 2U) {
+        return UploadResult{.kind = UploadResultKind::Failed};
+    }
+
     // Reserve all logical staging and destination bytes before allocating resources or reading a
     // single decoder-owned byte. CPU resources remain pinned in task for the entire operation.
     std::optional<FrameBudget::Reservation> stagingReservation =
         state->frameBudget->tryReserve(task.cpu.stagingBytes);
-    std::optional<FrameBudget::Reservation> reservationA =
-        state->frameBudget->tryReserve(task.cpu.sourceA.gpuBytes);
-    std::optional<FrameBudget::Reservation> reservationB =
-        state->frameBudget->tryReserve(task.cpu.sourceB.gpuBytes);
-    if (!stagingReservation || !reservationA || !reservationB) {
+    if (!stagingReservation) {
         return UploadResult{.kind = UploadResultKind::Failed};
     }
 
-    UploadSource sourceA{
-        .cpu = &task.cpu.sourceA,
-        .gpuReservation = std::move(reservationA),
-    };
-    UploadSource sourceB{
-        .cpu = &task.cpu.sourceB,
-        .gpuReservation = std::move(reservationB),
-    };
-    HRESULT result = createUploadSource(lease.device.Get(), task.cpu.sourceA, sourceA);
-    if (SUCCEEDED(result)) {
-        result = createUploadSource(lease.device.Get(), task.cpu.sourceB, sourceB);
+    std::vector<UploadSource> uploadSources;
+    uploadSources.reserve(task.cpu.sources.size());
+    for (const CpuSourceView& cpuSource : task.cpu.sources) {
+        std::optional<FrameBudget::Reservation> reservation =
+            state->frameBudget->tryReserve(cpuSource.gpuBytes);
+        if (!reservation) {
+            return UploadResult{.kind = UploadResultKind::Failed};
+        }
+        uploadSources.push_back(UploadSource{
+            .cpu = &cpuSource,
+            .gpuReservation = std::move(reservation),
+        });
+    }
+
+    HRESULT result = S_OK;
+    for (UploadSource& upload : uploadSources) {
+        result = createUploadSource(lease.device.Get(), *upload.cpu, upload);
+        if (FAILED(result)) {
+            break;
+        }
     }
     if (FAILED(result)) {
         if (const std::optional<HRESULT> removal = deviceLossReason(lease.device.Get(), result)) {
@@ -571,7 +593,7 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         return UploadResult{.kind = UploadResultKind::Failed};
     }
 
-    UploadResult upload = uploadCpuPlanes(state, lease, task, sourceA, sourceB);
+    UploadResult upload = uploadCpuPlanes(state, lease, task, uploadSources);
     if (upload.kind != UploadResultKind::Published) {
         return upload;
     }
@@ -579,34 +601,43 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         return UploadResult{.kind = UploadResultKind::Cancelled};
     }
 
-    lease.immediateContext->CopyResource(sourceA.y.texture.Get(), sourceA.y.staging.Get());
-    lease.immediateContext->CopyResource(sourceA.uv.texture.Get(), sourceA.uv.staging.Get());
-    lease.immediateContext->End(sourceA.fence.Get());
-    lease.immediateContext->CopyResource(sourceB.y.texture.Get(), sourceB.y.staging.Get());
-    lease.immediateContext->CopyResource(sourceB.uv.texture.Get(), sourceB.uv.staging.Get());
-    lease.immediateContext->End(sourceB.fence.Get());
+    for (UploadSource& source : uploadSources) {
+        lease.immediateContext->CopyResource(source.y.texture.Get(), source.y.staging.Get());
+        lease.immediateContext->CopyResource(source.uv.texture.Get(), source.uv.staging.Get());
+        lease.immediateContext->End(source.fence.Get());
+    }
     lease.immediateContext->Flush();
 
-    upload = waitForFences(state, lease, task.context, sourceA.fence.Get(), sourceB.fence.Get());
+    upload = waitForFences(state, lease, task.context, uploadSources);
     if (upload.kind != UploadResultKind::Published) {
         return upload;
     }
 
-    // Staging is no longer needed once both event queries complete. Releasing it before creating
-    // the immutable pair also returns temporary budget before mailbox retention begins.
-    sourceA.y.staging.Reset();
-    sourceA.uv.staging.Reset();
-    sourceB.y.staging.Reset();
-    sourceB.uv.staging.Reset();
+    // Staging is no longer needed once all event queries complete. Releasing it before creating
+    // the immutable set also returns temporary budget before mailbox retention begins.
+    for (UploadSource& source : uploadSources) {
+        source.y.staging.Reset();
+        source.uv.staging.Reset();
+    }
     stagingReservation->reset();
 
-    std::shared_ptr<const GpuFrameResource> frameA =
-        makeGpuResource(state, task, sourceA, domain::SourceRole::kA);
-    std::shared_ptr<const GpuFrameResource> frameB =
-        makeGpuResource(state, task, sourceB, domain::SourceRole::kB);
-    std::shared_ptr<const GpuFramePair> pair =
-        GpuFramePair::create(std::move(frameA), std::move(frameB));
-    if (!pair) {
+    std::vector<GpuFrameSlot> slots;
+    slots.reserve(uploadSources.size());
+    for (std::size_t index = 0U; index < uploadSources.size(); ++index) {
+        std::shared_ptr<const GpuFrameResource> frame =
+            makeGpuResource(state, task, uploadSources[index], uploadSources[index].cpu->sourceId);
+        if (!frame) {
+            return UploadResult{.kind = UploadResultKind::Failed};
+        }
+        slots.push_back(GpuFrameSlot{
+            .sourceId = uploadSources[index].cpu->sourceId,
+            .frame = std::move(frame),
+        });
+    }
+
+    std::shared_ptr<const GpuFrameSet> set =
+        GpuFrameSet::create(task.context, task.set.canonicalFrameId(), std::move(slots));
+    if (!set) {
         return UploadResult{.kind = UploadResultKind::Failed};
     }
 
@@ -620,10 +651,10 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
             state->deviceLease->deviceGeneration != task.context.deviceGeneration) {
             return UploadResult{.kind = UploadResultKind::Cancelled};
         }
-        if (state->frameMailbox->publish(pair) != FrameMailboxPublishResult::Published) {
+        if (state->frameMailbox->publish(set) != FrameMailboxPublishResult::Published) {
             return UploadResult{.kind = UploadResultKind::Cancelled};
         }
-        ++state->statistics.publishedPairs;
+        ++state->statistics.publishedSets;
     }
 
     if (const std::shared_ptr<IRenderActivitySink> activity = state->renderActivity.lock()) {
@@ -856,10 +887,10 @@ public:
     }
 
     [[nodiscard]] GpuTransferSubmitResult submit(const application::FrameRequestContext& context,
-                                                 application::FramePair pair) noexcept {
-        std::optional<CpuPairView> inspected = inspectPair(pair);
+                                                 application::FrameSet set) noexcept {
+        std::optional<CpuSetView> inspected = inspectSet(set);
         if (!inspected) {
-            return GpuTransferSubmitResult::InvalidPair;
+            return GpuTransferSubmitResult::InvalidSet;
         }
         GraphicsDeviceLeaseResult leaseResult = state_->deviceBroker->tryLease();
         if (leaseResult.status == GraphicsDeviceLeaseStatus::Closed) {
@@ -906,12 +937,12 @@ public:
         state_->latestContext = context;
         state_->pending.emplace(TransferTask{
             .context = context,
-            .pair = std::move(pair),
+            .set = std::move(set),
             .cpu = std::move(*inspected),
         });
-        ++state_->statistics.submittedPairs;
+        ++state_->statistics.submittedSets;
         if (replaced) {
-            ++state_->statistics.replacedPairs;
+            ++state_->statistics.replacedSets;
         }
         state_->retirementDomain->notifyActivity();
         return replaced ? GpuTransferSubmitResult::Replaced : GpuTransferSubmitResult::Accepted;
@@ -1002,8 +1033,8 @@ GpuTransferActor::GpuTransferActor(std::shared_ptr<FrameBudget> frameBudget,
 GpuTransferActor::~GpuTransferActor() = default;
 
 GpuTransferSubmitResult GpuTransferActor::submit(const application::FrameRequestContext& context,
-                                                 application::FramePair pair) noexcept {
-    return impl_->submit(context, std::move(pair));
+                                                 application::FrameSet set) noexcept {
+    return impl_->submit(context, std::move(set));
 }
 
 bool GpuTransferActor::clear(const application::PlaybackRequestContext& context) noexcept {

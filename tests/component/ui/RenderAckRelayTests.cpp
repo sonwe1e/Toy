@@ -24,9 +24,9 @@ namespace {
 
 using namespace std::chrono_literals;
 
-[[nodiscard]] application::FramePairPresented makeAcknowledgement(const std::uint64_t requestId,
+[[nodiscard]] application::FrameSetPresented makeAcknowledgement(const std::uint64_t requestId,
                                                                   const std::int64_t frameId) {
-    return application::FramePairPresented{
+    return application::FrameSetPresented{
         .context =
             application::FrameRequestContext{
                 .playback =
@@ -181,7 +181,7 @@ TEST(RenderAckRelayTests, DrainsAcknowledgementAndPostsOnlyFromRelayWorker) {
     QQuickItem item;
     relay.attach(&item);
     const std::thread::id renderCaller = std::this_thread::get_id();
-    const application::FramePairPresented acknowledgement = makeAcknowledgement(9U, 42);
+    const application::FrameSetPresented acknowledgement = makeAcknowledgement(9U, 42);
 
     ASSERT_EQ(relay.tryPublishAcknowledgement(acknowledgement),
               platform::PresentationAckPushResult::Accepted);
@@ -190,7 +190,7 @@ TEST(RenderAckRelayTests, DrainsAcknowledgementAndPostsOnlyFromRelayWorker) {
 
     const std::vector<application::ApplicationEvent> posted = events->criticalEvents();
     ASSERT_EQ(posted.size(), 1U);
-    const auto* const presented = std::get_if<application::FramePairPresented>(&posted.front());
+    const auto* const presented = std::get_if<application::FrameSetPresented>(&posted.front());
     ASSERT_NE(presented, nullptr);
     EXPECT_EQ(presented->context, acknowledgement.context);
     EXPECT_EQ(presented->frameId, acknowledgement.frameId);

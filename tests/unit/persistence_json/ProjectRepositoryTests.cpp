@@ -221,54 +221,65 @@ makeProject(const std::filesystem::path& sourceAPath,
     if (!rate) {
         return domain::Result<domain::Project>::failure(rate.error());
     }
-    const domain::MediaDescriptor descriptorA{
-        .normalizedPath = sourceAPath,
-        .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
-        .frameRate = rate.value(),
-        .frameCount =
-            domain::FrameCountInfo{
-                .value = 5,
-                .origin = domain::FrameCountOrigin::kReported,
-            },
-        .duration = domain::MediaTime{166'666},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8U,
-        .decodeCapabilities =
-            domain::DecodeCapabilities{
-                .softwareDecode = true,
-                .d3d11VaDecode = false,
-            },
-        .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-        .sourceIdentity = identityA,
-    };
-    const domain::MediaDescriptor descriptorB{
-        .normalizedPath = sourceBPath,
-        .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
-        .frameRate = rate.value(),
-        .frameCount =
-            domain::FrameCountInfo{
-                .value = 5,
-                .origin = domain::FrameCountOrigin::kReported,
-            },
-        .duration = domain::MediaTime{166'666},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8U,
-        .decodeCapabilities =
-            domain::DecodeCapabilities{
-                .softwareDecode = true,
-                .d3d11VaDecode = false,
-            },
-        .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-        .sourceIdentity = identityB,
-    };
-    const auto pair = domain::SourcePairValidator::validate(descriptorA, descriptorB);
-    if (!pair) {
-        return domain::Result<domain::Project>::failure(pair.error());
+    std::vector<domain::ComparisonSource> sources;
+    sources.push_back(domain::ComparisonSource{
+        .id = 0,
+        .role = domain::ComparisonRole::kReference,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = sourceAPath,
+            .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
+            .frameRate = rate.value(),
+            .frameCount =
+                domain::FrameCountInfo{
+                    .value = 5,
+                    .origin = domain::FrameCountOrigin::kReported,
+                },
+            .duration = domain::MediaTime{166'666},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8U,
+            .decodeCapabilities =
+                domain::DecodeCapabilities{
+                    .softwareDecode = true,
+                    .d3d11VaDecode = false,
+                },
+            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+            .sourceIdentity = identityA,
+        },
+        .displayName = "Source A",
+    });
+    sources.push_back(domain::ComparisonSource{
+        .id = 1,
+        .role = domain::ComparisonRole::kPrediction,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = sourceBPath,
+            .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
+            .frameRate = rate.value(),
+            .frameCount =
+                domain::FrameCountInfo{
+                    .value = 5,
+                    .origin = domain::FrameCountOrigin::kReported,
+                },
+            .duration = domain::MediaTime{166'666},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8U,
+            .decodeCapabilities =
+                domain::DecodeCapabilities{
+                    .softwareDecode = true,
+                    .d3d11VaDecode = false,
+                },
+            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+            .sourceIdentity = identityB,
+        },
+        .displayName = "Source B",
+    });
+    const auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    if (!validated) {
+        return domain::Result<domain::Project>::failure(validated.error());
     }
     return domain::Project::create(
-        domain::ProjectId{"project-1"}, "Round-trip project", pair.value());
+        domain::ProjectId{"project-1"}, "Round-trip project", validated.value().set);
 }
 
 TEST_F(ProjectRepositoryTests, SavesThenLoadsWithPayloadBeforeTerminal) {
@@ -278,59 +289,70 @@ TEST_F(ProjectRepositoryTests, SavesThenLoadsWithPayloadBeforeTerminal) {
     writeFile(sourceAPath, "source-a");
     writeFile(sourceBPath, "source-b");
 
-    const auto identityA = FingerprintService::fingerprint(sourceAPath, domain::SourceRole::kA);
-    const auto identityB = FingerprintService::fingerprint(sourceBPath, domain::SourceRole::kB);
+    const auto identityA = FingerprintService::fingerprint(sourceAPath, 0);
+    const auto identityB = FingerprintService::fingerprint(sourceBPath, 1);
     ASSERT_TRUE(identityA);
     ASSERT_TRUE(identityB);
     const auto rate = domain::RationalRate::create(30, 1);
     ASSERT_TRUE(rate);
 
-    const domain::MediaDescriptor descriptorA{
-        .normalizedPath = sourceAPath,
-        .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
-        .frameRate = rate.value(),
-        .frameCount =
-            domain::FrameCountInfo{
-                .value = 5,
-                .origin = domain::FrameCountOrigin::kReported,
-            },
-        .duration = domain::MediaTime{166'666},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8U,
-        .decodeCapabilities =
-            domain::DecodeCapabilities{
-                .softwareDecode = true,
-                .d3d11VaDecode = false,
-            },
-        .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-        .sourceIdentity = identityA.value(),
-    };
-    const domain::MediaDescriptor descriptorB{
-        .normalizedPath = sourceBPath,
-        .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
-        .frameRate = rate.value(),
-        .frameCount =
-            domain::FrameCountInfo{
-                .value = 5,
-                .origin = domain::FrameCountOrigin::kReported,
-            },
-        .duration = domain::MediaTime{166'666},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8U,
-        .decodeCapabilities =
-            domain::DecodeCapabilities{
-                .softwareDecode = true,
-                .d3d11VaDecode = false,
-            },
-        .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-        .sourceIdentity = identityB.value(),
-    };
-    const auto pair = domain::SourcePairValidator::validate(descriptorA, descriptorB);
-    ASSERT_TRUE(pair);
+    std::vector<domain::ComparisonSource> sources;
+    sources.push_back(domain::ComparisonSource{
+        .id = 0,
+        .role = domain::ComparisonRole::kReference,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = sourceAPath,
+            .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
+            .frameRate = rate.value(),
+            .frameCount =
+                domain::FrameCountInfo{
+                    .value = 5,
+                    .origin = domain::FrameCountOrigin::kReported,
+                },
+            .duration = domain::MediaTime{166'666},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8U,
+            .decodeCapabilities =
+                domain::DecodeCapabilities{
+                    .softwareDecode = true,
+                    .d3d11VaDecode = false,
+                },
+            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+            .sourceIdentity = identityA.value(),
+        },
+        .displayName = "Source A",
+    });
+    sources.push_back(domain::ComparisonSource{
+        .id = 1,
+        .role = domain::ComparisonRole::kPrediction,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = sourceBPath,
+            .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
+            .frameRate = rate.value(),
+            .frameCount =
+                domain::FrameCountInfo{
+                    .value = 5,
+                    .origin = domain::FrameCountOrigin::kReported,
+                },
+            .duration = domain::MediaTime{166'666},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8U,
+            .decodeCapabilities =
+                domain::DecodeCapabilities{
+                    .softwareDecode = true,
+                    .d3d11VaDecode = false,
+                },
+            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+            .sourceIdentity = identityB.value(),
+        },
+        .displayName = "Source B",
+    });
+    const auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    ASSERT_TRUE(validated);
     const auto project =
-        domain::Project::create(domain::ProjectId{"project-1"}, "Round-trip project", pair.value());
+        domain::Project::create(domain::ProjectId{"project-1"}, "Round-trip project", validated.value().set);
     ASSERT_TRUE(project);
 
     const auto saveEvents = std::make_shared<RecordingEventSink>();
@@ -372,12 +394,13 @@ TEST_F(ProjectRepositoryTests, SavesThenLoadsWithPayloadBeforeTerminal) {
     ASSERT_NE(loaded, nullptr);
     EXPECT_EQ(loaded->context, loadRequest.context);
     EXPECT_EQ(loaded->project.id(), project.value().id());
-    EXPECT_EQ(loaded->project.sources().sourceA().normalizedPath, sourceAPath);
-    EXPECT_EQ(loaded->project.sources().sourceB().normalizedPath, sourceBPath);
+    const auto& loadedSources = loaded->project.sources().sources();
+    EXPECT_EQ(loadedSources[0].descriptor.normalizedPath, sourceAPath);
+    EXPECT_EQ(loadedSources[1].descriptor.normalizedPath, sourceBPath);
     ASSERT_EQ(loaded->sourceDiagnostics.size(), 2U);
-    EXPECT_EQ(loaded->sourceDiagnostics[0].sourceRole, domain::SourceRole::kA);
+    EXPECT_EQ(loaded->sourceDiagnostics[0].sourceId, 0U);
     EXPECT_FALSE(loaded->sourceDiagnostics[0].error.has_value());
-    EXPECT_EQ(loaded->sourceDiagnostics[1].sourceRole, domain::SourceRole::kB);
+    EXPECT_EQ(loaded->sourceDiagnostics[1].sourceId, 1U);
     EXPECT_FALSE(loaded->sourceDiagnostics[1].error.has_value());
     const auto* loadTerminal = std::get_if<application::RequestTerminal>(&loadCriticalEvents[1]);
     ASSERT_NE(loadTerminal, nullptr);
@@ -420,7 +443,7 @@ TEST_F(ProjectRepositoryTests, AsyncRelinkFailureIsRecoverableAndRequestScoped) 
     const auto events = std::make_shared<RecordingEventSink>();
     const application::ProjectRelinkRequest request{
         .context = requestContext(25U),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0,
         .newSourcePath = path("missing-replacement.mp4"),
     };
     ASSERT_EQ(repository.submit(request, events), application::PortSubmitResult::Accepted);
@@ -443,8 +466,8 @@ TEST_F(ProjectRepositoryTests, LoadsEditableDiagnosticsThenPreparesRelinkCandida
     writeFile(sourceAPath, "original source A");
     writeFile(sourceBPath, "original source B");
 
-    const auto identityA = FingerprintService::fingerprint(sourceAPath, domain::SourceRole::kA);
-    const auto identityB = FingerprintService::fingerprint(sourceBPath, domain::SourceRole::kB);
+    const auto identityA = FingerprintService::fingerprint(sourceAPath, 0);
+    const auto identityB = FingerprintService::fingerprint(sourceBPath, 1);
     ASSERT_TRUE(identityA);
     ASSERT_TRUE(identityB);
     const auto initialProject =
@@ -487,13 +510,13 @@ TEST_F(ProjectRepositoryTests, LoadsEditableDiagnosticsThenPreparesRelinkCandida
     EXPECT_EQ(loaded->project.id(), initialProject.value().id());
     ASSERT_EQ(loaded->sourceDiagnostics.size(), 2U);
     const auto& sourceADiagnostic = loaded->sourceDiagnostics[0];
-    EXPECT_EQ(sourceADiagnostic.sourceRole, domain::SourceRole::kA);
+    EXPECT_EQ(sourceADiagnostic.sourceId, 0U);
     ASSERT_TRUE(sourceADiagnostic.error.has_value());
     EXPECT_EQ(sourceADiagnostic.error->code, domain::MediaErrorCode::kSourceFingerprintMismatch);
     EXPECT_TRUE(sourceADiagnostic.error->recoverable);
     EXPECT_EQ(sourceADiagnostic.error->requestId, diagnosticLoad.context.requestId);
     const auto& sourceBDiagnostic = loaded->sourceDiagnostics[1];
-    EXPECT_EQ(sourceBDiagnostic.sourceRole, domain::SourceRole::kB);
+    EXPECT_EQ(sourceBDiagnostic.sourceId, 1U);
     ASSERT_TRUE(sourceBDiagnostic.error.has_value());
     EXPECT_EQ(sourceBDiagnostic.error->code, domain::MediaErrorCode::kSourceMissing);
     EXPECT_TRUE(sourceBDiagnostic.error->recoverable);
@@ -506,7 +529,7 @@ TEST_F(ProjectRepositoryTests, LoadsEditableDiagnosticsThenPreparesRelinkCandida
     const auto relinkAEvents = std::make_shared<RecordingEventSink>();
     const application::ProjectRelinkRequest relinkA{
         .context = requestContext(32U),
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0,
         .newSourcePath = sourceAPath,
     };
     ASSERT_EQ(repository.submit(relinkA, relinkAEvents), application::PortSubmitResult::Accepted);
@@ -517,22 +540,23 @@ TEST_F(ProjectRepositoryTests, LoadsEditableDiagnosticsThenPreparesRelinkCandida
         std::get_if<application::SourceRelinkPrepared>(&relinkACriticalEvents[0]);
     ASSERT_NE(preparedA, nullptr);
     EXPECT_EQ(preparedA->context, relinkA.context);
-    EXPECT_EQ(preparedA->candidate.sourceRole(), domain::SourceRole::kA);
+    EXPECT_EQ(preparedA->candidate.sourceId(), 0U);
     EXPECT_TRUE(preparedA->candidate.normalizedPath().is_absolute());
     EXPECT_TRUE(preparedA->candidate.sourceIdentity().isComplete());
     EXPECT_TRUE(isSucceededTerminal(relinkACriticalEvents[1]));
     // Candidate preparation cannot mutate the editable project or claim the changed file is
-    // compatible media. That only happens after a fresh probe produces a source pair.
-    EXPECT_EQ(loaded->project.sources().sourceA().normalizedPath, sourceAPath);
-    ASSERT_TRUE(loaded->project.sources().sourceA().sourceIdentity.has_value());
-    EXPECT_EQ(loaded->project.sources().sourceA().sourceIdentity->fingerprintSha256,
+    // compatible media. That only happens after a fresh probe produces a comparison set.
+    const auto& loadedSources = loaded->project.sources().sources();
+    EXPECT_EQ(loadedSources[0].descriptor.normalizedPath, sourceAPath);
+    ASSERT_TRUE(loadedSources[0].descriptor.sourceIdentity.has_value());
+    EXPECT_EQ(loadedSources[0].descriptor.sourceIdentity->fingerprintSha256,
               identityA.value().fingerprintSha256);
 
     writeFile(sourceBPath, "replacement source B");
     const auto relinkBEvents = std::make_shared<RecordingEventSink>();
     const application::ProjectRelinkRequest relinkB{
         .context = requestContext(33U),
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1,
         .newSourcePath = sourceBPath,
     };
     ASSERT_EQ(repository.submit(relinkB, relinkBEvents), application::PortSubmitResult::Accepted);
@@ -543,7 +567,7 @@ TEST_F(ProjectRepositoryTests, LoadsEditableDiagnosticsThenPreparesRelinkCandida
         std::get_if<application::SourceRelinkPrepared>(&relinkBCriticalEvents[0]);
     ASSERT_NE(preparedB, nullptr);
     EXPECT_EQ(preparedB->context, relinkB.context);
-    EXPECT_EQ(preparedB->candidate.sourceRole(), domain::SourceRole::kB);
+    EXPECT_EQ(preparedB->candidate.sourceId(), 1U);
     EXPECT_TRUE(preparedB->candidate.normalizedPath().is_absolute());
     EXPECT_TRUE(preparedB->candidate.sourceIdentity().isComplete());
     EXPECT_TRUE(isSucceededTerminal(relinkBCriticalEvents[1]));

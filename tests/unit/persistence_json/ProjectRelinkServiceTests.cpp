@@ -38,27 +38,22 @@ TEST_F(ProjectRelinkServiceTests, PreparesAValidatedCandidateWithoutMutatingAnyP
     stream.close();
     ASSERT_TRUE(stream.good());
 
-    const auto prepared = ProjectRelinkService::prepare(domain::SourceRole::kA, relocatedPath);
+    const auto prepared = ProjectRelinkService::prepare(0, relocatedPath);
 
     ASSERT_TRUE(prepared);
-    EXPECT_EQ(prepared.value().sourceRole(), domain::SourceRole::kA);
+    EXPECT_EQ(prepared.value().sourceId(), 0U);
     EXPECT_TRUE(prepared.value().normalizedPath().is_absolute());
     EXPECT_EQ(prepared.value().normalizedPath().filename(), relocatedPath.filename());
     EXPECT_TRUE(prepared.value().sourceIdentity().isComplete());
 }
 
-TEST_F(ProjectRelinkServiceTests, ReturnsStableErrorsForMissingFileAndInvalidRole) {
+TEST_F(ProjectRelinkServiceTests, ReturnsStableErrorsForMissingFile) {
     const auto missing =
-        ProjectRelinkService::prepare(domain::SourceRole::kB, root_ / "missing.mov");
+        ProjectRelinkService::prepare(1, root_ / "missing.mov");
     ASSERT_FALSE(missing);
     EXPECT_EQ(missing.error().code, domain::MediaErrorCode::kSourceMissing);
-    EXPECT_EQ(missing.error().sourceRole, domain::SourceRole::kB);
-
-    const auto invalid =
-        ProjectRelinkService::prepare(domain::SourceRole::kProject, root_ / "ignored.mov");
-    ASSERT_FALSE(invalid);
-    EXPECT_EQ(invalid.error().code, domain::MediaErrorCode::kInvalidArgument);
-    EXPECT_EQ(invalid.error().sourceRole, domain::SourceRole::kProject);
+    ASSERT_TRUE(missing.error().source.has_value());
+    EXPECT_EQ(*missing.error().source, 1U);
 }
 
 } // namespace

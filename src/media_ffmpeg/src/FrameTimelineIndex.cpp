@@ -37,12 +37,12 @@ struct InterruptState final {
     return std::string{buffer};
 }
 
-[[nodiscard]] domain::MediaError timelineError(const domain::SourceRole sourceRole,
+[[nodiscard]] domain::MediaError timelineError(const domain::SourceId sourceId,
                                                const domain::MediaOperation operation,
                                                std::string technicalDetail) {
     return domain::makeMediaError(domain::MediaErrorCode::kFrameTimelineInvalid,
                                   operation,
-                                  sourceRole,
+                                  sourceId,
                                   true,
                                   std::move(technicalDetail));
 }
@@ -53,7 +53,7 @@ struct InterruptState final {
                                             : domain::MediaErrorCode::kMediaDecodeFailed;
     return domain::makeMediaError(code,
                                   request.operation,
-                                  request.sourceRole,
+                                  request.sourceId,
                                   true,
                                   "Presentation timestamp indexing was canceled.");
 }
@@ -64,7 +64,7 @@ struct InterruptState final {
                                             : domain::MediaErrorCode::kMediaDecodeFailed;
     return domain::makeMediaError(code,
                                   request.operation,
-                                  request.sourceRole,
+                                  request.sourceId,
                                   true,
                                   "Constant-frame-rate verification was canceled.");
 }
@@ -73,7 +73,7 @@ struct InterruptState final {
                                           std::string technicalDetail) {
     return domain::makeMediaError(domain::MediaErrorCode::kInvalidCfrTiming,
                                   request.operation,
-                                  request.sourceRole,
+                                  request.sourceId,
                                   true,
                                   std::move(technicalDetail));
 }
@@ -173,7 +173,7 @@ struct PassingCandidate final {
                                               const domain::MediaErrorCode code,
                                               std::string technicalDetail) {
     return domain::makeMediaError(
-        code, request.operation, request.sourceRole, true, std::move(technicalDetail));
+        code, request.operation, request.sourceId, true, std::move(technicalDetail));
 }
 
 } // namespace
@@ -182,20 +182,20 @@ domain::Result<std::vector<std::int64_t>>
 validatePresentationTimestamps(std::vector<std::int64_t> packetTimestamps,
                                const bool missingTimestampSeen,
                                const std::optional<std::int64_t> expectedFrameCount,
-                               const domain::SourceRole sourceRole,
+                               const domain::SourceId sourceId,
                                const domain::MediaOperation operation) {
     if (missingTimestampSeen) {
         return domain::Result<std::vector<std::int64_t>>::failure(timelineError(
-            sourceRole, operation, "At least one video packet has no presentation timestamp."));
+            sourceId, operation, "At least one video packet has no presentation timestamp."));
     }
     if (packetTimestamps.empty()) {
         return domain::Result<std::vector<std::int64_t>>::failure(
-            timelineError(sourceRole, operation, "The video stream has no timestamped frames."));
+            timelineError(sourceId, operation, "The video stream has no timestamped frames."));
     }
     if (packetTimestamps.size() >
         static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
         return domain::Result<std::vector<std::int64_t>>::failure(
-            timelineError(sourceRole,
+            timelineError(sourceId,
                           operation,
                           "The presentation timestamp index exceeds the supported frame count."));
     }
@@ -204,14 +204,14 @@ validatePresentationTimestamps(std::vector<std::int64_t> packetTimestamps,
     if (std::adjacent_find(packetTimestamps.begin(), packetTimestamps.end()) !=
         packetTimestamps.end()) {
         return domain::Result<std::vector<std::int64_t>>::failure(timelineError(
-            sourceRole, operation, "Video packets contain duplicate presentation timestamps."));
+            sourceId, operation, "Video packets contain duplicate presentation timestamps."));
     }
 
     if (expectedFrameCount.has_value() &&
         (*expectedFrameCount <= 0 ||
          static_cast<std::int64_t>(packetTimestamps.size()) != *expectedFrameCount)) {
         return domain::Result<std::vector<std::int64_t>>::failure(
-            timelineError(sourceRole,
+            timelineError(sourceId,
                           operation,
                           "The indexed display-order frame count contradicts the reported count."));
     }
@@ -272,7 +272,7 @@ buildPresentationTimestampIndex(const TimestampIndexRequest& request) {
         av_find_best_stream(format.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
     if (streamIndex < 0 || static_cast<unsigned int>(streamIndex) >= format->nb_streams) {
         return domain::Result<std::vector<std::int64_t>>::failure(timelineError(
-            request.sourceRole, request.operation, "The source has no video stream to index."));
+            request.sourceId, request.operation, "The source has no video stream to index."));
     }
 
     AvPacketPtr packet{av_packet_alloc()};
@@ -322,7 +322,7 @@ buildPresentationTimestampIndex(const TimestampIndexRequest& request) {
     return validatePresentationTimestamps(std::move(packetTimestamps),
                                           missingTimestampSeen,
                                           request.expectedFrameCount,
-                                          request.sourceRole,
+                                          request.sourceId,
                                           request.operation);
 }
 

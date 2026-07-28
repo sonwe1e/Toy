@@ -133,7 +133,7 @@ addChecked(const std::int64_t left, const std::int64_t right, std::int64_t* cons
 [[nodiscard]] MediaError rationalError(const MediaErrorCode code, std::string technicalDetail) {
     return makeMediaError(code,
                           MediaOperation::kRationalConversion,
-                          SourceRole::kNone,
+                          std::nullopt,
                           false,
                           std::move(technicalDetail));
 }

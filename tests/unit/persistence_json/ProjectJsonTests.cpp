@@ -17,48 +17,66 @@ namespace {
     return rate.value();
 }
 
-[[nodiscard]] domain::MediaDescriptor
-makeDescriptor(const std::filesystem::path& path,
-               const std::string& fingerprint,
-               const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
-    return domain::MediaDescriptor{
-        .normalizedPath = path,
-        .extent = domain::MediaExtent{.width = 1920, .height = 1080},
-        .frameRate = makeRate(),
-        .frameCount = domain::FrameCountInfo{.value = 4, .origin = countOrigin},
-        .duration = domain::MediaTime{133333},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8,
-        .colorMetadata =
-            domain::ColorMetadata{
-                .matrix = domain::ColorMatrix::kBt709,
-                .range = domain::ColorRange::kFull,
-                .matrixInferred = false,
-            },
-        .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
-        .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
-        .sourceIdentity =
-            domain::SourceFileIdentity{
-                .byteSize = 3,
-                .modifiedUtcMilliseconds = 123456789,
-                .fingerprintSha256 = fingerprint,
-            },
+[[nodiscard]] domain::ComparisonSource
+makeSource(const domain::SourceId id,
+           const std::filesystem::path& path,
+           const std::string& fingerprint,
+           const domain::ComparisonRole role,
+           const std::string& displayName,
+           const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
+    return domain::ComparisonSource{
+        .id = id,
+        .role = role,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = path,
+            .extent = domain::MediaExtent{.width = 1920, .height = 1080},
+            .frameRate = makeRate(),
+            .frameCount = domain::FrameCountInfo{.value = 4, .origin = countOrigin},
+            .duration = domain::MediaTime{133333},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8,
+            .colorMetadata =
+                domain::ColorMetadata{
+                    .matrix = domain::ColorMatrix::kBt709,
+                    .range = domain::ColorRange::kFull,
+                    .matrixInferred = false,
+                },
+            .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
+            .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
+            .sourceIdentity =
+                domain::SourceFileIdentity{
+                    .byteSize = 3,
+                    .modifiedUtcMilliseconds = 123456789,
+                    .fingerprintSha256 = fingerprint,
+                },
+        },
+        .displayName = displayName,
     };
 }
 
 [[nodiscard]] domain::Project makeProject(
     const std::filesystem::path& projectPath,
     const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
-    const auto sources = domain::SourcePairValidator::validate(
-        makeDescriptor(
-            projectPath.parent_path() / "source-a.mov", std::string(64, 'a'), countOrigin),
-        makeDescriptor(
-            projectPath.parent_path() / "source-b.mov", std::string(64, 'b'), countOrigin));
-    EXPECT_TRUE(sources);
+    std::vector<domain::ComparisonSource> sources;
+    sources.push_back(makeSource(0,
+                                 projectPath.parent_path() / "source-a.mov",
+                                 std::string(64, 'a'),
+                                 domain::ComparisonRole::kReference,
+                                 "Source A",
+                                 countOrigin));
+    sources.push_back(makeSource(1,
+                                 projectPath.parent_path() / "source-b.mov",
+                                 std::string(64, 'b'),
+                                 domain::ComparisonRole::kPrediction,
+                                 "Source B",
+                                 countOrigin));
+
+    const auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    EXPECT_TRUE(validated);
 
     const auto created =
-        domain::Project::create(domain::ProjectId{"project-1"}, "Round trip", sources.value());
+        domain::Project::create(domain::ProjectId{"project-1"}, "Round trip", validated.value().set);
     EXPECT_TRUE(created);
     domain::Project project = created.value();
 
@@ -69,45 +87,64 @@ makeDescriptor(const std::filesystem::path& path,
     return project;
 }
 
-[[nodiscard]] domain::MediaDescriptor makeVfrDescriptor(const std::filesystem::path& path,
-                                                        const std::string& fingerprint,
-                                                        const std::int64_t frameCount = 4) {
-    return domain::MediaDescriptor{
-        .normalizedPath = path,
-        .extent = domain::MediaExtent{.width = 1920, .height = 1080},
-        .frameRate = std::nullopt,
-        .frameCount = domain::FrameCountInfo{.value = frameCount,
-                                             .origin = domain::FrameCountOrigin::kIndexed},
-        .duration = domain::MediaTime{300000},
-        .codecId = "h264",
-        .pixelFormatId = "yuv420p",
-        .bitDepth = 8,
-        .colorMetadata =
-            domain::ColorMetadata{
-                .matrix = domain::ColorMatrix::kBt709,
-                .range = domain::ColorRange::kFull,
-                .matrixInferred = false,
-            },
-        .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
-        .timingConfidence = domain::TimingConfidence::kVariableFrameRate,
-        .sourceIdentity =
-            domain::SourceFileIdentity{
-                .byteSize = 5,
-                .modifiedUtcMilliseconds = 123456789,
-                .fingerprintSha256 = fingerprint,
-            },
+[[nodiscard]] domain::ComparisonSource
+makeVfrSource(const domain::SourceId id,
+              const std::filesystem::path& path,
+              const std::string& fingerprint,
+              const domain::ComparisonRole role,
+              const std::string& displayName,
+              const std::int64_t frameCount = 4) {
+    return domain::ComparisonSource{
+        .id = id,
+        .role = role,
+        .descriptor = domain::MediaDescriptor{
+            .normalizedPath = path,
+            .extent = domain::MediaExtent{.width = 1920, .height = 1080},
+            .frameRate = std::nullopt,
+            .frameCount = domain::FrameCountInfo{.value = frameCount,
+                                                 .origin = domain::FrameCountOrigin::kIndexed},
+            .duration = domain::MediaTime{300000},
+            .codecId = "h264",
+            .pixelFormatId = "yuv420p",
+            .bitDepth = 8,
+            .colorMetadata =
+                domain::ColorMetadata{
+                    .matrix = domain::ColorMatrix::kBt709,
+                    .range = domain::ColorRange::kFull,
+                    .matrixInferred = false,
+                },
+            .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
+            .timingConfidence = domain::TimingConfidence::kVariableFrameRate,
+            .sourceIdentity =
+                domain::SourceFileIdentity{
+                    .byteSize = 5,
+                    .modifiedUtcMilliseconds = 123456789,
+                    .fingerprintSha256 = fingerprint,
+                },
+        },
+        .displayName = displayName,
     };
 }
 
 [[nodiscard]] domain::Project makeVfrProject(
     const std::filesystem::path& projectPath) {
-    const auto sources = domain::SourcePairValidator::validate(
-        makeVfrDescriptor(projectPath.parent_path() / "source-a.mov", std::string(64, 'a')),
-        makeVfrDescriptor(projectPath.parent_path() / "source-b.mov", std::string(64, 'b')));
-    EXPECT_TRUE(sources);
+    std::vector<domain::ComparisonSource> sources;
+    sources.push_back(makeVfrSource(0,
+                                    projectPath.parent_path() / "source-a.mov",
+                                    std::string(64, 'a'),
+                                    domain::ComparisonRole::kReference,
+                                    "Source A"));
+    sources.push_back(makeVfrSource(1,
+                                    projectPath.parent_path() / "source-b.mov",
+                                    std::string(64, 'b'),
+                                    domain::ComparisonRole::kPrediction,
+                                    "Source B"));
+
+    const auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    EXPECT_TRUE(validated);
 
     const auto created =
-        domain::Project::create(domain::ProjectId{"vfr-project"}, "VFR project", sources.value());
+        domain::Project::create(domain::ProjectId{"vfr-project"}, "VFR project", validated.value().set);
     EXPECT_TRUE(created);
     domain::Project project = created.value();
 
@@ -118,108 +155,14 @@ makeDescriptor(const std::filesystem::path& path,
     return project;
 }
 
-// Returns the substring of the JSON object value assigned to `key`, i.e. from its
-// opening '{' to the matching closing '}'. Characters inside JSON strings are ignored
-// so embedded braces don't upset the depth count.
-[[nodiscard]] std::string objectValue(const std::string& document, const std::string& key) {
-    const std::string needle = "\"" + key + "\"";
-    const std::size_t keyPosition = document.find(needle);
-    if (keyPosition == std::string::npos) {
-        return {};
-    }
-    const std::size_t bracePosition = document.find('{', keyPosition + needle.size());
-    if (bracePosition == std::string::npos) {
-        return {};
-    }
-    int depth = 0;
-    bool inString = false;
-    for (std::size_t index = bracePosition; index < document.size(); ++index) {
-        const char glyph = document[index];
-        if (inString) {
-            if (glyph == '\\') {
-                ++index;
-            } else if (glyph == '"') {
-                inString = false;
-            }
-            continue;
-        }
-        if (glyph == '"') {
-            inString = true;
-        } else if (glyph == '{') {
-            ++depth;
-        } else if (glyph == '}') {
-            if (--depth == 0) {
-                return document.substr(bracePosition, index - bracePosition + 1);
-            }
-        }
-    }
-    return {};
-}
-
-// Collects the top-level member keys of a JSON object substring. A quoted token counts
-// as a key only when it sits at depth one and is immediately followed (modulo whitespace)
-// by a ':' 鈥?so nested object/array members are excluded.
-[[nodiscard]] std::vector<std::string> topLevelKeys(const std::string& document) {
-    std::vector<std::string> keys;
-    int depth = 0;
-    std::size_t index = 0;
-    const std::size_t length = document.size();
-    while (index < length) {
-        const char glyph = document[index];
-        if (glyph == '\\') {
-            index += 2;
-            continue;
-        }
-        if (glyph == '"') {
-            ++index;
-            std::string token;
-            bool closed = false;
-            while (index < length) {
-                if (document[index] == '\\') {
-                    if (index + 1 < length) {
-                        token.push_back(document[index + 1]);
-                    }
-                    index += 2;
-                    continue;
-                }
-                if (document[index] == '"') {
-                    closed = true;
-                    ++index;
-                    break;
-                }
-                token.push_back(document[index]);
-                ++index;
-            }
-            if (!closed) {
-                break;
-            }
-            while (index < length && (document[index] == ' ' || document[index] == '\t' ||
-                                      document[index] == '\n' || document[index] == '\r')) {
-                ++index;
-            }
-            if (depth == 1 && index < length && document[index] == ':') {
-                keys.push_back(std::move(token));
-            }
-            continue;
-        }
-        if (glyph == '{' || glyph == '[') {
-            ++depth;
-        } else if ((glyph == '}' || glyph == ']') && depth > 0) {
-            --depth;
-        }
-        ++index;
-    }
-    return keys;
-}
-
-TEST(ProjectJsonTests, RoundTripsCompleteSchemaOneDocument) {
+TEST(ProjectJsonTests, RoundTripsCompleteSchemaTwoDocument) {
     const std::filesystem::path projectPath =
         std::filesystem::temp_directory_path() / "dvs-project-json" / "roundtrip.dvsproject";
     const domain::Project project = makeProject(projectPath);
 
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 1"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
@@ -228,21 +171,25 @@ TEST(ProjectJsonTests, RoundTripsCompleteSchemaOneDocument) {
     EXPECT_EQ(decoded.value().sources().canonicalRate(), project.sources().canonicalRate());
     EXPECT_EQ(decoded.value().sources().canonicalFrameCount(),
               project.sources().canonicalFrameCount());
-    EXPECT_EQ(decoded.value().sources().sourceA().normalizedPath,
-              project.sources().sourceA().normalizedPath);
-    EXPECT_EQ(decoded.value().sources().sourceB().normalizedPath,
-              project.sources().sourceB().normalizedPath);
-    ASSERT_TRUE(decoded.value().sources().sourceA().sourceIdentity.has_value());
-    ASSERT_TRUE(project.sources().sourceA().sourceIdentity.has_value());
-    const auto& decodedIdentity = *decoded.value().sources().sourceA().sourceIdentity;
-    const auto& expectedIdentity = *project.sources().sourceA().sourceIdentity;
+
+    const auto& decodedSources = decoded.value().sources().sources();
+    const auto& projectSources = project.sources().sources();
+    ASSERT_EQ(decodedSources.size(), projectSources.size());
+    EXPECT_EQ(decodedSources[0].descriptor.normalizedPath,
+              projectSources[0].descriptor.normalizedPath);
+    EXPECT_EQ(decodedSources[1].descriptor.normalizedPath,
+              projectSources[1].descriptor.normalizedPath);
+    ASSERT_TRUE(decodedSources[0].descriptor.sourceIdentity.has_value());
+    ASSERT_TRUE(projectSources[0].descriptor.sourceIdentity.has_value());
+    const auto& decodedIdentity = decodedSources[0].descriptor.sourceIdentity.value();
+    const auto& expectedIdentity = projectSources[0].descriptor.sourceIdentity.value();
     EXPECT_EQ(decodedIdentity.byteSize, expectedIdentity.byteSize);
     EXPECT_EQ(decodedIdentity.modifiedUtcMilliseconds, expectedIdentity.modifiedUtcMilliseconds);
     EXPECT_EQ(decodedIdentity.fingerprintSha256, expectedIdentity.fingerprintSha256);
-    EXPECT_EQ(decoded.value().sources().sourceA().colorMetadata.matrix,
+    EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.matrix,
               domain::ColorMatrix::kBt709);
-    EXPECT_EQ(decoded.value().sources().sourceA().colorMetadata.range, domain::ColorRange::kFull);
-    EXPECT_FALSE(decoded.value().sources().sourceA().colorMetadata.matrixInferred);
+    EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.range, domain::ColorRange::kFull);
+    EXPECT_FALSE(decodedSources[0].descriptor.colorMetadata.matrixInferred);
     EXPECT_EQ(decoded.value().inMark(), project.inMark());
     EXPECT_EQ(decoded.value().outMark(), project.outMark());
     EXPECT_EQ(decoded.value().lastDisplayedFrame(), project.lastDisplayedFrame());
@@ -260,7 +207,8 @@ TEST(ProjectJsonTests, RoundTripsIndexedFrameCounts) {
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
-    EXPECT_EQ(decoded.value().sources().sourceA().frameCount.origin,
+    const auto& sources = decoded.value().sources().sources();
+    EXPECT_EQ(sources[0].descriptor.frameCount.origin,
               domain::FrameCountOrigin::kIndexed);
 }
 
@@ -271,12 +219,16 @@ TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsolu
     const std::filesystem::path embeddedSourcePath =
         originalProjectPath.parent_path() / "media" / "source-a.mov";
     const std::filesystem::path externalSourcePath = root / "external" / "source-b.mov";
-    const auto sources = domain::SourcePairValidator::validate(
-        makeDescriptor(embeddedSourcePath, std::string(64, 'a')),
-        makeDescriptor(externalSourcePath, std::string(64, 'b')));
-    ASSERT_TRUE(sources);
+
+    std::vector<domain::ComparisonSource> sources;
+    sources.push_back(makeSource(0, embeddedSourcePath, std::string(64, 'a'),
+                                 domain::ComparisonRole::kReference, "Source A"));
+    sources.push_back(makeSource(1, externalSourcePath, std::string(64, 'b'),
+                                 domain::ComparisonRole::kPrediction, "Source B"));
+    const auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    ASSERT_TRUE(validated);
     const auto created = domain::Project::create(
-        domain::ProjectId{"portable-project"}, "Portable project", sources.value());
+        domain::ProjectId{"portable-project"}, "Portable project", validated.value().set);
     ASSERT_TRUE(created);
 
     const auto encoded = ProjectJson::encodeText(created.value(), originalProjectPath);
@@ -286,9 +238,10 @@ TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsolu
     const std::filesystem::path relocatedProjectPath = root / "relocated" / "project.dvsproj";
     const auto decoded = ProjectJson::decodeText(encoded.value(), relocatedProjectPath);
     ASSERT_TRUE(decoded);
-    EXPECT_EQ(decoded.value().sources().sourceA().normalizedPath,
+    const auto& decodedSources = decoded.value().sources().sources();
+    EXPECT_EQ(decodedSources[0].descriptor.normalizedPath,
               (relocatedProjectPath.parent_path() / "media" / "source-a.mov").lexically_normal());
-    EXPECT_EQ(decoded.value().sources().sourceB().normalizedPath,
+    EXPECT_EQ(decodedSources[1].descriptor.normalizedPath,
               externalSourcePath.lexically_normal());
 }
 
@@ -297,25 +250,43 @@ TEST(ProjectJsonTests, RejectsMalformedJsonWithStableSchemaError) {
 
     ASSERT_FALSE(decoded);
     EXPECT_EQ(decoded.error().code, domain::MediaErrorCode::kInvalidProjectSchema);
-    EXPECT_EQ(decoded.error().sourceRole, domain::SourceRole::kProject);
+    EXPECT_FALSE(decoded.error().source.has_value());
 }
 
-TEST(ProjectJsonTests, RejectsUnknownSchemaVersion) {
+TEST(ProjectJsonTests, RejectsSchemaVersionOne) {
     const std::filesystem::path projectPath =
-        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema.dvsproject";
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema1.dvsproject";
     const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
     ASSERT_TRUE(encoded);
 
-    std::string unsupportedDocument = encoded.value();
-    const std::string schemaOne = "\"schemaVersion\": 1";
-    const std::size_t schemaPosition = unsupportedDocument.find(schemaOne);
+    std::string legacyDocument = encoded.value();
+    const std::string schemaTwo = "\"schemaVersion\": 2";
+    const std::size_t schemaPosition = legacyDocument.find(schemaTwo);
     ASSERT_NE(schemaPosition, std::string::npos);
-    unsupportedDocument.replace(schemaPosition, schemaOne.size(), "\"schemaVersion\": 2");
+    legacyDocument.replace(schemaPosition, schemaTwo.size(), "\"schemaVersion\": 1");
 
-    const auto decoded = ProjectJson::decodeText(unsupportedDocument, projectPath);
+    const auto decoded = ProjectJson::decodeText(legacyDocument, projectPath);
     ASSERT_FALSE(decoded);
     EXPECT_EQ(decoded.error().code, domain::MediaErrorCode::kUnsupportedProjectSchema);
-    EXPECT_EQ(decoded.error().sourceRole, domain::SourceRole::kProject);
+    EXPECT_FALSE(decoded.error().source.has_value());
+}
+
+TEST(ProjectJsonTests, RejectsSchemaVersionThree) {
+    const std::filesystem::path projectPath =
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema3.dvsproject";
+    const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
+    ASSERT_TRUE(encoded);
+
+    std::string futureDocument = encoded.value();
+    const std::string schemaTwo = "\"schemaVersion\": 2";
+    const std::size_t schemaPosition = futureDocument.find(schemaTwo);
+    ASSERT_NE(schemaPosition, std::string::npos);
+    futureDocument.replace(schemaPosition, schemaTwo.size(), "\"schemaVersion\": 3");
+
+    const auto decoded = ProjectJson::decodeText(futureDocument, projectPath);
+    ASSERT_FALSE(decoded);
+    EXPECT_EQ(decoded.error().code, domain::MediaErrorCode::kUnsupportedProjectSchema);
+    EXPECT_FALSE(decoded.error().source.has_value());
 }
 
 TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
@@ -326,7 +297,7 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 1"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"variable-frame-rate\""),
               std::string::npos);
 
@@ -336,43 +307,34 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
     EXPECT_EQ(encoded.value().find("\"numerator\""), std::string::npos);
     EXPECT_EQ(encoded.value().find("\"denominator\""), std::string::npos);
 
-    const std::string canonical = objectValue(encoded.value(), "canonicalTimeline");
-    ASSERT_FALSE(canonical.empty());
-    const auto canonicalKeys = topLevelKeys(canonical);
-    // The canonical timeline holds exactly frameRate and frameCount - no per-frame timeline.
-    EXPECT_EQ(canonicalKeys.size(), 2U);
-    EXPECT_NE(std::find(canonicalKeys.begin(), canonicalKeys.end(), "frameRate"),
-              canonicalKeys.end());
-    EXPECT_NE(std::find(canonicalKeys.begin(), canonicalKeys.end(), "frameCount"),
-              canonicalKeys.end());
-    EXPECT_EQ(canonical.find('['), std::string::npos);
-
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
     EXPECT_EQ(decoded.value().id(), project.id());
     EXPECT_EQ(decoded.value().displayName(), project.displayName());
     // Source descriptors and the canonical timeline round-trip with null optional rates.
-    EXPECT_FALSE(decoded.value().sources().sourceA().frameRate.has_value());
-    EXPECT_FALSE(decoded.value().sources().sourceB().frameRate.has_value());
+    const auto& decodedSources = decoded.value().sources().sources();
+    EXPECT_FALSE(decodedSources[0].descriptor.frameRate.has_value());
+    EXPECT_FALSE(decodedSources[1].descriptor.frameRate.has_value());
     EXPECT_FALSE(decoded.value().sources().canonicalRate().has_value());
-    EXPECT_EQ(decoded.value().sources().sourceA().timingConfidence,
+    EXPECT_EQ(decodedSources[0].descriptor.timingConfidence,
               domain::TimingConfidence::kVariableFrameRate);
-    EXPECT_EQ(decoded.value().sources().sourceB().timingConfidence,
+    EXPECT_EQ(decodedSources[1].descriptor.timingConfidence,
               domain::TimingConfidence::kVariableFrameRate);
     EXPECT_EQ(decoded.value().sources().canonicalFrameCount(),
               project.sources().canonicalFrameCount());
-    ASSERT_TRUE(decoded.value().sources().sourceA().sourceIdentity.has_value());
-    ASSERT_TRUE(project.sources().sourceA().sourceIdentity.has_value());
-    EXPECT_EQ(decoded.value().sources().sourceA().sourceIdentity->fingerprintSha256,
-              project.sources().sourceA().sourceIdentity->fingerprintSha256);
-    ASSERT_TRUE(decoded.value().sources().sourceB().sourceIdentity.has_value());
-    EXPECT_TRUE(project.sources().sourceB().sourceIdentity.has_value());
-    EXPECT_EQ(decoded.value().sources().sourceB().sourceIdentity->fingerprintSha256,
-              project.sources().sourceB().sourceIdentity->fingerprintSha256);
+    ASSERT_TRUE(decodedSources[0].descriptor.sourceIdentity.has_value());
+    const auto& projectSources = project.sources().sources();
+    ASSERT_TRUE(projectSources[0].descriptor.sourceIdentity.has_value());
+    EXPECT_EQ(decodedSources[0].descriptor.sourceIdentity->fingerprintSha256,
+              projectSources[0].descriptor.sourceIdentity->fingerprintSha256);
+    ASSERT_TRUE(decodedSources[1].descriptor.sourceIdentity.has_value());
+    EXPECT_TRUE(projectSources[1].descriptor.sourceIdentity.has_value());
+    EXPECT_EQ(decodedSources[1].descriptor.sourceIdentity->fingerprintSha256,
+              projectSources[1].descriptor.sourceIdentity->fingerprintSha256);
 }
 
 TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
-    // The existing RoundTripsCompleteSchemaOneDocument test already exercises a CFR project;
+    // The existing RoundTripsCompleteSchemaTwoDocument test already exercises a CFR project;
     // this case makes the CFR compatibility assertion explicit and guards the non-null frame
     // rate serialization that the VFR path above deliberately avoids.
     const std::filesystem::path projectPath =
@@ -383,22 +345,10 @@ TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 1"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"numerator\": 30"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"denominator\": 1"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"verified-cfr\""), std::string::npos);
-
-    const std::string canonical = objectValue(encoded.value(), "canonicalTimeline");
-    ASSERT_FALSE(canonical.empty());
-    // A CFR canonical timeline keeps the exact object form of the frame rate, never null.
-    EXPECT_NE(canonical.find("\"frameRate\":"), std::string::npos);
-    EXPECT_EQ(canonical.find("\"frameRate\": null"), std::string::npos);
-    const auto canonicalKeys = topLevelKeys(canonical);
-    EXPECT_EQ(canonicalKeys.size(), 2U);
-    EXPECT_NE(std::find(canonicalKeys.begin(), canonicalKeys.end(), "frameRate"),
-              canonicalKeys.end());
-    EXPECT_NE(std::find(canonicalKeys.begin(), canonicalKeys.end(), "frameCount"),
-              canonicalKeys.end());
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
@@ -408,7 +358,8 @@ TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
     EXPECT_EQ(decoded.value().sources().canonicalRate()->denominator(),
               project.sources().canonicalRate()->denominator());
     EXPECT_EQ(decoded.value().sources().canonicalRate(), project.sources().canonicalRate());
-    EXPECT_EQ(decoded.value().sources().sourceA().timingConfidence,
+    const auto& decodedSources = decoded.value().sources().sources();
+    EXPECT_EQ(decodedSources[0].descriptor.timingConfidence,
               domain::TimingConfidence::kVerifiedCfr);
 }
 

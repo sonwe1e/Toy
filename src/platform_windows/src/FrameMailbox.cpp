@@ -1,7 +1,7 @@
 #include "dvs/platform/FrameMailbox.h"
 
-#include "GpuFramePair.h"
 #include "GpuFrameResource.h"
+#include "GpuFrameSet.h"
 
 #include <atomic>
 #include <limits>
@@ -50,27 +50,31 @@ public:
         : activeDeviceGeneration_(activeDeviceGeneration) {}
 
     [[nodiscard]] FrameMailboxPublishResult
-    publish(const std::shared_ptr<const GpuFramePair>& pair) noexcept {
-        if (!pair) {
-            return FrameMailboxPublishResult::InvalidPair;
+    publish(const std::shared_ptr<const GpuFrameSet>& set) noexcept {
+        if (!set) {
+            return FrameMailboxPublishResult::InvalidSet;
         }
 
-        std::shared_ptr<const GpuFramePair> displaced;
+        std::shared_ptr<const GpuFrameSet> displaced;
         {
             const std::lock_guard lock(mutex_);
             if (closed_.load(std::memory_order_relaxed)) {
                 return FrameMailboxPublishResult::Closed;
             }
-            if (pair->context().deviceGeneration != activeDeviceGeneration_ ||
-                pair->frameA()->deviceGeneration() != activeDeviceGeneration_ ||
-                pair->frameB()->deviceGeneration() != activeDeviceGeneration_) {
+            if (set->context().deviceGeneration != activeDeviceGeneration_) {
                 return FrameMailboxPublishResult::DeviceGenerationMismatch;
             }
-            if (!acceptSession(pair->context().playback.request.sessionId)) {
+            // Validate all slots' device generation
+            for (const GpuFrameSlot& slot : set->slots()) {
+                if (!slot.frame || slot.frame->deviceGeneration() != activeDeviceGeneration_) {
+                    return FrameMailboxPublishResult::DeviceGenerationMismatch;
+                }
+            }
+            if (!acceptSession(set->context().playback.request.sessionId)) {
                 return FrameMailboxPublishResult::PlaybackScopeRejected;
             }
 
-            const PlaybackScopeKey incomingScope = scopeKey(pair->context().playback);
+            const PlaybackScopeKey incomingScope = scopeKey(set->context().playback);
             if (playbackHighWater_.has_value()) {
                 const int order = compareScopes(incomingScope, *playbackHighWater_);
                 if (order < 0 || (order == 0 && playbackScopeTombstoned_)) {
@@ -81,15 +85,15 @@ public:
                 return FrameMailboxPublishResult::ResourceExhausted;
             }
 
-            displaced = std::move(pair_);
-            pair_ = pair;
+            displaced = std::move(set_);
+            set_ = set;
             playbackHighWater_ = incomingScope;
             playbackScopeTombstoned_ = false;
             ++publicationSerial_;
         }
 
         // Native resources and FrameBudget reservations are never released while the state mutex
-        // is held. An in-flight render publication can continue pinning the displaced pair.
+        // is held. An in-flight render publication can continue pinning the displaced set.
         displaced.reset();
         return FrameMailboxPublishResult::Published;
     }
@@ -112,7 +116,7 @@ public:
                 .status = FrameMailboxReadStatus::DeviceGenerationMismatch,
             };
         }
-        if (!pair_) {
+        if (!set_) {
             return FrameMailboxReadResult{.status = FrameMailboxReadStatus::Empty};
         }
 
@@ -120,7 +124,7 @@ public:
             .status = FrameMailboxReadStatus::Available,
             .publication =
                 FrameMailboxPublication{
-                    .pair = pair_,
+                    .set = set_,
                     .publicationSerial = publicationSerial_,
                 },
         };
@@ -143,15 +147,15 @@ public:
         if (activeDeviceGeneration_ != expectedDeviceGeneration) {
             return FrameMailboxDrawStatus::DeviceGenerationMismatch;
         }
-        if (!publication.pair || publication.publicationSerial != publicationSerial_ ||
-            pair_ != publication.pair) {
+        if (!publication.set || publication.publicationSerial != publicationSerial_ ||
+            set_ != publication.set) {
             return FrameMailboxDrawStatus::Superseded;
         }
         return FrameMailboxDrawStatus::Current;
     }
 
     [[nodiscard]] bool clear(const application::PlaybackRequestContext& expectedScope) noexcept {
-        std::shared_ptr<const GpuFramePair> displaced;
+        std::shared_ptr<const GpuFrameSet> displaced;
         {
             const std::lock_guard lock(mutex_);
             if (closed_.load(std::memory_order_relaxed) ||
@@ -162,14 +166,14 @@ public:
             const PlaybackScopeKey clearingScope = scopeKey(expectedScope);
             if (playbackHighWater_.has_value()) {
                 const int order = compareScopes(clearingScope, *playbackHighWater_);
-                if (order < 0 || (order == 0 && playbackScopeTombstoned_ && !pair_)) {
+                if (order < 0 || (order == 0 && playbackScopeTombstoned_ && !set_)) {
                     return false;
                 }
             }
 
             playbackHighWater_ = clearingScope;
             playbackScopeTombstoned_ = true;
-            displaced = std::move(pair_);
+            displaced = std::move(set_);
         }
         displaced.reset();
         return true;
@@ -177,7 +181,7 @@ public:
 
     [[nodiscard]] bool
     advanceDeviceGeneration(const domain::DeviceGeneration deviceGeneration) noexcept {
-        std::shared_ptr<const GpuFramePair> displaced;
+        std::shared_ptr<const GpuFrameSet> displaced;
         {
             const std::lock_guard lock(mutex_);
             if (closed_.load(std::memory_order_relaxed) ||
@@ -185,14 +189,14 @@ public:
                 return false;
             }
             activeDeviceGeneration_ = deviceGeneration;
-            displaced = std::move(pair_);
+            displaced = std::move(set_);
         }
         displaced.reset();
         return true;
     }
 
     void shutdown() noexcept {
-        std::shared_ptr<const GpuFramePair> displaced;
+        std::shared_ptr<const GpuFrameSet> displaced;
         {
             const std::lock_guard lock(mutex_);
             if (closed_.load(std::memory_order_relaxed)) {
@@ -200,7 +204,7 @@ public:
             }
             closed_.store(true, std::memory_order_release);
             playbackScopeTombstoned_ = true;
-            displaced = std::move(pair_);
+            displaced = std::move(set_);
         }
         displaced.reset();
     }
@@ -224,7 +228,7 @@ private:
     std::optional<PlaybackScopeKey> playbackHighWater_;
     bool playbackScopeTombstoned_ = false;
     std::uint64_t publicationSerial_ = 0U;
-    std::shared_ptr<const GpuFramePair> pair_;
+    std::shared_ptr<const GpuFrameSet> set_;
     std::atomic<bool> closed_{false};
 };
 
@@ -236,8 +240,8 @@ FrameMailbox::~FrameMailbox() {
 }
 
 FrameMailboxPublishResult
-FrameMailbox::publish(const std::shared_ptr<const GpuFramePair>& pair) noexcept {
-    return impl_->publish(pair);
+FrameMailbox::publish(const std::shared_ptr<const GpuFrameSet>& set) noexcept {
+    return impl_->publish(set);
 }
 
 FrameMailboxReadResult

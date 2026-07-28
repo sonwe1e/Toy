@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dvs/application/FrameHandle.h"
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaDescriptor.h"
 #include "dvs/domain/Result.h"
 
@@ -23,7 +24,7 @@ struct DecodedFrame final {
 // actor that created it; no source pair ever shares seek or packet state.
 class SoftwareDecoder final {
 public:
-    SoftwareDecoder(domain::SourceRole sourceRole,
+    SoftwareDecoder(domain::SourceId sourceId,
                     domain::MediaDescriptor descriptor,
                     platform::FrameBudget& frameBudget,
                     const std::atomic<bool>* externalInterrupt = nullptr);

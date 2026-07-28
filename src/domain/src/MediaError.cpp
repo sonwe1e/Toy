@@ -124,32 +124,16 @@ std::string_view stableId(const MediaOperation operation) noexcept {
     return "unknown-operation";
 }
 
-std::string_view stableId(const SourceRole sourceRole) noexcept {
-    switch (sourceRole) {
-    case SourceRole::kNone:
-        return "none";
-    case SourceRole::kA:
-        return "a";
-    case SourceRole::kB:
-        return "b";
-    case SourceRole::kPair:
-        return "pair";
-    case SourceRole::kProject:
-        return "project";
-    }
-    return "unknown-source";
-}
-
 MediaError makeMediaError(const MediaErrorCode code,
                           const MediaOperation operation,
-                          const SourceRole sourceRole,
+                          std::optional<SourceId> source,
                           const bool recoverable,
                           std::string technicalDetail,
                           std::optional<RequestId> requestId) {
     return MediaError{
         .code = code,
         .operation = operation,
-        .sourceRole = sourceRole,
+        .source = source,
         .requestId = requestId,
         .recoverable = recoverable,
         .userMessageKey = std::string{stableId(code)},

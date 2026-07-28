@@ -1,6 +1,6 @@
 #include "dvs/ui/DesktopApplication.h"
 
-#include "dvs/ui/DualVideoSurface.h"
+#include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 
@@ -44,7 +44,7 @@ namespace {
 void registerQmlTypes() {
     static std::once_flag registered;
     std::call_once(registered, [] {
-        static_cast<void>(qmlRegisterType<DualVideoSurface>("Dvs.Ui", 1, 0, "DualVideoSurface"));
+        static_cast<void>(qmlRegisterType<ComparisonSurface>("Dvs.Ui", 1, 0, "ComparisonSurface"));
     });
 }
 
@@ -95,7 +95,7 @@ public:
         auto* const window = qobject_cast<QQuickWindow*>(engine->rootObjects().front());
         auto* const surface =
             window != nullptr
-                ? window->findChild<DualVideoSurface*>(QStringLiteral("dualVideoSurface"))
+                ? window->findChild<ComparisonSurface*>(QStringLiteral("dualVideoSurface"))
                 : nullptr;
         if (window == nullptr || surface == nullptr || !bindSurface(*surface)) {
             reportWarnings(qmlWarnings_);
@@ -267,7 +267,7 @@ private:
     QGuiApplication application_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
     QQuickWindow* window_ = nullptr;
-    DualVideoSurface* surface_ = nullptr;
+    ComparisonSurface* surface_ = nullptr;
     QMetaObject::Connection windowDestroyedConnection_;
     QMetaObject::Connection surfaceDestroyedConnection_;
     std::vector<QQmlError> qmlWarnings_;

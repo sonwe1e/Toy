@@ -84,7 +84,7 @@ public:
     [[nodiscard]] bool canPlay() const noexcept;
     [[nodiscard]] bool canPause() const noexcept;
 
-    Q_INVOKABLE bool openPair(const QUrl& sourceA, const QUrl& sourceB);
+    Q_INVOKABLE bool openComparison(const QUrl& first, const QUrl& second);
     Q_INVOKABLE bool first();
     Q_INVOKABLE bool previous();
     Q_INVOKABLE bool next();

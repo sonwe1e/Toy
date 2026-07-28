@@ -80,6 +80,8 @@ enum class SurfaceDifferenceGain : std::uint8_t {
     Gain16x,
 };
 
+// Reference enum for difference view. SourceA and SourceB now mean slot-0 and slot-1
+// respectively; the names are retained for this phase and will be renamed in a later UI migration.
 enum class SurfaceDifferenceReference : std::uint8_t {
     SourceA,
     SourceB,
@@ -145,7 +147,7 @@ d3dScissorFromBottomLeft(const SurfaceScissorRect& scissor,
 
 [[nodiscard]] Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata) noexcept;
 
-enum class DualVideoRenderResult {
+enum class ComparisonRenderResult {
     Presented,
     PresentedAckPending,
     BackgroundOnly,
@@ -157,21 +159,23 @@ enum class DualVideoRenderResult {
 };
 
 // Render-thread-only D3D11 compositor. It borrows the current Qt render pass: render() never
-// changes render targets or viewports and never begins an external-command section.
-class D3d11DualVideoRenderer final {
+// changes render targets or viewports and never begins an external-command section. The renderer
+// receives a GpuFrameSet; side-by-side view draws the first two slots' textures left/right, and
+// difference view computes the diff between the first two slots.
+class D3d11ComparisonRenderer final {
 public:
-    D3d11DualVideoRenderer(std::shared_ptr<GraphicsDeviceBroker> deviceBroker,
-                           std::shared_ptr<FrameMailbox> frameMailbox,
-                           std::shared_ptr<PresentationAckMailbox> acknowledgementMailbox,
-                           std::weak_ptr<IRenderActivitySink> activitySink);
-    ~D3d11DualVideoRenderer();
+    D3d11ComparisonRenderer(std::shared_ptr<GraphicsDeviceBroker> deviceBroker,
+                            std::shared_ptr<FrameMailbox> frameMailbox,
+                            std::shared_ptr<PresentationAckMailbox> acknowledgementMailbox,
+                            std::weak_ptr<IRenderActivitySink> activitySink);
+    ~D3d11ComparisonRenderer();
 
-    D3d11DualVideoRenderer(const D3d11DualVideoRenderer&) = delete;
-    D3d11DualVideoRenderer& operator=(const D3d11DualVideoRenderer&) = delete;
-    D3d11DualVideoRenderer(D3d11DualVideoRenderer&&) = delete;
-    D3d11DualVideoRenderer& operator=(D3d11DualVideoRenderer&&) = delete;
+    D3d11ComparisonRenderer(const D3d11ComparisonRenderer&) = delete;
+    D3d11ComparisonRenderer& operator=(const D3d11ComparisonRenderer&) = delete;
+    D3d11ComparisonRenderer(D3d11ComparisonRenderer&&) = delete;
+    D3d11ComparisonRenderer& operator=(D3d11ComparisonRenderer&&) = delete;
 
-    [[nodiscard]] DualVideoRenderResult render(const SurfaceRenderState& state) noexcept;
+    [[nodiscard]] ComparisonRenderResult render(const SurfaceRenderState& state) noexcept;
     void releaseResources() noexcept;
 
 private:

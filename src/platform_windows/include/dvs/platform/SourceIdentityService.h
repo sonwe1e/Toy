@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaDescriptor.h"
 #include "dvs/domain/MediaError.h"
 #include "dvs/domain/Result.h"
@@ -14,12 +15,12 @@ class SourceIdentityService final {
 public:
     [[nodiscard]] static domain::Result<domain::SourceFileIdentity>
     fingerprint(const std::filesystem::path& sourcePath,
-                domain::SourceRole sourceRole,
+                domain::SourceId sourceId,
                 domain::MediaOperation operation);
 
     [[nodiscard]] static domain::Status verify(const std::filesystem::path& sourcePath,
                                                const domain::SourceFileIdentity& expected,
-                                               domain::SourceRole sourceRole,
+                                               domain::SourceId sourceId,
                                                domain::MediaOperation operation);
 };
 

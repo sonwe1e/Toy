@@ -10,7 +10,7 @@ class QUrl;
 
 namespace dvs::ui {
 
-class DualVideoSurface;
+class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
 
@@ -23,7 +23,7 @@ struct DesktopApplicationOptions final {
 // only after this object so Qt's process-wide application state always outlives runtime QObjects.
 class DesktopApplication final {
 public:
-    using SurfaceBinder = std::function<bool(DualVideoSurface&)>;
+    using SurfaceBinder = std::function<bool(ComparisonSurface&)>;
 
     DesktopApplication(int& argc,
                        char** argv,

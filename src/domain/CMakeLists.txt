@@ -9,7 +9,6 @@ add_library(
         src/Project.cpp
         src/RationalRate.cpp
         src/SourceRelinkCandidate.cpp
-        src/SourcePairValidator.cpp
 )
 add_library(dvs::domain ALIAS dvs_domain)
 

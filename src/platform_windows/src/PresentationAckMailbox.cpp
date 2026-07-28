@@ -6,7 +6,7 @@
 namespace dvs::platform {
 namespace {
 
-static_assert(std::is_nothrow_copy_constructible_v<application::FramePairPresented>);
+static_assert(std::is_nothrow_copy_constructible_v<application::FrameSetPresented>);
 
 constexpr std::uint64_t kClosedMask = std::uint64_t{1} << 63U;
 constexpr std::uint64_t kProducerActiveMask = std::uint64_t{1} << 62U;
@@ -15,7 +15,7 @@ constexpr std::uint64_t kSequenceMask = kProducerActiveMask - 1U;
 } // namespace
 
 PresentationAckPushResult
-PresentationAckMailbox::tryPush(const application::FramePairPresented& acknowledgement) noexcept {
+PresentationAckMailbox::tryPush(const application::FrameSetPresented& acknowledgement) noexcept {
     std::uint64_t producerState = producerState_.load(std::memory_order_acquire);
     if ((producerState & kClosedMask) != 0U) {
         return PresentationAckPushResult::Closed;
@@ -48,7 +48,7 @@ PresentationAckMailbox::tryPush(const application::FramePairPresented& acknowled
     }
 }
 
-std::optional<application::FramePairPresented> PresentationAckMailbox::tryPop() noexcept {
+std::optional<application::FrameSetPresented> PresentationAckMailbox::tryPop() noexcept {
     const std::uint64_t readSequence = readSequence_.load(std::memory_order_relaxed);
     const std::uint64_t producerState = producerState_.load(std::memory_order_acquire);
     const std::uint64_t writeSequence = producerState & kSequenceMask;
@@ -56,9 +56,9 @@ std::optional<application::FramePairPresented> PresentationAckMailbox::tryPop() 
         return std::nullopt;
     }
 
-    std::optional<application::FramePairPresented>& entry =
+    std::optional<application::FrameSetPresented>& entry =
         entries_[static_cast<std::size_t>(readSequence % kCapacity)];
-    std::optional<application::FramePairPresented> result = std::move(entry);
+    std::optional<application::FrameSetPresented> result = std::move(entry);
     entry.reset();
     readSequence_.store(readSequence + 1U, std::memory_order_release);
     return result;

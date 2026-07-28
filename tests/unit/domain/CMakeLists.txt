@@ -10,7 +10,6 @@ add_executable(
     ModuleNameTests.cpp
     ProjectTests.cpp
     RationalRateTests.cpp
-    SourcePairValidatorTests.cpp
 )
 target_link_libraries(
     dvs_domain_unit_tests

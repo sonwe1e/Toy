@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaDescriptor.h"
 #include "dvs/domain/Result.h"
 
@@ -7,16 +8,16 @@
 
 namespace dvs::persistence {
 
-// Schema-1 compatibility facade. The platform service owns source I/O and hashing; this facade
+// Schema-2 compatibility facade. The platform service owns source I/O and hashing; this facade
 // fixes errors to the project-persistence operation.
 class FingerprintService final {
 public:
     [[nodiscard]] static domain::Result<domain::SourceFileIdentity>
-    fingerprint(const std::filesystem::path& sourcePath, domain::SourceRole sourceRole);
+    fingerprint(const std::filesystem::path& sourcePath, domain::SourceId sourceId);
 
     [[nodiscard]] static domain::Status verify(const std::filesystem::path& sourcePath,
                                                const domain::SourceFileIdentity& expected,
-                                               domain::SourceRole sourceRole);
+                                               domain::SourceId sourceId);
 };
 
 } // namespace dvs::persistence

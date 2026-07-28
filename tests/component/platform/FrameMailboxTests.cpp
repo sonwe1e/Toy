@@ -1,8 +1,8 @@
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/FrameMailbox.h"
 
-#include "GpuFramePair.h"
 #include "GpuFrameResource.h"
+#include "GpuFrameSet.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +11,7 @@
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace dvs::platform {
 namespace {
@@ -72,7 +73,7 @@ makeResource(FrameBudget& budget,
              const std::uint64_t token,
              const application::FrameRequestContext& context,
              const domain::FrameId frameId,
-             const domain::SourceRole sourceRole) {
+             const domain::SourceId sourceId) {
     std::optional<FrameBudget::Reservation> reservation = budget.tryReserve(bytes);
     if (!reservation) {
         return {};
@@ -85,7 +86,7 @@ makeResource(FrameBudget& budget,
         GpuFrameIdentity{
             .context = context,
             .frameId = frameId,
-            .sourceRole = sourceRole,
+            .sourceId = sourceId,
         },
         application::FrameGeometry{
             .width = 4,
@@ -100,17 +101,21 @@ makeResource(FrameBudget& budget,
         std::move(allocation));
 }
 
-[[nodiscard]] std::shared_ptr<const GpuFramePair>
-makePair(FrameBudget& budget,
-         const application::FrameRequestContext& context,
-         const std::int64_t frameId,
-         const std::uint64_t firstToken) {
+[[nodiscard]] std::shared_ptr<const GpuFrameSet>
+makeSet(FrameBudget& budget,
+        const application::FrameRequestContext& context,
+        const std::int64_t frameId,
+        const std::uint64_t firstToken) {
     const domain::FrameId identity{frameId};
     const std::shared_ptr<const GpuFrameResource> frameA =
-        makeResource(budget, 10U, firstToken, context, identity, domain::SourceRole::kA);
+        makeResource(budget, 10U, firstToken, context, identity, domain::SourceId{0});
     const std::shared_ptr<const GpuFrameResource> frameB =
-        makeResource(budget, 10U, firstToken + 1U, context, identity, domain::SourceRole::kB);
-    return GpuFramePair::create(frameA, frameB);
+        makeResource(budget, 10U, firstToken + 1U, context, identity, domain::SourceId{1});
+    std::vector<GpuFrameSlot> slots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = frameB},
+    };
+    return GpuFrameSet::create(context, identity, std::move(slots));
 }
 
 [[nodiscard]] std::uint64_t tokenOf(const std::shared_ptr<const GpuFrameResource>& resource) {
@@ -118,11 +123,11 @@ makePair(FrameBudget& budget,
     return backing != nullptr ? backing->token() : 0U;
 }
 
-TEST(FrameMailboxTests, ReplacesOnlyWithACompletePairAndReleasesTheDisplacedBudget) {
+TEST(FrameMailboxTests, ReplacesOnlyWithACompleteSetAndReleasesTheDisplacedBudget) {
     FrameBudget budget{40U};
     FrameMailbox mailbox{domain::DeviceGeneration{5}};
 
-    std::shared_ptr<const GpuFramePair> first = makePair(budget, makeContext(1U, 5U, 7U), 0, 100U);
+    std::shared_ptr<const GpuFrameSet> first = makeSet(budget, makeContext(1U, 5U, 7U), 0, 100U);
     ASSERT_NE(first, nullptr);
     ASSERT_EQ(mailbox.publish(first), FrameMailboxPublishResult::Published);
     std::uint64_t firstSerial = 0U;
@@ -135,7 +140,7 @@ TEST(FrameMailboxTests, ReplacesOnlyWithACompletePairAndReleasesTheDisplacedBudg
     first.reset();
     EXPECT_EQ(budget.reservedBytes(), 20U);
 
-    std::shared_ptr<const GpuFramePair> second = makePair(budget, makeContext(2U, 5U, 8U), 1, 200U);
+    std::shared_ptr<const GpuFrameSet> second = makeSet(budget, makeContext(2U, 5U, 8U), 1, 200U);
     ASSERT_NE(second, nullptr);
     ASSERT_EQ(budget.reservedBytes(), 40U);
     ASSERT_EQ(mailbox.publish(second), FrameMailboxPublishResult::Published);
@@ -146,28 +151,35 @@ TEST(FrameMailboxTests, ReplacesOnlyWithACompletePairAndReleasesTheDisplacedBudg
     ASSERT_EQ(latestRead.status, FrameMailboxReadStatus::Available);
     ASSERT_TRUE(latestRead.publication.has_value());
     EXPECT_GT(latestRead.publication->publicationSerial, firstSerial);
-    const std::shared_ptr<const GpuFramePair> latest = latestRead.publication->pair;
+    const std::shared_ptr<const GpuFrameSet> latest = latestRead.publication->set;
     ASSERT_NE(latest, nullptr);
     EXPECT_EQ(latest->frameId(), domain::FrameId{1});
-    EXPECT_EQ(tokenOf(latest->frameA()), 200U);
-    EXPECT_EQ(tokenOf(latest->frameB()), 201U);
+    EXPECT_EQ(latest->frameCount(), 2U);
+    const GpuFrameSlot* const slotA = latest->find(0U);
+    const GpuFrameSlot* const slotB = latest->find(1U);
+    ASSERT_NE(slotA, nullptr);
+    ASSERT_NE(slotB, nullptr);
+    EXPECT_EQ(tokenOf(slotA->frame), 200U);
+    EXPECT_EQ(tokenOf(slotB->frame), 201U);
     EXPECT_EQ(latest->accountedBytes(), 20U);
 
-    const auto incomplete = GpuFramePair::create(latest->frameA(), {});
+    // Incomplete set (missing slot) should fail creation.
+    std::vector<GpuFrameSlot> incompleteSlots{GpuFrameSlot{.sourceId = 0U, .frame = slotA->frame}};
+    const auto incomplete = GpuFrameSet::create(latest->context(), latest->frameId(), std::move(incompleteSlots));
     EXPECT_EQ(incomplete, nullptr);
 }
 
-TEST(FrameMailboxTests, RejectsStaleGenerationsAndAdvancingGenerationClearsThePair) {
+TEST(FrameMailboxTests, RejectsStaleGenerationsAndAdvancingGenerationClearsTheSet) {
     FrameBudget budget{40U};
     FrameMailbox mailbox{domain::DeviceGeneration{8}};
 
-    std::shared_ptr<const GpuFramePair> stale = makePair(budget, makeContext(1U, 7U, 7U), 0, 10U);
+    std::shared_ptr<const GpuFrameSet> stale = makeSet(budget, makeContext(1U, 7U, 7U), 0, 10U);
     ASSERT_NE(stale, nullptr);
     EXPECT_EQ(mailbox.publish(stale), FrameMailboxPublishResult::DeviceGenerationMismatch);
     stale.reset();
     EXPECT_EQ(budget.reservedBytes(), 0U);
 
-    std::shared_ptr<const GpuFramePair> current = makePair(budget, makeContext(2U, 8U, 8U), 1, 20U);
+    std::shared_ptr<const GpuFrameSet> current = makeSet(budget, makeContext(2U, 8U, 8U), 1, 20U);
     ASSERT_NE(current, nullptr);
     ASSERT_EQ(mailbox.publish(current), FrameMailboxPublishResult::Published);
     current.reset();
@@ -180,8 +192,8 @@ TEST(FrameMailboxTests, RejectsStaleGenerationsAndAdvancingGenerationClearsThePa
     EXPECT_EQ(mailbox.tryLatest(domain::DeviceGeneration{9}).status, FrameMailboxReadStatus::Empty);
     EXPECT_FALSE(mailbox.advanceDeviceGeneration(domain::DeviceGeneration{8}));
 
-    std::shared_ptr<const GpuFramePair> oldGeneration =
-        makePair(budget, makeContext(3U, 8U, 9U), 2, 30U);
+    std::shared_ptr<const GpuFrameSet> oldGeneration =
+        makeSet(budget, makeContext(3U, 8U, 9U), 2, 30U);
     ASSERT_NE(oldGeneration, nullptr);
     EXPECT_EQ(mailbox.publish(oldGeneration), FrameMailboxPublishResult::DeviceGenerationMismatch);
 }
@@ -192,8 +204,8 @@ TEST(FrameMailboxTests, SupportsScopedClearAndRevalidationImmediatelyBeforeDraw)
     const application::FrameRequestContext firstContext = makeContext(1U, 4U, 7U);
     const application::FrameRequestContext secondContext = makeContext(2U, 4U, 8U);
 
-    const std::shared_ptr<const GpuFramePair> first = makePair(budget, firstContext, 0, 10U);
-    const std::shared_ptr<const GpuFramePair> second = makePair(budget, secondContext, 1, 20U);
+    const std::shared_ptr<const GpuFrameSet> first = makeSet(budget, firstContext, 0, 10U);
+    const std::shared_ptr<const GpuFrameSet> second = makeSet(budget, secondContext, 1, 20U);
     ASSERT_NE(first, nullptr);
     ASSERT_NE(second, nullptr);
     ASSERT_EQ(mailbox.publish(first), FrameMailboxPublishResult::Published);
@@ -202,7 +214,7 @@ TEST(FrameMailboxTests, SupportsScopedClearAndRevalidationImmediatelyBeforeDraw)
     ASSERT_EQ(inFlightRead.status, FrameMailboxReadStatus::Available);
     ASSERT_TRUE(inFlightRead.publication.has_value());
     const FrameMailboxPublication inFlight = *inFlightRead.publication;
-    ASSERT_EQ(inFlight.pair, first);
+    ASSERT_EQ(inFlight.set, first);
     EXPECT_EQ(mailbox.validateForDraw(inFlight, domain::DeviceGeneration{4}),
               FrameMailboxDrawStatus::Current);
 
@@ -214,7 +226,7 @@ TEST(FrameMailboxTests, SupportsScopedClearAndRevalidationImmediatelyBeforeDraw)
     const FrameMailboxReadResult secondRead = mailbox.tryLatest(domain::DeviceGeneration{4});
     ASSERT_EQ(secondRead.status, FrameMailboxReadStatus::Available);
     ASSERT_TRUE(secondRead.publication.has_value());
-    EXPECT_EQ(secondRead.publication->pair, second);
+    EXPECT_EQ(secondRead.publication->set, second);
 
     application::PlaybackRequestContext requestAgnosticClear = secondContext.playback;
     requestAgnosticClear.request.requestId = domain::RequestId{0};
@@ -226,7 +238,7 @@ TEST(FrameMailboxTests, SupportsScopedClearAndRevalidationImmediatelyBeforeDraw)
 
     application::FrameRequestContext foreignContext = makeContext(3U, 4U, 99U);
     foreignContext.playback.request.sessionId = domain::SessionId{12};
-    const std::shared_ptr<const GpuFramePair> foreign = makePair(budget, foreignContext, 2, 30U);
+    const std::shared_ptr<const GpuFrameSet> foreign = makeSet(budget, foreignContext, 2, 30U);
     ASSERT_NE(foreign, nullptr);
     EXPECT_EQ(mailbox.publish(foreign), FrameMailboxPublishResult::PlaybackScopeRejected);
 }
@@ -235,10 +247,10 @@ TEST(FrameMailboxTests, ShutdownDropsOwnershipAndRejectsFurtherPublication) {
     FrameBudget budget{40U};
     FrameMailbox mailbox{domain::DeviceGeneration{6}};
 
-    std::shared_ptr<const GpuFramePair> pair = makePair(budget, makeContext(1U, 6U, 7U), 0, 10U);
-    ASSERT_NE(pair, nullptr);
-    ASSERT_EQ(mailbox.publish(pair), FrameMailboxPublishResult::Published);
-    pair.reset();
+    std::shared_ptr<const GpuFrameSet> set = makeSet(budget, makeContext(1U, 6U, 7U), 0, 10U);
+    ASSERT_NE(set, nullptr);
+    ASSERT_EQ(mailbox.publish(set), FrameMailboxPublishResult::Published);
+    set.reset();
     ASSERT_EQ(budget.reservedBytes(), 20U);
 
     mailbox.shutdown();
@@ -247,12 +259,12 @@ TEST(FrameMailboxTests, ShutdownDropsOwnershipAndRejectsFurtherPublication) {
     EXPECT_EQ(mailbox.tryLatest(domain::DeviceGeneration{6}).status,
               FrameMailboxReadStatus::Closed);
 
-    pair = makePair(budget, makeContext(2U, 6U, 8U), 1, 20U);
-    ASSERT_NE(pair, nullptr);
-    EXPECT_EQ(mailbox.publish(pair), FrameMailboxPublishResult::Closed);
-    EXPECT_FALSE(mailbox.clear(pair->context().playback));
+    set = makeSet(budget, makeContext(2U, 6U, 8U), 1, 20U);
+    ASSERT_NE(set, nullptr);
+    EXPECT_EQ(mailbox.publish(set), FrameMailboxPublishResult::Closed);
+    EXPECT_FALSE(mailbox.clear(set->context().playback));
     EXPECT_FALSE(mailbox.advanceDeviceGeneration(domain::DeviceGeneration{7}));
-    pair.reset();
+    set.reset();
     EXPECT_EQ(budget.reservedBytes(), 0U);
 }
 
@@ -269,7 +281,7 @@ TEST(FrameMailboxTests, InvalidGpuResourceCreationDestroysBackingBeforeReturning
         GpuFrameIdentity{
             .context = makeContext(1U, 1U, 1U),
             .frameId = domain::FrameId{0},
-            .sourceRole = domain::SourceRole::kA,
+            .sourceId = domain::SourceId{0},
         },
         application::FrameGeometry{},
         domain::ColorMetadata{},
@@ -291,7 +303,7 @@ TEST(FrameMailboxTests, SuccessfulGpuResourceDestroysBackingBeforeReturningItsRe
         GpuFrameIdentity{
             .context = makeContext(1U, 3U, 1U),
             .frameId = domain::FrameId{0},
-            .sourceRole = domain::SourceRole::kA,
+            .sourceId = domain::SourceId{0},
         },
         application::FrameGeometry{
             .width = 4U,
@@ -306,45 +318,72 @@ TEST(FrameMailboxTests, SuccessfulGpuResourceDestroysBackingBeforeReturningItsRe
     EXPECT_EQ(budget.reservedBytes(), 0U);
 }
 
-TEST(FrameMailboxTests, PairDerivesIdentityAndRejectsContextFrameSourceAndAliasingErrors) {
+TEST(FrameMailboxTests, SetDerivesIdentityAndRejectsContextFrameSourceAndAliasingErrors) {
     FrameBudget budget{80U};
     const application::FrameRequestContext context = makeContext(1U, 2U, 4U);
     const application::FrameRequestContext otherContext = makeContext(2U, 2U, 4U);
     const application::FrameRequestContext otherDevice = makeContext(1U, 3U, 4U);
 
     const std::shared_ptr<const GpuFrameResource> frameA =
-        makeResource(budget, 8U, 1U, context, domain::FrameId{7}, domain::SourceRole::kA);
+        makeResource(budget, 8U, 1U, context, domain::FrameId{7}, domain::SourceId{0});
     const std::shared_ptr<const GpuFrameResource> frameB =
-        makeResource(budget, 8U, 2U, context, domain::FrameId{7}, domain::SourceRole::kB);
+        makeResource(budget, 8U, 2U, context, domain::FrameId{7}, domain::SourceId{1});
     const std::shared_ptr<const GpuFrameResource> wrongContextB =
-        makeResource(budget, 8U, 3U, otherContext, domain::FrameId{7}, domain::SourceRole::kB);
+        makeResource(budget, 8U, 3U, otherContext, domain::FrameId{7}, domain::SourceId{1});
     const std::shared_ptr<const GpuFrameResource> wrongDeviceB =
-        makeResource(budget, 8U, 4U, otherDevice, domain::FrameId{7}, domain::SourceRole::kB);
+        makeResource(budget, 8U, 4U, otherDevice, domain::FrameId{7}, domain::SourceId{1});
     const std::shared_ptr<const GpuFrameResource> wrongFrameB =
-        makeResource(budget, 8U, 5U, context, domain::FrameId{8}, domain::SourceRole::kB);
-    const std::shared_ptr<const GpuFrameResource> wrongRoleA =
-        makeResource(budget, 8U, 6U, context, domain::FrameId{7}, domain::SourceRole::kB);
-    const std::shared_ptr<const GpuFrameResource> wrongRoleB =
-        makeResource(budget, 8U, 7U, context, domain::FrameId{7}, domain::SourceRole::kA);
+        makeResource(budget, 8U, 5U, context, domain::FrameId{8}, domain::SourceId{1});
     ASSERT_NE(frameA, nullptr);
     ASSERT_NE(frameB, nullptr);
     ASSERT_NE(wrongContextB, nullptr);
     ASSERT_NE(wrongDeviceB, nullptr);
     ASSERT_NE(wrongFrameB, nullptr);
-    ASSERT_NE(wrongRoleA, nullptr);
-    ASSERT_NE(wrongRoleB, nullptr);
 
-    const std::shared_ptr<const GpuFramePair> pair = GpuFramePair::create(frameA, frameB);
-    ASSERT_NE(pair, nullptr);
-    EXPECT_EQ(pair->context(), context);
-    EXPECT_EQ(pair->frameId(), domain::FrameId{7});
-    EXPECT_EQ(GpuFramePair::create(frameA, frameA), nullptr);
-    EXPECT_EQ(GpuFramePair::create(frameA, wrongContextB), nullptr);
-    EXPECT_EQ(GpuFramePair::create(frameA, wrongDeviceB), nullptr);
-    EXPECT_EQ(GpuFramePair::create(frameA, wrongFrameB), nullptr);
-    EXPECT_EQ(GpuFramePair::create(wrongRoleA, frameB), nullptr);
-    EXPECT_EQ(GpuFramePair::create(frameA, wrongRoleB), nullptr);
-    EXPECT_EQ(GpuFramePair::create({}, frameB), nullptr);
+    std::vector<GpuFrameSlot> validSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = frameB},
+    };
+    const std::shared_ptr<const GpuFrameSet> set =
+        GpuFrameSet::create(context, domain::FrameId{7}, std::move(validSlots));
+    ASSERT_NE(set, nullptr);
+    EXPECT_EQ(set->context(), context);
+    EXPECT_EQ(set->frameId(), domain::FrameId{7});
+
+    // Duplicate sourceId should fail.
+    std::vector<GpuFrameSlot> duplicateSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 0U, .frame = frameB},
+    };
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(duplicateSlots)), nullptr);
+
+    // Wrong context should fail.
+    std::vector<GpuFrameSlot> wrongContextSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = wrongContextB},
+    };
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongContextSlots)), nullptr);
+
+    // Wrong device should fail.
+    std::vector<GpuFrameSlot> wrongDeviceSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = wrongDeviceB},
+    };
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongDeviceSlots)), nullptr);
+
+    // Wrong frameId should fail.
+    std::vector<GpuFrameSlot> wrongFrameSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = wrongFrameB},
+    };
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongFrameSlots)), nullptr);
+
+    // Invalid frameId should fail.
+    std::vector<GpuFrameSlot> invalidFrameSlots{
+        GpuFrameSlot{.sourceId = 0U, .frame = frameA},
+        GpuFrameSlot{.sourceId = 1U, .frame = frameB},
+    };
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{-1}, std::move(invalidFrameSlots)), nullptr);
 }
 
 } // namespace

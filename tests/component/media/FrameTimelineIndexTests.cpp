@@ -30,7 +30,7 @@ TEST(FrameTimelineIndexTests, SortsDecodeOrderPacketPtsIntoDisplayOrder) {
     const auto result = validatePresentationTimestamps({0, 1'536, 512, 1'024},
                                                        false,
                                                        std::int64_t{4},
-                                                       domain::SourceRole::kA,
+                                                       0U,
                                                        domain::MediaOperation::kMediaDecode);
 
     ASSERT_TRUE(result);
@@ -41,20 +41,20 @@ TEST(FrameTimelineIndexTests, RejectsDuplicateMissingAndContradictoryPacketPts) 
     const auto duplicate = validatePresentationTimestamps({0, 512, 512},
                                                           false,
                                                           std::nullopt,
-                                                          domain::SourceRole::kA,
+                                                          0U,
                                                           domain::MediaOperation::kMediaDecode);
     ASSERT_FALSE(duplicate);
     EXPECT_EQ(duplicate.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
 
     const auto missing = validatePresentationTimestamps(
-        {0, 512}, true, std::nullopt, domain::SourceRole::kB, domain::MediaOperation::kMediaProbe);
+        {0, 512}, true, std::nullopt, 1U, domain::MediaOperation::kMediaProbe);
     ASSERT_FALSE(missing);
     EXPECT_EQ(missing.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
 
     const auto contradictory = validatePresentationTimestamps({0, 512, 1'024},
                                                               false,
                                                               std::int64_t{4},
-                                                              domain::SourceRole::kA,
+                                                              0U,
                                                               domain::MediaOperation::kMediaDecode);
     ASSERT_FALSE(contradictory);
     EXPECT_EQ(contradictory.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
@@ -64,7 +64,7 @@ TEST(FrameTimelineIndexTests, HonorsCancellationWhileIndexIoIsInProgress) {
     CancelAfterChecks cancellation{.checks = 0, .limit = 5};
     const auto result = buildPresentationTimestampIndex(TimestampIndexRequest{
         .sourcePath = fixture("h264_no_count_64x48_30fps_12.mkv"),
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
         .operation = domain::MediaOperation::kMediaProbe,
         .expectedFrameCount = std::nullopt,
         .cancellation =
@@ -82,7 +82,7 @@ TEST(FrameTimelineIndexTests, VerifiesQuantizedCadenceFromANonZeroPresentationAn
         .presentationTimestamps = timestamps,
         .timeBase = TimelineRational{.numerator = 1, .denominator = 1'000},
         .candidates = {{.rate = {.numerator = 30, .denominator = 1}}},
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
 
     ASSERT_TRUE(result);
@@ -95,7 +95,7 @@ TEST(FrameTimelineIndexTests, VerifiesFractionalNtscCadenceAtIntegerTickBoundari
         .presentationTimestamps = timestamps,
         .timeBase = TimelineRational{.numerator = 1, .denominator = 90'000},
         .candidates = {{.rate = {.numerator = 30'000, .denominator = 1'001}}},
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
     });
 
     ASSERT_TRUE(result);
@@ -115,7 +115,7 @@ TEST(FrameTimelineIndexTests, PrefersAPassingGuessedRateAndNormalizesDuplicateCa
                 {.rate = {.numerator = 30, .denominator = 1}},
                 {.rate = {.numerator = 0, .denominator = 1}, .guessed = true},
             },
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
 
     ASSERT_TRUE(result);
@@ -134,7 +134,7 @@ TEST(FrameTimelineIndexTests, UsesTheFfmpegGuessWhenRateDeclarationsAreMissing) 
                 {.rate = {.numerator = 0, .denominator = 0}},
                 {.rate = {.numerator = 0, .denominator = 1}},
             },
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
     });
 
     ASSERT_TRUE(result);
@@ -151,7 +151,7 @@ TEST(FrameTimelineIndexTests, SelectsTheSmallestResidualWhenNoPassingCandidateIs
                 {.rate = {.numerator = 30'000, .denominator = 1'001}},
                 {.rate = {.numerator = 30, .denominator = 1}},
             },
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
 
     ASSERT_TRUE(result);
@@ -168,7 +168,7 @@ TEST(FrameTimelineIndexTests, AcceptsASingleFrameWhenAnyPositiveCandidateRemains
                 {.rate = {.numerator = 0, .denominator = 1}},
                 {.rate = {.numerator = 60'000, .denominator = 2'002}},
             },
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
     });
 
     ASSERT_TRUE(result);
@@ -186,7 +186,7 @@ TEST(FrameTimelineIndexTests, RejectsTrueVfrAndDoesNotGrantABroadOneTickToleranc
                 {.rate = {.numerator = 30, .denominator = 1}, .guessed = true},
                 {.rate = {.numerator = 24, .denominator = 1}},
             },
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
     ASSERT_FALSE(variable);
     EXPECT_EQ(variable.error().code, domain::MediaErrorCode::kInvalidCfrTiming);
@@ -196,7 +196,7 @@ TEST(FrameTimelineIndexTests, RejectsTrueVfrAndDoesNotGrantABroadOneTickToleranc
         .presentationTimestamps = oneTickOutside,
         .timeBase = TimelineRational{.numerator = 1, .denominator = 15'360},
         .candidates = {{.rate = {.numerator = 30, .denominator = 1}}},
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
     ASSERT_FALSE(outside);
     EXPECT_EQ(outside.error().code, domain::MediaErrorCode::kInvalidCfrTiming);
@@ -209,7 +209,7 @@ TEST(FrameTimelineIndexTests, RejectsTimestampDeltaOverflowWithoutUndefinedArith
         .presentationTimestamps = timestamps,
         .timeBase = TimelineRational{.numerator = 1, .denominator = 1'000},
         .candidates = {{.rate = {.numerator = 30, .denominator = 1}}},
-        .sourceRole = domain::SourceRole::kA,
+        .sourceId = 0U,
     });
 
     ASSERT_FALSE(result);
@@ -223,7 +223,7 @@ TEST(FrameTimelineIndexTests, HonorsCancellationDuringCadenceVerification) {
         .presentationTimestamps = timestamps,
         .timeBase = TimelineRational{.numerator = 1, .denominator = 15'360},
         .candidates = {{.rate = {.numerator = 30, .denominator = 1}}},
-        .sourceRole = domain::SourceRole::kB,
+        .sourceId = 1U,
         .cancellation =
             TimelineCancellation{.isRequested = cancelAfterChecks, .context = &cancellation},
     });

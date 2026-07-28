@@ -1,5 +1,5 @@
-#include "dvs/domain/SourcePairValidator.h"
-#include "dvs/media/DirectFrameProvider.h"
+#include "dvs/domain/ComparisonSource.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/Module.h"
 #include "dvs/persistence/Module.h"
@@ -29,7 +29,7 @@ void printError(const dvs::domain::MediaError& error) {
 
 [[nodiscard]] int runProbe(const std::filesystem::path& sourcePath) {
     const auto descriptor =
-        dvs::media::MediaProbe::inspect(sourcePath, dvs::domain::SourceRole::kA);
+        dvs::media::MediaProbe::inspect(sourcePath, dvs::domain::SourceId{0});
     if (!descriptor) {
         printError(descriptor.error());
         return EXIT_FAILURE;
@@ -53,26 +53,20 @@ void printError(const dvs::domain::MediaError& error) {
 [[nodiscard]] int runCompare(const std::filesystem::path& sourceAPath,
                              const std::filesystem::path& sourceBPath,
                              const dvs::domain::FrameId frameId) {
-    const auto sourceA = dvs::media::MediaProbe::inspect(sourceAPath, dvs::domain::SourceRole::kA);
+    const auto sourceA = dvs::media::MediaProbe::inspect(sourceAPath, dvs::domain::SourceId{0});
     if (!sourceA) {
         printError(sourceA.error());
         return EXIT_FAILURE;
     }
-    const auto sourceB = dvs::media::MediaProbe::inspect(sourceBPath, dvs::domain::SourceRole::kB);
+    const auto sourceB = dvs::media::MediaProbe::inspect(sourceBPath, dvs::domain::SourceId{1});
     if (!sourceB) {
         printError(sourceB.error());
-        return EXIT_FAILURE;
-    }
-    const auto pairValidation =
-        dvs::domain::SourcePairValidator::validate(sourceA.value(), sourceB.value());
-    if (!pairValidation) {
-        printError(pairValidation.error());
         return EXIT_FAILURE;
     }
 
     constexpr std::size_t kFrameBudgetBytes = 256U * 1024U * 1024U;
     dvs::platform::FrameBudget frameBudget{kFrameBudgetBytes};
-    const auto provider = std::make_shared<dvs::media::DirectFrameProvider>(frameBudget);
+    const auto provider = std::make_shared<dvs::media::MultiSourceFrameProvider>(frameBudget);
     const auto comparison = dvs::ui::compareDirectSources(
         provider, frameBudget, sourceA.value(), sourceB.value(), frameId);
     if (!comparison) {

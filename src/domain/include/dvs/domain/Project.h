@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dvs/domain/SourcePairValidator.h"
+#include "dvs/domain/ValidatedComparisonSet.h"
 
 #include <map>
 #include <optional>
@@ -17,7 +17,7 @@ using WorkspaceState = std::map<std::string, std::string>;
 struct ProjectState final {
     ProjectId id;
     std::string displayName;
-    ValidatedSourcePair sources;
+    ValidatedComparisonSet sources;
     std::optional<FrameId> inMark;
     std::optional<FrameId> outMark;
     FrameId lastDisplayedFrame;
@@ -27,16 +27,16 @@ struct ProjectState final {
 class Project final {
 public:
     [[nodiscard]] static Result<Project>
-    create(ProjectId id, std::string displayName, ValidatedSourcePair sources);
+    create(ProjectId id, std::string displayName, ValidatedComparisonSet sources);
     // This entry point is exclusively for persisted state.
     [[nodiscard]] static Result<Project> restorePersisted(ProjectState persisted);
-    // A fresh media probe supplies a new validated pair and the original aggregate is never
-    // modified.
-    [[nodiscard]] Result<Project> replaceSources(ValidatedSourcePair sources) const;
+    // A fresh media probe supplies a new validated comparison set and the original aggregate is
+    // never modified.
+    [[nodiscard]] Result<Project> replaceSources(ValidatedComparisonSet sources) const;
 
     [[nodiscard]] const ProjectId& id() const noexcept;
     [[nodiscard]] const std::string& displayName() const noexcept;
-    [[nodiscard]] const ValidatedSourcePair& sources() const noexcept;
+    [[nodiscard]] const ValidatedComparisonSet& sources() const noexcept;
     [[nodiscard]] const std::optional<FrameId>& inMark() const noexcept;
     [[nodiscard]] const std::optional<FrameId>& outMark() const noexcept;
     [[nodiscard]] FrameId lastDisplayedFrame() const noexcept;
@@ -53,7 +53,7 @@ public:
 private:
     Project(ProjectId id,
             std::string displayName,
-            ValidatedSourcePair sources,
+            ValidatedComparisonSet sources,
             std::optional<FrameId> inMark,
             std::optional<FrameId> outMark,
             FrameId lastDisplayedFrame,
@@ -64,7 +64,7 @@ private:
 
     ProjectId id_;
     std::string displayName_;
-    ValidatedSourcePair sources_;
+    ValidatedComparisonSet sources_;
     std::optional<FrameId> inMark_;
     std::optional<FrameId> outMark_;
     FrameId lastDisplayedFrame_;

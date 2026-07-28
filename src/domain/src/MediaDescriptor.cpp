@@ -33,7 +33,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor path is empty."));
     }
@@ -41,7 +41,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidDimensions,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor dimensions must be non-zero."));
     }
@@ -49,7 +49,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidFrameCount,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor frame count must be positive."));
     }
@@ -57,7 +57,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidDuration,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor duration cannot be negative."));
     }
@@ -66,7 +66,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor codec, pixel format, and bit depth are required."));
     }
@@ -74,7 +74,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "Media descriptor color metadata is invalid."));
     }
@@ -88,7 +88,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
             return Result<MediaDescriptor>::failure(makeMediaError(
                 MediaErrorCode::kInvalidMediaDescriptor,
                 MediaOperation::kMediaDescriptorValidation,
-                SourceRole::kNone,
+                std::nullopt,
                 false,
                 "A variable-frame-rate source must not declare a nominal frame rate."));
         }
@@ -96,7 +96,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
             return Result<MediaDescriptor>::failure(
                 makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                                MediaOperation::kMediaDescriptorValidation,
-                               SourceRole::kNone,
+                               std::nullopt,
                                false,
                                "A variable-frame-rate source must have an indexed frame count."));
         }
@@ -104,7 +104,7 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
         return Result<MediaDescriptor>::failure(
             makeMediaError(MediaErrorCode::kInvalidMediaDescriptor,
                            MediaOperation::kMediaDescriptorValidation,
-                           SourceRole::kNone,
+                           std::nullopt,
                            false,
                            "A constant-frame-rate source must declare a nominal frame rate."));
     }

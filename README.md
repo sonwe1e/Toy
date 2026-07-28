@@ -12,9 +12,9 @@ in phases on the `refactor/unified-comparator` branch:
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Repository root promotion, legacy archive, docs, CI split | done |
-| 1 | Prune export/clip/proxy scope | pending |
-| 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | pending |
-| 3 | Parallel per-source decode, three-up layouts, selectable difference edges | planned |
+| 1 | Prune export/clip/proxy scope | done |
+| 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | done |
+| 3 | Parallel per-source decode, three-up layouts, selectable difference edges | pending |
 | 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | planned |
 | 5 | Extended difference and analysis layouts | planned |
 | 6 | 10-bit/P010, D3D11VA hardware decode, performance hardening | planned |

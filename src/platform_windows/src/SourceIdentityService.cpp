@@ -43,12 +43,12 @@ struct FileMetadata final {
 };
 
 [[nodiscard]] domain::MediaError fingerprintError(const domain::MediaErrorCode code,
-                                                  const domain::SourceRole sourceRole,
+                                                  const domain::SourceId sourceId,
                                                   const domain::MediaOperation operation,
                                                   std::string technicalDetail) {
     return domain::makeMediaError(code,
                                   operation,
-                                  sourceRole,
+                                  sourceId,
                                   code == domain::MediaErrorCode::kSourceMissing ||
                                       code == domain::MediaErrorCode::kSourceFingerprintMismatch,
                                   std::move(technicalDetail));
@@ -56,19 +56,19 @@ struct FileMetadata final {
 
 template <typename TValue>
 [[nodiscard]] domain::Result<TValue> fingerprintFailure(const domain::MediaErrorCode code,
-                                                        const domain::SourceRole sourceRole,
+                                                        const domain::SourceId sourceId,
                                                         const domain::MediaOperation operation,
                                                         std::string technicalDetail) {
     return domain::Result<TValue>::failure(
-        fingerprintError(code, sourceRole, operation, std::move(technicalDetail)));
+        fingerprintError(code, sourceId, operation, std::move(technicalDetail)));
 }
 
 [[nodiscard]] domain::Status fingerprintFailureStatus(const domain::MediaErrorCode code,
-                                                      const domain::SourceRole sourceRole,
+                                                      const domain::SourceId sourceId,
                                                       const domain::MediaOperation operation,
                                                       std::string technicalDetail) {
     return domain::Status::failure(
-        fingerprintError(code, sourceRole, operation, std::move(technicalDetail)));
+        fingerprintError(code, sourceId, operation, std::move(technicalDetail)));
 }
 
 [[nodiscard]] bool isMissingFileError(const DWORD errorCode) noexcept {
@@ -81,12 +81,12 @@ template <typename TValue>
 }
 
 [[nodiscard]] domain::Result<FileMetadata> readMetadata(const std::filesystem::path& sourcePath,
-                                                        const domain::SourceRole sourceRole,
+                                                        const domain::SourceId sourceId,
                                                         const domain::MediaOperation operation) {
     const auto absolutePath = WindowsPaths::absolutePath(sourcePath);
     if (!absolutePath) {
         return fingerprintFailure<FileMetadata>(domain::MediaErrorCode::kProjectFileIo,
-                                                sourceRole,
+                                                sourceId,
                                                 operation,
                                                 "Could not resolve the source path: " +
                                                     absolutePath.error().technicalDetail);
@@ -99,12 +99,12 @@ template <typename TValue>
                                                 ? domain::MediaErrorCode::kSourceMissing
                                                 : domain::MediaErrorCode::kProjectFileIo;
         return fingerprintFailure<FileMetadata>(
-            code, sourceRole, operation, systemFailure("GetFileAttributesExW", errorCode));
+            code, sourceId, operation, systemFailure("GetFileAttributesExW", errorCode));
     }
     if ((attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U) {
         return fingerprintFailure<FileMetadata>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "Source path names a directory rather than a media file.");
     }
@@ -117,7 +117,7 @@ template <typename TValue>
     if (byteSize == 0U) {
         return fingerprintFailure<FileMetadata>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "An empty source file cannot produce a valid media identity.");
     }
@@ -130,7 +130,7 @@ template <typename TValue>
 }
 
 [[nodiscard]] domain::Result<std::int64_t> utcMilliseconds(const std::uint64_t fileTime,
-                                                           const domain::SourceRole sourceRole,
+                                                           const domain::SourceId sourceId,
                                                            const domain::MediaOperation operation) {
     const std::uint64_t delta = fileTime >= kWindowsEpochOffset100Nanoseconds
                                     ? fileTime - kWindowsEpochOffset100Nanoseconds
@@ -139,7 +139,7 @@ template <typename TValue>
     if (milliseconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         return fingerprintFailure<std::int64_t>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "Source modified time cannot be represented as UTC milliseconds.");
     }
@@ -365,15 +365,15 @@ private:
 
 domain::Result<domain::SourceFileIdentity>
 SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
-                                   const domain::SourceRole sourceRole,
+                                   const domain::SourceId sourceId,
                                    const domain::MediaOperation operation) {
-    auto before = readMetadata(sourcePath, sourceRole, operation);
+    auto before = readMetadata(sourcePath, sourceId, operation);
     if (!before) {
         return domain::Result<domain::SourceFileIdentity>::failure(before.error());
     }
 
     const auto modifiedUtcMilliseconds =
-        utcMilliseconds(before.value().lastWriteFileTime, sourceRole, operation);
+        utcMilliseconds(before.value().lastWriteFileTime, sourceId, operation);
     if (!modifiedUtcMilliseconds) {
         return domain::Result<domain::SourceFileIdentity>::failure(modifiedUtcMilliseconds.error());
     }
@@ -382,7 +382,7 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
     if (!stream) {
         return fingerprintFailure<domain::SourceFileIdentity>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "Could not open the source file for fingerprinting.");
     }
@@ -396,12 +396,12 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
     if (!readSucceeded) {
         return fingerprintFailure<domain::SourceFileIdentity>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "Could not read the required source bytes for fingerprinting.");
     }
 
-    auto after = readMetadata(before.value().absolutePath, sourceRole, operation);
+    auto after = readMetadata(before.value().absolutePath, sourceId, operation);
     if (!after) {
         return domain::Result<domain::SourceFileIdentity>::failure(after.error());
     }
@@ -409,7 +409,7 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
         after.value().lastWriteFileTime != before.value().lastWriteFileTime) {
         return fingerprintFailure<domain::SourceFileIdentity>(
             domain::MediaErrorCode::kProjectFileIo,
-            sourceRole,
+            sourceId,
             operation,
             "Source changed while its identity was being computed.");
     }
@@ -423,16 +423,16 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
 
 domain::Status SourceIdentityService::verify(const std::filesystem::path& sourcePath,
                                              const domain::SourceFileIdentity& expected,
-                                             const domain::SourceRole sourceRole,
+                                             const domain::SourceId sourceId,
                                              const domain::MediaOperation operation) {
     if (!expected.isComplete()) {
         return fingerprintFailureStatus(domain::MediaErrorCode::kInvalidProjectSchema,
-                                        sourceRole,
+                                        sourceId,
                                         operation,
                                         "Persisted source identity is incomplete.");
     }
 
-    auto actual = fingerprint(sourcePath, sourceRole, operation);
+    auto actual = fingerprint(sourcePath, sourceId, operation);
     if (!actual) {
         return domain::Status::failure(actual.error());
     }
@@ -441,7 +441,7 @@ domain::Status SourceIdentityService::verify(const std::filesystem::path& source
         !sameFingerprint(actual.value().fingerprintSha256, expected.fingerprintSha256)) {
         return fingerprintFailureStatus(
             domain::MediaErrorCode::kSourceFingerprintMismatch,
-            sourceRole,
+            sourceId,
             operation,
             "Source size, UTC modified time, or SHA-256 fingerprint does not match the project.");
     }

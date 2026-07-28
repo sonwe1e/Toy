@@ -7,6 +7,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -15,19 +16,19 @@
 namespace dvs::persistence::internal {
 
 [[nodiscard]] inline domain::MediaError persistenceError(const domain::MediaErrorCode code,
-                                                         const domain::SourceRole sourceRole,
+                                                         std::optional<domain::SourceId> sourceId,
                                                          std::string technicalDetail) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kProjectPersistence,
-                                  sourceRole,
+                                  sourceId,
                                   false,
                                   std::move(technicalDetail));
 }
 
 [[nodiscard]] inline domain::MediaError platformError(const platform::PlatformError& error,
-                                                      const domain::SourceRole sourceRole) {
+                                                      std::optional<domain::SourceId> sourceId) {
     return persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                            sourceRole,
+                            sourceId,
                             std::string{"Platform error "} +
                                 std::string{platform::stableId(error.code)} + ": " +
                                 error.technicalDetail);

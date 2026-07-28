@@ -63,12 +63,12 @@ struct TimelineIndexCancellationState final {
 }
 
 [[nodiscard]] domain::MediaError decodeError(const domain::MediaErrorCode code,
-                                             const domain::SourceRole sourceRole,
+                                             const domain::SourceId sourceId,
                                              std::string technicalDetail,
                                              const bool recoverable = false) {
     return domain::makeMediaError(code,
                                   domain::MediaOperation::kMediaDecode,
-                                  sourceRole,
+                                  sourceId,
                                   recoverable,
                                   std::move(technicalDetail));
 }
@@ -109,14 +109,14 @@ multiplyFits(const std::size_t left, const std::size_t right, std::size_t* const
 
 class SoftwareDecoder::Impl final {
 public:
-    Impl(const domain::SourceRole sourceRoleValue,
+    Impl(const domain::SourceId sourceIdValue,
          domain::MediaDescriptor descriptorValue,
          platform::FrameBudget& frameBudget,
          const std::atomic<bool>* const externalInterrupt)
-        : sourceRole(sourceRoleValue), descriptor(std::move(descriptorValue)), factory(frameBudget),
+        : sourceId(sourceIdValue), descriptor(std::move(descriptorValue)), factory(frameBudget),
           interruptState{.requested = &interrupted, .externalRequested = externalInterrupt} {}
 
-    domain::SourceRole sourceRole;
+    domain::SourceId sourceId;
     domain::MediaDescriptor descriptor;
     platform::FrameResourceFactory factory;
     std::atomic<bool> interrupted = false;
@@ -138,12 +138,12 @@ public:
     bool opened = false;
 };
 
-SoftwareDecoder::SoftwareDecoder(const domain::SourceRole sourceRole,
+SoftwareDecoder::SoftwareDecoder(const domain::SourceId sourceId,
                                  domain::MediaDescriptor descriptor,
                                  platform::FrameBudget& frameBudget,
                                  const std::atomic<bool>* const externalInterrupt)
     : impl_(std::make_unique<Impl>(
-          sourceRole, std::move(descriptor), frameBudget, externalInterrupt)) {}
+          sourceId, std::move(descriptor), frameBudget, externalInterrupt)) {}
 
 SoftwareDecoder::~SoftwareDecoder() = default;
 
@@ -153,7 +153,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
                              std::memory_order_release);
     if (cancellationRequested.load(std::memory_order_acquire)) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                   impl_->sourceRole,
+                                                   impl_->sourceId,
                                                    "Source decoder open was canceled.",
                                                    true));
     }
@@ -161,15 +161,15 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
         !impl_->descriptor.sourceIdentity->isComplete()) {
         return domain::Status::failure(decodeError(
             domain::MediaErrorCode::kInvalidMediaDescriptor,
-            impl_->sourceRole,
+            impl_->sourceId,
             "A direct decoder requires a complete source identity captured by media probing."));
     }
 
-    const domain::SourceRole sourceRole = impl_->sourceRole;
+    const domain::SourceId sourceId = impl_->sourceId;
     const auto identity =
         platform::SourceIdentityService::verify(impl_->descriptor.normalizedPath,
                                                 *impl_->descriptor.sourceIdentity,
-                                                sourceRole,
+                                                sourceId,
                                                 domain::MediaOperation::kMediaDecode);
     if (!identity) {
         return identity;
@@ -179,7 +179,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
         platform::WindowsPaths::absolutePath(impl_->descriptor.normalizedPath);
     if (!normalizedPath) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaOpenFailed,
-                                                   sourceRole,
+                                                   sourceId,
                                                    "Could not normalize the source path: " +
                                                        normalizedPath.error().technicalDetail));
     }
@@ -189,7 +189,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     AVFormatContext* rawFormat = avformat_alloc_context();
     if (rawFormat == nullptr) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaOpenFailed,
-                                                   sourceRole,
+                                                   sourceId,
                                                    "FFmpeg could not allocate a format context."));
     }
     rawFormat->interrupt_callback.callback = interruptCallback;
@@ -202,7 +202,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
         }
         return domain::Status::failure(
             decodeError(domain::MediaErrorCode::kMediaOpenFailed,
-                        sourceRole,
+                        sourceId,
                         "FFmpeg could not open the source: " + ffmpegError(openResult),
                         true));
     }
@@ -212,7 +212,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     if (streamInfoResult < 0) {
         return domain::Status::failure(decodeError(
             domain::MediaErrorCode::kMediaDecodeFailed,
-            sourceRole,
+            sourceId,
             "FFmpeg could not read source stream information: " + ffmpegError(streamInfoResult),
             true));
     }
@@ -222,7 +222,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     if (selectedStream < 0 ||
         static_cast<unsigned int>(selectedStream) >= openedFormat->nb_streams) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                   sourceRole,
+                                                   sourceId,
                                                    "The source has no readable video stream.",
                                                    true));
     }
@@ -230,14 +230,14 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     if (stream == nullptr || stream->codecpar == nullptr || stream->codecpar->width <= 0 ||
         stream->codecpar->height <= 0) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                   sourceRole,
+                                                   sourceId,
                                                    "The selected video stream is incomplete."));
     }
     if (static_cast<std::uint32_t>(stream->codecpar->width) != impl_->descriptor.extent.width ||
         static_cast<std::uint32_t>(stream->codecpar->height) != impl_->descriptor.extent.height) {
         return domain::Status::failure(
             decodeError(domain::MediaErrorCode::kSourceFingerprintMismatch,
-                        sourceRole,
+                        sourceId,
                         "The source geometry changed after media probing.",
                         true));
     }
@@ -246,14 +246,14 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     if (decoder == nullptr) {
         return domain::Status::failure(
             decodeError(domain::MediaErrorCode::kUnsupportedCodec,
-                        sourceRole,
+                        sourceId,
                         "FFmpeg has no decoder for the probed source codec.",
                         true));
     }
     AVCodecContext* rawCodec = avcodec_alloc_context3(decoder);
     if (rawCodec == nullptr) {
         return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                   sourceRole,
+                                                   sourceId,
                                                    "FFmpeg could not allocate a codec context."));
     }
     AvCodecContextPtr openedCodec{rawCodec};
@@ -261,14 +261,14 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     if (parameterResult < 0) {
         return domain::Status::failure(decodeError(
             domain::MediaErrorCode::kMediaDecodeFailed,
-            sourceRole,
+            sourceId,
             "FFmpeg could not transfer source codec parameters: " + ffmpegError(parameterResult)));
     }
     const int codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
     if (codecOpenResult < 0) {
         return domain::Status::failure(
             decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                        sourceRole,
+                        sourceId,
                         "FFmpeg could not open the source decoder: " + ffmpegError(codecOpenResult),
                         true));
     }
@@ -287,7 +287,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     };
     auto timestamps = buildPresentationTimestampIndex(TimestampIndexRequest{
         .sourcePath = impl_->descriptor.normalizedPath,
-        .sourceRole = sourceRole,
+        .sourceId = sourceId,
         .operation = domain::MediaOperation::kMediaDecode,
         .expectedFrameCount = impl_->descriptor.frameCount.value,
         .cancellation =
@@ -331,36 +331,36 @@ domain::Result<DecodedFrame>
 SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                                 const std::atomic<bool>& cancellationRequested,
                                 const bool continueSequentially) {
-    const domain::SourceRole sourceRole = impl_->sourceRole;
+    const domain::SourceId sourceId = impl_->sourceId;
     impl_->interrupted.store(cancellationRequested.load(std::memory_order_acquire),
                              std::memory_order_release);
     if (cancellationRequested.load(std::memory_order_acquire)) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                        sourceRole,
+                        sourceId,
                         "Frame decoding was canceled.",
                         true));
     }
     if (!impl_->opened || impl_->format == nullptr || impl_->codec == nullptr) {
         return domain::Result<DecodedFrame>::failure(decodeError(
-            domain::MediaErrorCode::kMediaDecodeFailed, sourceRole, "Frame decoder is not open."));
+            domain::MediaErrorCode::kMediaDecodeFailed, sourceId, "Frame decoder is not open."));
     }
     if (!frameId.isValid() || frameId.value() >= impl_->descriptor.frameCount.value) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kInvalidFrameId,
-                        sourceRole,
+                        sourceId,
                         "Requested frame is outside the source timeline."));
     }
     if (impl_->timeBase.num <= 0 || impl_->timeBase.den <= 0) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kInvalidRate,
-                        sourceRole,
+                        sourceId,
                         "The decoded source has a stream time base outside FFmpeg limits."));
     }
     if (!impl_->presentationTimestamps.has_value()) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                        sourceRole,
+                        sourceId,
                         "The decoder was opened without a native presentation timestamp index.",
                         true));
     }
@@ -372,7 +372,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
         if (seekResult < 0) {
             return domain::Result<DecodedFrame>::failure(decodeError(
                 domain::MediaErrorCode::kMediaDecodeFailed,
-                sourceRole,
+                sourceId,
                 "FFmpeg could not seek to the target keyframe: " + ffmpegError(seekResult),
                 true));
         }
@@ -400,7 +400,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
     if (impl_->packet == nullptr || impl_->frame == nullptr) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                        sourceRole,
+                        sourceId,
                         "FFmpeg could not allocate decode buffers."));
     }
 
@@ -409,7 +409,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             impl_->interrupted.load(std::memory_order_acquire)) {
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                            sourceRole,
+                            sourceId,
                             "Frame decoding was interrupted.",
                             true));
         }
@@ -422,7 +422,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             if (timestamp == AV_NOPTS_VALUE) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                                sourceRole,
+                                sourceId,
                                 "A decoded frame has no presentation timestamp.",
                                 true));
             }
@@ -433,14 +433,14 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             if (timestamp > targetTimestamp) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                                sourceRole,
+                                sourceId,
                                 "The indexed timestamp did not identify a decoded frame.",
                                 true));
             }
             if (!isSupportedDecodedFormat(*impl_->frame)) {
                 return domain::Result<DecodedFrame>::failure(decodeError(
                     domain::MediaErrorCode::kUnsupportedPixelFormat,
-                    sourceRole,
+                    sourceId,
                     "The decoder produced a pixel format outside the v1 8-bit 4:2:0 contract.",
                     true));
             }
@@ -451,7 +451,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                     impl_->descriptor.extent.height) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kSourceFingerprintMismatch,
-                                sourceRole,
+                                sourceId,
                                 "Decoded frame geometry changed after media probing.",
                                 true));
             }
@@ -461,7 +461,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             if (width == 0U || height == 0U || stride > static_cast<std::uint32_t>(INT_MAX)) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                sourceRole,
+                                sourceId,
                                 "Decoded frame dimensions cannot form a valid NV12 layout."));
             }
             std::size_t yBytes = 0;
@@ -471,7 +471,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 yBytes > std::numeric_limits<std::size_t>::max() - uvBytes) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kArithmeticOverflow,
-                                sourceRole,
+                                sourceId,
                                 "Decoded NV12 frame byte count overflowed."));
             }
 
@@ -491,7 +491,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 if (converter == nullptr) {
                     return domain::Result<DecodedFrame>::failure(
                         decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                    sourceRole,
+                                    sourceId,
                                     "FFmpeg could not create an NV12 conversion context."));
                 }
                 std::array<std::uint8_t*, 4> outputPlanes{
@@ -516,7 +516,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 if (convertedRows != impl_->frame->height) {
                     return domain::Result<DecodedFrame>::failure(
                         decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                    sourceRole,
+                                    sourceId,
                                     "FFmpeg could not convert the decoded frame to NV12."));
                 }
                 const platform::Nv12FrameLayout layout{
@@ -534,7 +534,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 if (!handle) {
                     return domain::Result<DecodedFrame>::failure(decodeError(
                         domain::MediaErrorCode::kFrameBudgetExceeded,
-                        sourceRole,
+                        sourceId,
                         "The shared frame budget could not reserve this decoded NV12 frame.",
                         true));
                 }
@@ -551,7 +551,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             } catch (const std::exception& exception) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                sourceRole,
+                                sourceId,
                                 "Decoded NV12 allocation failed: " + std::string{exception.what()},
                                 true));
             }
@@ -560,7 +560,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
         if (receiveResult != AVERROR(EAGAIN) && receiveResult != AVERROR_EOF) {
             return domain::Result<DecodedFrame>::failure(decodeError(
                 domain::MediaErrorCode::kMediaDecodeFailed,
-                sourceRole,
+                sourceId,
                 "FFmpeg could not receive a decoded frame: " + ffmpegError(receiveResult),
                 true));
         }
@@ -578,7 +578,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 if (readResult < 0) {
                     return domain::Result<DecodedFrame>::failure(decodeError(
                         domain::MediaErrorCode::kMediaDecodeFailed,
-                        sourceRole,
+                        sourceId,
                         "FFmpeg could not read a source packet: " + ffmpegError(readResult),
                         true));
                 }
@@ -603,7 +603,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             }
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                            sourceRole,
+                            sourceId,
                             "FFmpeg could not submit a source packet: " + ffmpegError(sendResult),
                             true));
         }
@@ -619,7 +619,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             }
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                            sourceRole,
+                            sourceId,
                             "FFmpeg could not flush the decoder: " + ffmpegError(flushResult),
                             true));
         }
@@ -627,7 +627,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
         if (impl_->inputEnded && impl_->flushSubmitted) {
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                            sourceRole,
+                            sourceId,
                             "The decoder requested input after its stream had been fully flushed.",
                             true));
         }
@@ -635,7 +635,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
 
     return domain::Result<DecodedFrame>::failure(
         decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
-                    sourceRole,
+                    sourceId,
                     "The decoder reached end of stream before the indexed frame timestamp.",
                     true));
 }

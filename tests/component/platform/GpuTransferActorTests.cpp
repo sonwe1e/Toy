@@ -6,8 +6,8 @@
 #include "dvs/platform/GraphicsDeviceBroker.h"
 
 #include "D3d11GpuFrameBacking.h"
-#include "GpuFramePair.h"
 #include "GpuFrameResource.h"
+#include "GpuFrameSet.h"
 #include "MinimalQuickRenderHarness.h"
 
 #include <QCoreApplication>
@@ -91,11 +91,11 @@ makeContext(const std::uint64_t requestId = 1U,
     return bytes;
 }
 
-[[nodiscard]] std::optional<application::FramePair> makeCpuPair(FrameBudget& budget,
-                                                                const Nv12FrameLayout& layout,
-                                                                const SourceBytes& sourceA,
-                                                                const SourceBytes& sourceB,
-                                                                const std::int64_t frameId = 3) {
+[[nodiscard]] std::optional<application::FrameSet> makeCpuSet(FrameBudget& budget,
+                                                              const Nv12FrameLayout& layout,
+                                                              const SourceBytes& sourceA,
+                                                              const SourceBytes& sourceB,
+                                                              const std::int64_t frameId = 3) {
     FrameResourceFactory factory{budget};
     const domain::ColorMetadata colorA{
         .matrix = domain::ColorMatrix::kBt601,
@@ -114,12 +114,66 @@ makeContext(const std::uint64_t requestId = 1U,
     if (!frameA || !frameB) {
         return std::nullopt;
     }
-    return application::FramePair::create(domain::FrameId{frameId},
-                                          domain::MediaTime{100'000},
-                                          *frameA,
-                                          domain::MediaTime{100'000},
-                                          *frameB,
-                                          domain::MediaTime{100'000});
+
+    std::vector<application::MappedSourceFrame> sources{
+        application::MappedSourceFrame{
+            .sourceId = 0U,
+            .sourceFrameId = domain::FrameId{frameId},
+            .frame = *frameA,
+            .presentationTime = domain::MediaTime{100'000},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+            .alignmentConfidence = 1.0F,
+        },
+        application::MappedSourceFrame{
+            .sourceId = 1U,
+            .sourceFrameId = domain::FrameId{frameId},
+            .frame = *frameB,
+            .presentationTime = domain::MediaTime{100'000},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+            .alignmentConfidence = 1.0F,
+        },
+    };
+    return application::FrameSet::create(
+        domain::FrameId{frameId}, domain::MediaTime{100'000}, std::move(sources));
+}
+
+[[nodiscard]] std::optional<application::FrameSet>
+makeCpuSetWithMissing(FrameBudget& budget,
+                      const Nv12FrameLayout& layout,
+                      const SourceBytes& sourceA,
+                      const std::int64_t frameId = 3) {
+    FrameResourceFactory factory{budget};
+    const domain::ColorMetadata colorA{
+        .matrix = domain::ColorMatrix::kBt601,
+        .range = domain::ColorRange::kLimited,
+        .matrixInferred = false,
+    };
+    const std::optional<application::FrameHandle> frameA =
+        factory.createCpuNv12(layout, colorA, std::span{sourceA.y}, std::span{sourceA.uv});
+    if (!frameA) {
+        return std::nullopt;
+    }
+
+    std::vector<application::MappedSourceFrame> sources{
+        application::MappedSourceFrame{
+            .sourceId = 0U,
+            .sourceFrameId = domain::FrameId{frameId},
+            .frame = *frameA,
+            .presentationTime = domain::MediaTime{100'000},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+            .alignmentConfidence = 1.0F,
+        },
+        application::MappedSourceFrame{
+            .sourceId = 1U,
+            .sourceFrameId = std::nullopt,
+            .frame = std::nullopt,
+            .presentationTime = domain::MediaTime{0},
+            .matchKind = application::FrameMatchKind::Missing,
+            .alignmentConfidence = 1.0F,
+        },
+    };
+    return application::FrameSet::create(
+        domain::FrameId{frameId}, domain::MediaTime{100'000}, std::move(sources));
 }
 
 template <typename Predicate>
@@ -213,7 +267,7 @@ TEST(GpuTransferActorTests, UploadsPaddedOddNv12PlanesAndPublishesOneImmutablePa
     };
     const SourceBytes sourceA = makeSourceBytes(layout, 10U);
     const SourceBytes sourceB = makeSourceBytes(layout, 120U);
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
 
     const application::FrameRequestContext context = makeContext();
@@ -221,20 +275,24 @@ TEST(GpuTransferActorTests, UploadsPaddedOddNv12PlanesAndPublishesOneImmutablePa
     std::optional<FrameMailboxPublication> publication =
         waitForPublication(*mailbox, context.deviceGeneration);
     ASSERT_TRUE(publication.has_value());
-    ASSERT_NE(publication->pair, nullptr);
-    EXPECT_EQ(publication->pair->frameId(), domain::FrameId{3});
-    EXPECT_EQ(publication->pair->context(), context);
+    ASSERT_NE(publication->set, nullptr);
+    EXPECT_EQ(publication->set->frameId(), domain::FrameId{3});
+    EXPECT_EQ(publication->set->context(), context);
 
+    const GpuFrameSlot* const slotA = publication->set->find(0U);
+    const GpuFrameSlot* const slotB = publication->set->find(1U);
+    ASSERT_NE(slotA, nullptr);
+    ASSERT_NE(slotB, nullptr);
     const auto* const backingA =
-        dynamic_cast<const D3d11GpuFrameBacking*>(&publication->pair->frameA()->backing());
+        dynamic_cast<const D3d11GpuFrameBacking*>(&slotA->frame->backing());
     const auto* const backingB =
-        dynamic_cast<const D3d11GpuFrameBacking*>(&publication->pair->frameB()->backing());
+        dynamic_cast<const D3d11GpuFrameBacking*>(&slotB->frame->backing());
     ASSERT_NE(backingA, nullptr);
     ASSERT_NE(backingB, nullptr);
     EXPECT_EQ(backingA->yDimensions(), (D3d11PlaneDimensions{.width = 5U, .height = 3U}));
     EXPECT_EQ(backingA->uvDimensions(), (D3d11PlaneDimensions{.width = 3U, .height = 2U}));
-    EXPECT_EQ(publication->pair->frameA()->colorMetadata().matrix, domain::ColorMatrix::kBt601);
-    EXPECT_EQ(publication->pair->frameB()->colorMetadata().range, domain::ColorRange::kFull);
+    EXPECT_EQ(slotA->frame->colorMetadata().matrix, domain::ColorMatrix::kBt601);
+    EXPECT_EQ(slotB->frame->colorMetadata().range, domain::ColorRange::kFull);
 
     const GraphicsDeviceLeaseResult lease = runtime.broker->tryLease();
     ASSERT_EQ(lease.status, GraphicsDeviceLeaseStatus::Available);
@@ -282,7 +340,7 @@ TEST(GpuTransferActorTests, ClearTombstoneAndDeviceGenerationRejectLateOrStalePa
     const SourceBytes sourceA = makeSourceBytes(layout, 1U);
     const SourceBytes sourceB = makeSourceBytes(layout, 2U);
     const application::FrameRequestContext context = makeContext();
-    std::optional<application::FramePair> first = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> first = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(first.has_value());
     ASSERT_EQ(channel.publish(context, std::move(*first)),
               application::RenderPublishResult::Accepted);
@@ -291,12 +349,12 @@ TEST(GpuTransferActorTests, ClearTombstoneAndDeviceGenerationRejectLateOrStalePa
     EXPECT_NE(mailbox->tryLatest(context.deviceGeneration).status,
               FrameMailboxReadStatus::Available);
 
-    std::optional<application::FramePair> late = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> late = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(late.has_value());
     EXPECT_EQ(actor.submit(context, std::move(*late)), GpuTransferSubmitResult::StaleContext);
 
-    std::optional<application::FramePair> wrongGeneration =
-        makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> wrongGeneration =
+        makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(wrongGeneration.has_value());
     EXPECT_EQ(actor.submit(makeContext(2U, 2U, 2U), std::move(*wrongGeneration)),
               GpuTransferSubmitResult::StaleContext);
@@ -318,7 +376,7 @@ TEST(GpuTransferActorTests, FinalRenderReleaseRetiresComAndBudgetOnTheActorWorke
     };
     const SourceBytes sourceA = makeSourceBytes(layout, 30U);
     const SourceBytes sourceB = makeSourceBytes(layout, 60U);
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
     const application::FrameRequestContext context = makeContext();
     ASSERT_EQ(actor.submit(context, std::move(*pair)), GpuTransferSubmitResult::Accepted);
@@ -364,7 +422,7 @@ TEST(GpuTransferActorTests, RollsBackAdmissionBudgetAndShutsDownWithinTwoSeconds
     auto budget = std::make_shared<FrameBudget>(100U);
     auto mailbox = std::make_shared<FrameMailbox>(domain::DeviceGeneration{1U});
     GpuTransferActor actor{budget, runtime.broker, mailbox};
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(), std::move(*pair)), GpuTransferSubmitResult::Accepted);
     ASSERT_TRUE(actor.waitUntilIdle(2s));
@@ -393,7 +451,7 @@ TEST(GpuTransferActorTests, RejectsAdmissionWhileTheBrokerHasNoAvailableLease) {
     };
     const SourceBytes sourceA = makeSourceBytes(layout, 1U);
     const SourceBytes sourceB = makeSourceBytes(layout, 2U);
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
 
     EXPECT_EQ(actor.submit(makeContext(1U, 1U), std::move(*pair)),
@@ -416,7 +474,7 @@ TEST(GpuTransferActorTests, TimedOutActorDestructionKeepsDependenciesUntilLateRe
     };
     const SourceBytes sourceA = makeSourceBytes(layout, 15U);
     const SourceBytes sourceB = makeSourceBytes(layout, 45U);
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor->submit(makeContext(), std::move(*pair)), GpuTransferSubmitResult::Accepted);
     std::optional<FrameMailboxPublication> publication =
@@ -455,7 +513,7 @@ TEST(GpuTransferActorTests, RejectsWorkAfterBrokerDeviceLossTransition) {
     };
     const SourceBytes sourceA = makeSourceBytes(layout, 1U);
     const SourceBytes sourceB = makeSourceBytes(layout, 2U);
-    std::optional<application::FramePair> pair = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> pair = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(), std::move(*pair)), GpuTransferSubmitResult::Accepted);
     std::optional<FrameMailboxPublication> publication =
@@ -469,10 +527,51 @@ TEST(GpuTransferActorTests, RejectsWorkAfterBrokerDeviceLossTransition) {
     EXPECT_NE(mailbox->tryLatest(domain::DeviceGeneration{2U}).status,
               FrameMailboxReadStatus::Available);
 
-    std::optional<application::FramePair> stale = makeCpuPair(*budget, layout, sourceA, sourceB);
+    std::optional<application::FrameSet> stale = makeCpuSet(*budget, layout, sourceA, sourceB);
     ASSERT_TRUE(stale.has_value());
     EXPECT_EQ(actor.submit(makeContext(), std::move(*stale)),
               GpuTransferSubmitResult::StaleContext);
+    publication.reset();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(GpuTransferActorTests, MissingEntriesAreSkippedWhilePresentEntriesUpload) {
+    WarpRuntime runtime;
+    ASSERT_TRUE(runtime.start());
+    auto budget = std::make_shared<FrameBudget>(1U << 20U);
+    auto mailbox = std::make_shared<FrameMailbox>(domain::DeviceGeneration{1U});
+    GpuTransferActor actor{budget, runtime.broker, mailbox};
+
+    const Nv12FrameLayout layout{
+        .width = 4U,
+        .height = 2U,
+        .yStride = 4U,
+        .uvStride = 4U,
+    };
+    const SourceBytes sourceA = makeSourceBytes(layout, 10U);
+    std::optional<application::FrameSet> setWithMissing =
+        makeCpuSetWithMissing(*budget, layout, sourceA);
+    ASSERT_TRUE(setWithMissing.has_value());
+
+    const application::FrameRequestContext context = makeContext();
+    EXPECT_EQ(actor.submit(context, std::move(*setWithMissing)), GpuTransferSubmitResult::Accepted);
+    std::optional<FrameMailboxPublication> publication =
+        waitForPublication(*mailbox, context.deviceGeneration);
+    ASSERT_TRUE(publication.has_value());
+    ASSERT_NE(publication->set, nullptr);
+    EXPECT_EQ(publication->set->frameId(), domain::FrameId{3});
+    EXPECT_EQ(publication->set->context(), context);
+
+    // Only the present entry (sourceId=0) should be uploaded; the Missing entry (sourceId=1) is skipped.
+    EXPECT_EQ(publication->set->frameCount(), 1U);
+    const GpuFrameSlot* const slotA = publication->set->find(0U);
+    const GpuFrameSlot* const slotB = publication->set->find(1U);
+    ASSERT_NE(slotA, nullptr);
+    EXPECT_EQ(slotA->sourceId, 0U);
+    EXPECT_NE(slotA->frame, nullptr);
+    EXPECT_EQ(slotB, nullptr);
+
+    EXPECT_TRUE(mailbox->clear(context.playback));
     publication.reset();
     EXPECT_TRUE(actor.shutdown(2s));
 }

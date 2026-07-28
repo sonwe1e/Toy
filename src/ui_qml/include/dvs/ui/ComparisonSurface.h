@@ -13,13 +13,13 @@ class PresentationAckMailbox;
 
 namespace dvs::ui {
 
-class DualVideoRenderNode;
+class ComparisonRenderNode;
 
 // Thin Qt Quick synchronization boundary. All D3D resources and rendering behavior remain owned
 // by the platform renderer living in the scene-graph node.
 // Qt's QML type wrapper derives from registered C++ elements, so this visual boundary cannot be
 // final even though production code does not subclass it directly.
-class DualVideoSurface : public QQuickItem {
+class ComparisonSurface : public QQuickItem {
     Q_OBJECT
 
     Q_PROPERTY(ViewMode viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged)
@@ -69,11 +69,11 @@ public:
     };
     Q_ENUM(DifferenceFilter)
 
-    explicit DualVideoSurface(QQuickItem* parent = nullptr);
-    ~DualVideoSurface() override;
+    explicit ComparisonSurface(QQuickItem* parent = nullptr);
+    ~ComparisonSurface() override;
 
-    DualVideoSurface(const DualVideoSurface&) = delete;
-    DualVideoSurface& operator=(const DualVideoSurface&) = delete;
+    ComparisonSurface(const ComparisonSurface&) = delete;
+    ComparisonSurface& operator=(const ComparisonSurface&) = delete;
 
     [[nodiscard]] ViewMode viewMode() const noexcept;
     void setViewMode(ViewMode value);
@@ -107,7 +107,7 @@ protected:
     void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
 
 private:
-    friend class DualVideoRenderNode;
+    friend class ComparisonRenderNode;
 
     class Services;
 

@@ -81,9 +81,7 @@ GpuFrameResource::create(GpuFrameIdentity identity,
                          const application::FrameGeometry geometry,
                          const domain::ColorMetadata colorMetadata,
                          GpuFrameAllocation allocation) noexcept {
-    const bool supportedSource = identity.sourceRole == domain::SourceRole::kA ||
-                                 identity.sourceRole == domain::SourceRole::kB;
-    if (!identity.frameId.isValid() || !supportedSource || !geometry.isValid() ||
+    if (!identity.frameId.isValid() || !geometry.isValid() ||
         !colorMetadata.isValid() || !allocation.isValid()) {
         return {};
     }
@@ -102,9 +100,7 @@ std::shared_ptr<const GpuFrameResource> GpuFrameResource::createDeferred(
     const domain::ColorMetadata colorMetadata,
     GpuFrameAllocation allocation,
     std::shared_ptr<GpuFrameRetirementDomain> retirementDomain) noexcept {
-    const bool supportedSource = identity.sourceRole == domain::SourceRole::kA ||
-                                 identity.sourceRole == domain::SourceRole::kB;
-    if (!identity.frameId.isValid() || !supportedSource || !geometry.isValid() ||
+    if (!identity.frameId.isValid() || !geometry.isValid() ||
         !colorMetadata.isValid() || !allocation.isValid() || !retirementDomain) {
         return {};
     }
@@ -149,8 +145,8 @@ const domain::FrameId& GpuFrameResource::frameId() const noexcept {
     return identity_.frameId;
 }
 
-domain::SourceRole GpuFrameResource::sourceRole() const noexcept {
-    return identity_.sourceRole;
+domain::SourceId GpuFrameResource::sourceId() const noexcept {
+    return identity_.sourceId;
 }
 
 const application::FrameGeometry& GpuFrameResource::geometry() const noexcept {

@@ -1,7 +1,7 @@
 #include "ReviewRuntime.h"
 
 #include "dvs/application/PlaybackCoordinator.h"
-#include "dvs/media/DirectFrameProvider.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/persistence/SettingsRepository.h"
 #include "dvs/platform/D3d11RenderChannel.h"
@@ -12,7 +12,7 @@
 #include "dvs/platform/PresentationAckMailbox.h"
 #include "dvs/platform/RenderActivitySink.h"
 #include "dvs/platform/SteadyDeadlineScheduler.h"
-#include "dvs/ui/DualVideoSurface.h"
+#include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/RenderAckRelay.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
@@ -240,7 +240,7 @@ public:
     std::shared_ptr<application::PlaybackCoordinator> coordinator;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler;
-    std::shared_ptr<media::DirectFrameProvider> frameProvider;
+    std::shared_ptr<media::MultiSourceFrameProvider> frameProvider;
     std::shared_ptr<media::MediaProbe> mediaProbe;
     std::shared_ptr<application::ISettingsRepository> settingsRepository;
     std::shared_ptr<platform::SystemSteadyClock> clock;
@@ -278,7 +278,7 @@ public:
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
         mediaProbe_ = std::make_shared<media::MediaProbe>();
         settingsRepository_ = std::make_shared<persistence::SettingsRepository>();
-        frameProvider_ = std::make_shared<media::DirectFrameProvider>(*frameBudget_);
+        frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(*frameBudget_);
         deadlineScheduler_ = std::make_shared<platform::SteadyDeadlineScheduler>();
         clock_ = std::make_shared<platform::SystemSteadyClock>();
         coordinator_ =
@@ -346,7 +346,7 @@ public:
         return preferences_.get();
     }
 
-    [[nodiscard]] bool attachSurface(ui::DualVideoSurface& surface) noexcept {
+    [[nodiscard]] bool attachSurface(ui::ComparisonSurface& surface) noexcept {
         if (prepared_ || shutdownCompleted_ || !acknowledgementRelay_ || !deviceBroker_ ||
             !frameMailbox_ || !acknowledgementMailbox_) {
             return false;
@@ -482,7 +482,7 @@ private:
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;
     std::shared_ptr<application::ISettingsRepository> settingsRepository_;
-    std::shared_ptr<media::DirectFrameProvider> frameProvider_;
+    std::shared_ptr<media::MultiSourceFrameProvider> frameProvider_;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;
     std::shared_ptr<platform::SystemSteadyClock> clock_;
     std::shared_ptr<application::PlaybackCoordinator> coordinator_;
@@ -491,7 +491,7 @@ private:
     std::unique_ptr<GraphicsNotificationPump> graphicsPump_;
     std::unique_ptr<ui::ReviewController> controller_;
     std::unique_ptr<ui::ReviewPreferencesController> preferences_;
-    ui::DualVideoSurface* surface_ = nullptr;
+    ui::ComparisonSurface* surface_ = nullptr;
     QMetaObject::Connection surfaceDestroyedConnection_;
     bool prepared_ = false;
     bool shutdownCompleted_ = false;
@@ -518,7 +518,7 @@ ui::ReviewPreferencesController* ReviewRuntime::preferences() noexcept {
     return impl_ ? impl_->preferences() : nullptr;
 }
 
-bool ReviewRuntime::attachSurface(ui::DualVideoSurface& surface) noexcept {
+bool ReviewRuntime::attachSurface(ui::ComparisonSurface& surface) noexcept {
     return impl_ && impl_->attachSurface(surface);
 }
 

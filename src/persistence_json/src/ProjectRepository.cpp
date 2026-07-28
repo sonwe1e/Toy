@@ -34,7 +34,7 @@ absoluteProjectPath(const std::filesystem::path& projectPath) {
     const auto absolutePath = platform::WindowsPaths::absolutePath(projectPath);
     if (!absolutePath) {
         return domain::Result<std::filesystem::path>::failure(
-            internal::platformError(absolutePath.error(), domain::SourceRole::kProject));
+            internal::platformError(absolutePath.error(), std::nullopt));
     }
     return domain::Result<std::filesystem::path>::success(absolutePath.value());
 }
@@ -47,7 +47,7 @@ readProjectText(const std::filesystem::path& projectPath) {
         byteCount > static_cast<std::uintmax_t>(std::numeric_limits<std::size_t>::max())) {
         return domain::Result<std::string>::failure(internal::persistenceError(
             domain::MediaErrorCode::kProjectFileIo,
-            domain::SourceRole::kProject,
+            std::nullopt,
             "Project file is unavailable or exceeds the 16 MiB document limit."));
     }
 
@@ -55,7 +55,7 @@ readProjectText(const std::filesystem::path& projectPath) {
     if (!stream) {
         return domain::Result<std::string>::failure(
             internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                       domain::SourceRole::kProject,
+                                       std::nullopt,
                                        "Could not open the project file for reading."));
     }
 
@@ -64,7 +64,7 @@ readProjectText(const std::filesystem::path& projectPath) {
     if (stream.gcount() != static_cast<std::streamsize>(document.size())) {
         return domain::Result<std::string>::failure(
             internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                       domain::SourceRole::kProject,
+                                       std::nullopt,
                                        "Project file changed or could not be fully read."));
     }
     return domain::Result<std::string>::success(std::move(document));
@@ -96,40 +96,31 @@ struct LoadedProject final {
         return domain::Result<LoadedProject>::failure(project.error());
     }
 
-    const domain::MediaDescriptor& sourceA = project.value().sources().sourceA();
-    const domain::MediaDescriptor& sourceB = project.value().sources().sourceB();
-    if (!sourceA.sourceIdentity.has_value() || !sourceB.sourceIdentity.has_value()) {
-        return domain::Result<LoadedProject>::failure(internal::persistenceError(
-            domain::MediaErrorCode::kInvalidProjectSchema,
-            domain::SourceRole::kPair,
-            "Schema-1 project sources require persisted file identities."));
+    const auto& sources = project.value().sources().sources();
+    application::SourceRevalidationDiagnostics sourceDiagnostics;
+    sourceDiagnostics.reserve(sources.size());
+
+    for (const auto& source : sources) {
+        if (!source.descriptor.sourceIdentity.has_value()) {
+            return domain::Result<LoadedProject>::failure(internal::persistenceError(
+                domain::MediaErrorCode::kInvalidProjectSchema,
+                source.id,
+                "Schema-2 project sources require persisted file identities."));
+        }
+
+        const auto status = FingerprintService::verify(
+            source.descriptor.normalizedPath, *source.descriptor.sourceIdentity, source.id);
+
+        std::optional<domain::MediaError> error;
+        if (!status) {
+            error = status.error();
+        }
+        sourceDiagnostics.push_back(application::SourceRevalidationDiagnostic{
+            .sourceId = source.id,
+            .error = std::move(error),
+        });
     }
 
-    // Check both persisted locations before deciding the request outcome. This fixed ordering
-    // gives the coordinator complete A/B repair information in one editable load payload.
-    const auto sourceAStatus = FingerprintService::verify(
-        sourceA.normalizedPath, *sourceA.sourceIdentity, domain::SourceRole::kA);
-    const auto sourceBStatus = FingerprintService::verify(
-        sourceB.normalizedPath, *sourceB.sourceIdentity, domain::SourceRole::kB);
-
-    std::optional<domain::MediaError> sourceAError;
-    if (!sourceAStatus) {
-        sourceAError = sourceAStatus.error();
-    }
-    std::optional<domain::MediaError> sourceBError;
-    if (!sourceBStatus) {
-        sourceBError = sourceBStatus.error();
-    }
-    application::SourceRevalidationDiagnostics sourceDiagnostics{
-        application::SourceRevalidationDiagnostic{
-            .sourceRole = domain::SourceRole::kA,
-            .error = std::move(sourceAError),
-        },
-        application::SourceRevalidationDiagnostic{
-            .sourceRole = domain::SourceRole::kB,
-            .error = std::move(sourceBError),
-        },
-    };
     for (const application::SourceRevalidationDiagnostic& diagnostic : sourceDiagnostics) {
         if (diagnostic.error.has_value() && !isRecoverableRevalidationError(*diagnostic.error)) {
             return domain::Result<LoadedProject>::failure(*diagnostic.error);
@@ -213,7 +204,7 @@ struct LoadedProject final {
     if (errorCode) {
         return domain::Status::failure(internal::persistenceError(
             domain::MediaErrorCode::kProjectFileIo,
-            domain::SourceRole::kProject,
+            std::nullopt,
             "Could not inspect the project destination before publication."));
     }
 
@@ -226,7 +217,7 @@ struct LoadedProject final {
         });
     if (!publisher) {
         return domain::Status::failure(
-            internal::platformError(publisher.error(), domain::SourceRole::kProject));
+            internal::platformError(publisher.error(), std::nullopt));
     }
 
     const std::span<const char> characters{text.value().data(), text.value().size()};
@@ -234,12 +225,12 @@ struct LoadedProject final {
     auto status = publisher.value()->write(bytes);
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kProject));
+            internal::platformError(status.error(), std::nullopt));
     }
     status = publisher.value()->flush();
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kProject));
+            internal::platformError(status.error(), std::nullopt));
     }
 
     // The successful compare/exchange is the save's linearization point. A cancellation that
@@ -248,14 +239,14 @@ struct LoadedProject final {
     if (!operation.tryBeginCommit()) {
         return domain::Status::failure(
             internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                       domain::SourceRole::kProject,
+                                       std::nullopt,
                                        "Project save was canceled before atomic publication."));
     }
     status = destinationExists ? publisher.value()->publishReplacingExisting()
                                : publisher.value()->publishNew();
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kProject));
+            internal::platformError(status.error(), std::nullopt));
     }
     return domain::Status::success();
 }
@@ -387,7 +378,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           domain::SourceRole::kProject,
+                                           std::nullopt,
                                            "Unexpected project-load exception: " +
                                                std::string{exception.what()}));
         } catch (...) {
@@ -396,7 +387,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           domain::SourceRole::kProject,
+                                           std::nullopt,
                                            "Unexpected project-load failure."));
         }
         operations.remove(operation);
@@ -410,7 +401,7 @@ private:
                 internal::completeCanceled(operation, events, request.context);
             } else {
                 auto candidate =
-                    ProjectRelinkService::prepare(request.sourceRole, request.newSourcePath);
+                    ProjectRelinkService::prepare(request.sourceId, request.newSourcePath);
                 if (!candidate) {
                     internal::completeFailed(operation, events, request.context, candidate.error());
                 } else if (operation->isCanceled()) {
@@ -434,7 +425,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           request.sourceRole,
+                                           request.sourceId,
                                            "Unexpected project-relink exception: " +
                                                std::string{exception.what()}));
         } catch (...) {
@@ -443,7 +434,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           request.sourceRole,
+                                           request.sourceId,
                                            "Unexpected project-relink failure."));
         }
         operations.remove(operation);
@@ -475,7 +466,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           domain::SourceRole::kProject,
+                                           std::nullopt,
                                            "Unexpected project-save exception: " +
                                                std::string{exception.what()}));
         } catch (...) {
@@ -484,7 +475,7 @@ private:
                 events,
                 request.context,
                 internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                           domain::SourceRole::kProject,
+                                           std::nullopt,
                                            "Unexpected project-save failure."));
         }
         operations.remove(operation);

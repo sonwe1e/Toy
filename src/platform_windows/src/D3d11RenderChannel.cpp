@@ -11,17 +11,17 @@ D3d11RenderChannel::D3d11RenderChannel(std::shared_ptr<GpuTransferActor> transfe
 
 application::RenderPublishResult
 D3d11RenderChannel::publish(const application::FrameRequestContext& context,
-                            application::FramePair pair) noexcept {
+                            application::FrameSet set) noexcept {
     if (!transferActor_) {
         return application::RenderPublishResult::Closed;
     }
 
-    switch (transferActor_->submit(context, std::move(pair))) {
+    switch (transferActor_->submit(context, std::move(set))) {
     case GpuTransferSubmitResult::Accepted:
         return application::RenderPublishResult::Accepted;
     case GpuTransferSubmitResult::Replaced:
         return application::RenderPublishResult::Replaced;
-    case GpuTransferSubmitResult::InvalidPair:
+    case GpuTransferSubmitResult::InvalidSet:
     case GpuTransferSubmitResult::StaleContext:
     case GpuTransferSubmitResult::DeviceUnavailable:
     case GpuTransferSubmitResult::Closed:

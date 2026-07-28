@@ -163,17 +163,18 @@ TEST_F(ReviewControllerTests, CanonicalizesUnicodeLocalFilesAndDispatchesScopedO
     });
 
     ASSERT_TRUE(
-        controller.openPair(QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)));
+        controller.openComparison(QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)));
     ASSERT_EQ(backend->submitted.size(), 1U);
     const auto* const command =
-        std::get_if<application::OpenSourcePathsCommand>(&backend->submitted.front());
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
     ASSERT_NE(command, nullptr);
     EXPECT_EQ(command->context.sessionId, domain::SessionId{17U});
     EXPECT_EQ(command->context.sessionEpoch, domain::SessionEpoch{3U});
     EXPECT_EQ(command->context.commandId, domain::CommandId{1U});
-    EXPECT_TRUE(command->sourceAPath ==
+    ASSERT_EQ(command->sources.size(), 2U);
+    EXPECT_TRUE(command->sources[0].path ==
                 std::filesystem::path{QFileInfo{sourceAPath}.canonicalFilePath().toStdWString()});
-    EXPECT_TRUE(command->sourceBPath ==
+    EXPECT_TRUE(command->sources[1].path ==
                 std::filesystem::path{QFileInfo{sourceBPath}.canonicalFilePath().toStdWString()});
     EXPECT_EQ(controller.sourceAFilename(), QStringLiteral("source_\u7532.mp4"));
     EXPECT_EQ(controller.sourceBFilename(), QStringLiteral("source_\u4e59.mp4"));
@@ -192,7 +193,7 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
     auto backend = std::make_shared<FakeBackend>();
     ReviewController controller{dependenciesFor(backend)};
 
-    EXPECT_FALSE(controller.openPair(QUrl{QStringLiteral("https://example.invalid/a.mp4")},
+    EXPECT_FALSE(controller.openComparison(QUrl{QStringLiteral("https://example.invalid/a.mp4")},
                                      QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("invalid-argument"));
     EXPECT_TRUE(controller.sourceAFilename().isEmpty());
@@ -201,13 +202,13 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
 
     const QString missingPath = directory.filePath(QStringLiteral("missing.mp4"));
     EXPECT_FALSE(
-        controller.openPair(QUrl::fromLocalFile(validPath), QUrl::fromLocalFile(missingPath)));
+        controller.openComparison(QUrl::fromLocalFile(validPath), QUrl::fromLocalFile(missingPath)));
     EXPECT_TRUE(controller.sourceAErrorKey().isEmpty());
     EXPECT_EQ(controller.sourceBErrorKey(), QStringLiteral("source-missing"));
     EXPECT_TRUE(backend->submitted.empty());
 
     EXPECT_FALSE(
-        controller.openPair(QUrl::fromLocalFile(directory.path()), QUrl::fromLocalFile(validPath)));
+        controller.openComparison(QUrl::fromLocalFile(directory.path()), QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("source-missing"));
     EXPECT_TRUE(backend->submitted.empty());
     controller.stop();
@@ -227,7 +228,7 @@ TEST_F(ReviewControllerTests, BusyGatesCommandsUntilOnlyTheFullPendingContextCom
     EXPECT_FALSE(controller.previous());
     EXPECT_FALSE(controller.next());
     EXPECT_FALSE(controller.last());
-    EXPECT_FALSE(controller.openPair(QUrl{}, QUrl{}));
+    EXPECT_FALSE(controller.openComparison(QUrl{}, QUrl{}));
     EXPECT_EQ(backend->submitted.size(), 1U);
 
     backend->terminals.push_back(application::CommandTerminal{
@@ -292,7 +293,7 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     backend->currentSnapshot.lastError =
         domain::makeMediaError(domain::MediaErrorCode::kMediaProbeFailed,
                                domain::MediaOperation::kMediaProbe,
-                               domain::SourceRole::kA,
+                               domain::SourceId{0},
                                true,
                                "must never be exposed");
     ASSERT_TRUE(waitUntil([&controller] {
@@ -307,7 +308,7 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     backend->currentSnapshot.lastError =
         domain::makeMediaError(domain::MediaErrorCode::kSourceMissing,
                                domain::MediaOperation::kMediaProbe,
-                               domain::SourceRole::kB,
+                               domain::SourceId{1},
                                true);
     ASSERT_TRUE(waitUntil([&controller] {
         return controller.sourceBErrorKey() == QStringLiteral("source-missing");
@@ -317,7 +318,7 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     backend->currentSnapshot.lastError =
         domain::makeMediaError(domain::MediaErrorCode::kSourceFrameCountMismatch,
                                domain::MediaOperation::kSourcePairValidation,
-                               domain::SourceRole::kPair,
+                               std::nullopt,
                                false);
     ASSERT_TRUE(waitUntil([&controller] {
         return controller.pairErrorKey() == QStringLiteral("source-frame-count-mismatch");
@@ -546,7 +547,7 @@ TEST_F(ReviewControllerTests, StopAndExpiredBackendFailClosedWithoutFurtherAcces
     EXPECT_FALSE(controller.play());
     EXPECT_FALSE(controller.pause());
     EXPECT_FALSE(controller.togglePlayback());
-    EXPECT_FALSE(controller.openPair(QUrl{}, QUrl{}));
+    EXPECT_FALSE(controller.openComparison(QUrl{}, QUrl{}));
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
     EXPECT_EQ(backend->submitCalls + backend->snapshotCalls + backend->drainCalls, accesses);
 

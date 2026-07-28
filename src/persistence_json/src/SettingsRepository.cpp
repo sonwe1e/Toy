@@ -34,7 +34,7 @@ constexpr std::uintmax_t kMaximumSettingsBytes = 1024U * 1024U;
 
 [[nodiscard]] domain::MediaError settingsError(std::string technicalDetail) {
     return internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                      domain::SourceRole::kNone,
+                                      std::nullopt,
                                       std::move(technicalDetail));
 }
 
@@ -44,7 +44,7 @@ resolveSettingsFile(const std::filesystem::path& configuredPath) {
         const auto absolutePath = platform::WindowsPaths::absolutePath(configuredPath);
         if (!absolutePath) {
             return domain::Result<std::filesystem::path>::failure(
-                internal::platformError(absolutePath.error(), domain::SourceRole::kNone));
+                internal::platformError(absolutePath.error(), std::nullopt));
         }
         return domain::Result<std::filesystem::path>::success(absolutePath.value());
     }
@@ -52,7 +52,7 @@ resolveSettingsFile(const std::filesystem::path& configuredPath) {
     const auto applicationPaths = platform::WindowsPaths::applicationDataPaths();
     if (!applicationPaths) {
         return domain::Result<std::filesystem::path>::failure(
-            internal::platformError(applicationPaths.error(), domain::SourceRole::kNone));
+            internal::platformError(applicationPaths.error(), std::nullopt));
     }
     return domain::Result<std::filesystem::path>::success(applicationPaths.value().settingsFile);
 }
@@ -145,7 +145,7 @@ readSettings(const std::filesystem::path& configuredPath) {
     const auto ensureDirectory = platform::WindowsPaths::ensureDirectory(directory);
     if (!ensureDirectory) {
         return domain::Status::failure(
-            internal::platformError(ensureDirectory.error(), domain::SourceRole::kNone));
+            internal::platformError(ensureDirectory.error(), std::nullopt));
     }
 
     Json values = Json::object();
@@ -185,19 +185,19 @@ readSettings(const std::filesystem::path& configuredPath) {
                                              });
     if (!publisher) {
         return domain::Status::failure(
-            internal::platformError(publisher.error(), domain::SourceRole::kNone));
+            internal::platformError(publisher.error(), std::nullopt));
     }
 
     const std::span<const char> characters{text.data(), text.size()};
     auto status = publisher.value()->write(std::as_bytes(characters));
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kNone));
+            internal::platformError(status.error(), std::nullopt));
     }
     status = publisher.value()->flush();
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kNone));
+            internal::platformError(status.error(), std::nullopt));
     }
 
     if (!operation.tryBeginCommit()) {
@@ -208,7 +208,7 @@ readSettings(const std::filesystem::path& configuredPath) {
                                : publisher.value()->publishNew();
     if (!status) {
         return domain::Status::failure(
-            internal::platformError(status.error(), domain::SourceRole::kNone));
+            internal::platformError(status.error(), std::nullopt));
     }
     return domain::Status::success();
 }
