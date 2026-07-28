@@ -893,6 +893,12 @@ private:
                     return;
                 }
                 if (!decoded) {
+                    if (decoded.error().code == domain::MediaErrorCode::kFrameBudgetExceeded) {
+                        // Budget exhaustion is session pressure, not a missing frame: fail the
+                        // whole request instead of publishing a silently incomplete set.
+                        postFailed(operation, decoded.error());
+                        return;
+                    }
                     entries.push_back(application::MappedSourceFrame{
                         .sourceId = sourceId,
                         .sourceFrameId = std::nullopt,

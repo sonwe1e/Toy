@@ -1697,6 +1697,71 @@ TEST(PlaybackCoordinatorTests, AcceptsSamePathAndOpensProviderExactlyOnceWithDed
     EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
 }
 
+TEST(PlaybackCoordinatorTests, ASecondOpenSupersedesInFlightProbes) {
+    const auto probe = std::make_shared<FakeMediaProbe>();
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render, probe);
+    const auto initial = coordinator->snapshot();
+    const CommandContext firstContext{
+        .sessionId = initial->sessionId,
+        .sessionEpoch = initial->sessionEpoch,
+        .commandId = domain::CommandId{1},
+    };
+    ASSERT_EQ(coordinator->submit(OpenComparisonCommand{
+                  .context = firstContext,
+                  .sources =
+                      {
+                          OpenComparisonSource{.path = "C:/media/first-a.mp4",
+                                               .role = domain::ComparisonRole::kPrediction,
+                                               .displayName = "a"},
+                          OpenComparisonSource{.path = "C:/media/first-b.mp4",
+                                               .role = domain::ComparisonRole::kPrediction,
+                                               .displayName = "b"},
+                      },
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(probe->waitForRequestCount(2U));
+
+    ASSERT_EQ(coordinator->submit(OpenComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{2},
+                      },
+                  .sources =
+                      {
+                          OpenComparisonSource{.path = "C:/media/second-a.mp4",
+                                               .role = domain::ComparisonRole::kPrediction,
+                                               .displayName = "a"},
+                          OpenComparisonSource{.path = "C:/media/second-b.mp4",
+                                               .role = domain::ComparisonRole::kPrediction,
+                                               .displayName = "b"},
+                      },
+              }),
+              PortSubmitResult::Accepted);
+
+    // The superseded command completes as canceled and both in-flight probes are canceled;
+    // the new open starts its own probe set for the new paths.
+    ASSERT_TRUE(probe->waitForCancelCount(2U));
+    ASSERT_TRUE(probe->waitForRequestCount(4U));
+    std::vector<CommandTerminal> terminals;
+    ASSERT_TRUE(waitUntil([&] {
+        auto drained = coordinator->takeCompletedCommands();
+        if (drained.empty()) {
+            return false;
+        }
+        terminals = std::move(drained);
+        return true;
+    }));
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context, firstContext);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Canceled);
+    EXPECT_EQ(probe->request(2U)->sourcePath, std::filesystem::path{"C:/media/second-a.mp4"});
+    EXPECT_EQ(probe->request(3U)->sourcePath, std::filesystem::path{"C:/media/second-b.mp4"});
+}
+
 TEST(PlaybackCoordinatorTests, ProbeFailureCancelsSiblingAndPreservesReadyReplacementSession) {
     const auto probe = std::make_shared<FakeMediaProbe>();
     const auto provider = std::make_shared<FakeFrameProvider>();

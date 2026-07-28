@@ -918,6 +918,21 @@ private:
                            domain::CanonicalTimeline{*set.canonicalRate()});
     }
 
+    // Cancels every in-flight probe of the pending open and completes that command as canceled,
+    // so a freshly submitted open can start its own probe set. Late completions from the canceled
+    // probes no longer match any pending slot and are ignored.
+    void supersedePendingProbes() {
+        if (!pendingProbe_.has_value()) {
+            return;
+        }
+        const PendingProbe pending = std::move(*pendingProbe_);
+        pendingProbe_.reset();
+        for (const auto& slot : pending.slots) {
+            dependencies_.mediaProbe->cancel(slot.context);
+        }
+        completeCommand(pending.command, CommandOutcome::Canceled);
+    }
+
     void failProbe(domain::MediaError error,
                    const CommandOutcome outcome,
                    const domain::SessionState initialFailureState) {
@@ -1240,6 +1255,7 @@ private:
         state_.sessionState = domain::SessionState::kLoading;
         state_.playbackState = domain::PlaybackState::kPaused;
         state_.requestedFrame.reset();
+        state_.displayedFrame.reset();
         pending_ = PendingCommand{
             .phase = PendingPhase::kClosingProvider,
             .command = command.context,
@@ -1279,6 +1295,13 @@ private:
                 beginPause(std::get<PauseCommand>(command));
             }
             return;
+        }
+        const bool isOpenCommand = std::holds_alternative<OpenComparisonCommand>(command) ||
+                                   std::holds_alternative<OpenDirectComparisonCommand>(command);
+        if (isOpenCommand && !pending_.has_value() && !playbackRun_.has_value() &&
+            pendingProbe_.has_value()) {
+            // A new open supersedes in-flight probes instead of bouncing off a Busy gate.
+            supersedePendingProbes();
         }
         if (pending_.has_value() || pendingProbe_.has_value() || playbackRun_.has_value()) {
             completeCommand(context, CommandOutcome::Busy);

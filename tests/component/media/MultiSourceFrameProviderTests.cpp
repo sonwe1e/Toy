@@ -234,6 +234,36 @@ TEST(MultiSourceFrameProviderTests, OpensDirectSourcesAndPublishesOnlyACompleteE
     EXPECT_GT(budget.reservedBytes(), 0U);
 }
 
+TEST(MultiSourceFrameProviderTests, FailsTheWholeRequestWhenFrameBudgetIsExhausted) {
+    platform::FrameBudget budget{1U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(760U);
+
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    const application::FrameRequest request{
+        .context = makeFrameContext(761U),
+        .frameId = domain::FrameId{1},
+        .priority = application::FrameRequestPriority::Exact,
+    };
+    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+
+    // Budget exhaustion is session pressure: the whole request fails instead of publishing
+    // a FrameSet silently degraded to Missing entries.
+    const auto recorded = events->events();
+    ASSERT_EQ(recorded.size(), 2U);
+    const auto* const frameTerminal = std::get_if<application::RequestTerminal>(&recorded[1]);
+    ASSERT_NE(frameTerminal, nullptr);
+    const auto* const frameFailure = std::get_if<application::RequestFailed>(frameTerminal);
+    ASSERT_NE(frameFailure, nullptr);
+    ASSERT_TRUE(std::holds_alternative<application::FrameRequestContext>(frameFailure->context));
+    EXPECT_EQ(std::get<application::FrameRequestContext>(frameFailure->context), request.context);
+    EXPECT_EQ(frameFailure->error.code, domain::MediaErrorCode::kFrameBudgetExceeded);
+}
+
 TEST(MultiSourceFrameProviderTests, AcceptsANewerPlaybackGenerationWithoutReopeningSources) {
     platform::FrameBudget budget{4U * 1024U * 1024U};
     MultiSourceFrameProvider provider{budget};

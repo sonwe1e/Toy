@@ -1,9 +1,11 @@
 # Target Architecture
 
-Status: **target design** (USERPLAN phases 2–6). The code today still implements the
-historical A/B contract described in
-[architecture-overview.md](design/architecture-overview.md); this document defines
-where the refactor is taking it.
+Status: **core model implemented** (USERPLAN phases 0–2 done). The FrameSet model,
+2–3 source validation with compatibility reports, missing-frame semantics, and the
+multi-source decode/render pipeline are in the codebase today; per-source parallel
+decode actors, three-up layouts, and the alignment service (phases 3–6) are the
+remaining work. The historical A/B design is archived in
+[design/architecture-overview.md](design/architecture-overview.md).
 
 DualVideoStudio is a VFI-dedicated comparator. Its job is not "play two videos" but
 "present one canonical frame position across 2–3 sources, atomically, with explicit
