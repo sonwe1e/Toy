@@ -1,32 +1,27 @@
-name: Build and Test
+name: Hardware and Performance
+
+# Kept separate from Build and Test on purpose: these suites need a GPU-equipped
+# self-hosted runner and real playback load (paired 1080p60/4K30, D3D11VA), so they
+# run on demand instead of on every pull request. The test layers exist in
+# cmake/Testing.cmake ("hardware", "performance"); concrete suites land with
+# USERPLAN Phase 6 (three-source 1080p60 decoding, long-video indexing). Until then
+# this job configures, builds, and reports zero matching tests.
 
 on:
-  pull_request:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: build-test-${{ github.workflow }}-${{ github.ref }}
+  group: hardware-performance-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-test:
-    name: ${{ matrix.name }}
-    runs-on: [self-hosted, Windows, X64, dvs-toolchain-4.4]
-    timeout-minutes: 120
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Debug tests
-            preset: dev
-          - name: Release tests
-            preset: release
+  hardware-performance:
+    name: Hardware and performance suites
+    runs-on: [self-hosted, Windows, X64, dvs-gpu]
+    timeout-minutes: 180
 
     steps:
       - name: Check out repository
@@ -57,28 +52,18 @@ jobs:
             throw "Invalid vcpkg root: $vcpkgRoot"
           }
           "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
+          Get-Command cl.exe, ninja.exe -ErrorAction Stop
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset ${{ matrix.preset }}
+        run: cmake --preset release
 
       - name: Build
         shell: pwsh
-        run: cmake --build --preset ${{ matrix.preset }}
+        run: cmake --build --preset release
 
-      - name: Unit tests
-        shell: pwsh
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
-
-      - name: Component and smoke tests
+      - name: Hardware and performance tests
         shell: pwsh
         run: >-
-          ctest --preset ${{ matrix.preset }}
-          -L "component|e2e" --output-on-failure
-
-      - name: Run startup check
-        shell: pwsh
-        run: >-
-          & ".\out\build\${{ matrix.preset }}\bin\DualVideoStudioCli.exe"
-          --startup-check
+          ctest --preset release
+          -L "hardware|performance" --output-on-failure
