@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "component": "ffmpeg-runtime",
+  "status": "unconfigured",
+  "purpose": "Pinned GPL-enabled FFmpeg and ffprobe runtime for Windows x64 packaging.",
+  "target": {
+    "platform": "windows",
+    "architecture": "x64",
+    "requiredVersionLine": "8.1.x",
+    "licenseProfile": "GPL-enabled"
+  },
+  "requiredArtifactRoles": [
+    "ffmpeg-runtime"
+  ],
+  "artifacts": [],
+  "configurationRequirements": {
+    "status": "Set to pinned only after provenance and licensing review.",
+    "role": "Must match one requiredArtifactRoles entry exactly.",
+    "name": "Stable human-readable artifact name.",
+    "version": "Exact immutable build version; wildcards and moving labels are forbidden.",
+    "url": "Immutable HTTPS archive URL from the reviewed publisher.",
+    "sha256": "Exactly 64 hexadecimal characters calculated from the reviewed archive.",
+    "archiveFileName": "Plain .zip or .nupkg file name without directory components.",
+    "archiveType": "zip or nupkg",
+    "destination": "Repository-relative path below out/tools.",
+    "requiredFiles": "Non-empty array of objects with archive-relative path and reviewed file SHA-256.",
+    "license": "Reviewed license identifier or expression."
+  }
+}

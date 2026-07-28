@@ -1,8 +1,34 @@
-# --- Workspace-level exclusions ---
-# Per-project build/dependency rules live in each project's own .gitignore
-# and continue to apply inside its directory.
+# --- Build, package, coverage, and downloaded runtime output ---
+/out/
+/Testing/
+/vcpkg_installed/
+/_deps/
 
-# Local AI/tool state
+# Per-user CMake and IDE state
+/CMakeUserPresets.json
+/.vs/
+/.vscode/
+/.idea/
+/.clangd/
+*.suo
+*.user
+*.VC.db
+*.VC.opendb
+
+# Generated CMake files if a developer configures in the source tree by mistake
+/CMakeCache.txt
+/CMakeFiles/
+/cmake_install.cmake
+/CTestTestfile.cmake
+/CPackConfig.cmake
+/CPackSourceConfig.cmake
+/compile_commands.json
+/install_manifest.txt
+/build.ninja
+/.ninja_deps
+/.ninja_log
+
+# --- Local tool state ---
 .claude/
 **/.serena/
 
@@ -10,11 +36,7 @@
 # rename a folder back to .git to restore that project's standalone repo)
 **/.git.bak/
 
-# Local scratch files
-DualVideoStudio/_test_patch.txt
-DualVideoStudio/diag.cmd
-
-# Operating-system metadata
+# --- Operating-system metadata ---
 .DS_Store
 Thumbs.db
 Desktop.ini

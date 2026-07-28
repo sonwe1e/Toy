@@ -1,0 +1,37 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++20
+
+AccessModifierOffset: -4
+AlignAfterOpenBracket: Align
+AllowShortBlocksOnASingleLine: Never
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
+BinPackParameters: false
+BreakBeforeBraces: Attach
+ColumnLimit: 100
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+DerivePointerAlignment: false
+IndentCaseLabels: false
+IndentWidth: 4
+KeepEmptyLinesAtTheStartOfBlocks: false
+NamespaceIndentation: None
+PointerAlignment: Left
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"dvs/'
+    Priority: 1
+  - Regex: '^"'
+    Priority: 2
+  - Regex: '^<Q'
+    Priority: 3
+  - Regex: '^<'
+    Priority: 4
+TabWidth: 4
+UseTab: Never
+...
