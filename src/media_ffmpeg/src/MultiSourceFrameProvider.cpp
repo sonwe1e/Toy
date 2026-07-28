@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -862,8 +863,20 @@ private:
             request.frameId.value() > sequentialSetFrame_->value();
         sequentialSetReady_ = false;
         try {
+            // USERPLAN 3.5: decode every source's frame in parallel (one decode actor per
+            // source) and assemble the FrameSet only after all slots have reported, so the
+            // per-set latency approaches max(slot decode time) instead of the sum over sources.
+            // Each slot owns its decoder; the shared frame budget and the operation's
+            // cancellation flag are thread-safe, and exceptions propagate through future::get
+            // into the surrounding handler.
+            struct SlotDecode final {
+                domain::SourceId sourceId;
+                std::future<domain::Result<internal::DecodedFrame>> result;
+            };
             std::vector<application::MappedSourceFrame> entries;
             entries.reserve(decoders_.size());
+            std::vector<SlotDecode> decoding;
+            decoding.reserve(decoders_.size());
 
             for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
                 const domain::ComparisonSource& source = activeSession_->sources[slot];
@@ -882,16 +895,25 @@ private:
                     continue;
                 }
 
-                auto decoded =
-                    continueSequentially
-                        ? decoders_[slot]->decodeSequential(request.frameId,
-                                                           operation->cancellationRequested)
-                        : decoders_[slot]->decodeExact(request.frameId,
-                                                       operation->cancellationRequested);
-                if (operation->isCanceled()) {
-                    postCanceled(operation);
-                    return;
-                }
+                internal::SoftwareDecoder* const decoder = decoders_[slot].get();
+                const bool sequential = continueSequentially;
+                const domain::FrameId frameId = request.frameId;
+                std::atomic<bool>& cancellation = operation->cancellationRequested;
+                decoding.push_back(SlotDecode{
+                    .sourceId = sourceId,
+                    .result = std::async(std::launch::async,
+                                         [decoder, frameId, sequential, &cancellation] {
+                                             return sequential
+                                                        ? decoder->decodeSequential(frameId,
+                                                                                    cancellation)
+                                                        : decoder->decodeExact(frameId,
+                                                                               cancellation);
+                                         }),
+                });
+            }
+
+            for (SlotDecode& slotDecode : decoding) {
+                domain::Result<internal::DecodedFrame> decoded = slotDecode.result.get();
                 if (!decoded) {
                     if (decoded.error().code == domain::MediaErrorCode::kFrameBudgetExceeded) {
                         // Budget exhaustion is session pressure, not a missing frame: fail the
@@ -900,7 +922,7 @@ private:
                         return;
                     }
                     entries.push_back(application::MappedSourceFrame{
-                        .sourceId = sourceId,
+                        .sourceId = slotDecode.sourceId,
                         .sourceFrameId = std::nullopt,
                         .frame = std::nullopt,
                         .presentationTime = domain::MediaTime{0},
@@ -911,13 +933,17 @@ private:
                 }
 
                 entries.push_back(application::MappedSourceFrame{
-                    .sourceId = sourceId,
+                    .sourceId = slotDecode.sourceId,
                     .sourceFrameId = request.frameId,
                     .frame = std::move(decoded.value().handle),
                     .presentationTime = decoded.value().presentationTime,
                     .matchKind = application::FrameMatchKind::ExactIndex,
                     .alignmentConfidence = 1.0F,
                 });
+            }
+            if (operation->isCanceled()) {
+                postCanceled(operation);
+                return;
             }
 
             auto set = application::FrameSet::create(request.frameId, canonicalTime.value(), std::move(entries));
