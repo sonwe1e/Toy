@@ -1,6 +1,7 @@
 add_library(
     dvs_domain
     STATIC
+        src/ComparisonValidator.cpp
         src/FrameTimeline.cpp
         src/MediaDescriptor.cpp
         src/MediaError.cpp

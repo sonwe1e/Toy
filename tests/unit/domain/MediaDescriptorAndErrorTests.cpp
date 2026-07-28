@@ -111,6 +111,9 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaErrorCode::kSourceFrameRateMismatch), "source-frame-rate-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceFrameCountMismatch), "source-frame-count-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceDurationMismatch), "source-duration-mismatch");
+    EXPECT_EQ(stableId(MediaErrorCode::kSourceResolutionMismatch), "source-resolution-mismatch");
+    EXPECT_EQ(stableId(MediaErrorCode::kSourceColorMetadataMismatch),
+              "source-color-metadata-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kFrameOutOfRange), "frame-out-of-range");
     EXPECT_EQ(stableId(MediaErrorCode::kUnsupportedProjectSchema), "unsupported-project-schema");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidProjectSchema), "invalid-project-schema");

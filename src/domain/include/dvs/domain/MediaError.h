@@ -35,6 +35,8 @@ enum class MediaErrorCode {
     kSourceFrameRateMismatch,
     kSourceFrameCountMismatch,
     kSourceDurationMismatch,
+    kSourceResolutionMismatch,
+    kSourceColorMetadataMismatch,
     kFrameOutOfRange,
     kUnsupportedProjectSchema,
     kInvalidProjectSchema,

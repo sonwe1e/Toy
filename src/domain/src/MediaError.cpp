@@ -58,6 +58,10 @@ std::string_view stableId(const MediaErrorCode code) noexcept {
         return "source-frame-count-mismatch";
     case MediaErrorCode::kSourceDurationMismatch:
         return "source-duration-mismatch";
+    case MediaErrorCode::kSourceResolutionMismatch:
+        return "source-resolution-mismatch";
+    case MediaErrorCode::kSourceColorMetadataMismatch:
+        return "source-color-metadata-mismatch";
     case MediaErrorCode::kFrameOutOfRange:
         return "frame-out-of-range";
     case MediaErrorCode::kUnsupportedProjectSchema:
