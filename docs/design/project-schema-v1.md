@@ -1,5 +1,9 @@
 # Project Schema v1
 
+> **Status: historical.** The `sources: { "a": {}, "b": {} }` shape predates the
+> 2–3 source generalization planned in [../../USERPLAN.md](../../USERPLAN.md); the
+> schema will gain a revision when Phase 2 lands.
+
 `.dvsproj` files are UTF-8 JSON documents with `schemaVersion: 1`. They are written by
 `dvs::persistence::ProjectJson`; repository code supplies the destination path so source paths
 can be portable without storing the project path itself.
