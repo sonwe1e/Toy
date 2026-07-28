@@ -706,8 +706,7 @@ private:
                                         *frameA,
                                         domain::MediaTime{frameId.value() * 33'333},
                                         *frameB,
-                                        domain::MediaTime{frameId.value() * 33'333},
-                                        ActiveFrameSource::Direct);
+                                        domain::MediaTime{frameId.value() * 33'333});
     EXPECT_TRUE(pair.has_value());
     return *pair;
 }
@@ -740,8 +739,7 @@ struct ObservableFramePair final {
                                   *frameA,
                                   domain::MediaTime{frameId.value() * 33'333},
                                   *frameB,
-                                  domain::MediaTime{frameId.value() * 33'333},
-                                  ActiveFrameSource::Direct);
+                                  domain::MediaTime{frameId.value() * 33'333});
     EXPECT_TRUE(pair.has_value());
     return ObservableFramePair{
         .pair = std::move(*pair),
@@ -2203,7 +2201,6 @@ TEST(PlaybackCoordinatorTests, OpensDirectSourcesOnlyAfterACompletePairAndProvid
     EXPECT_TRUE(snapshot->isConsistent());
     EXPECT_EQ(snapshot->sessionState, domain::SessionState::kReady);
     EXPECT_EQ(snapshot->playbackState, domain::PlaybackState::kPaused);
-    EXPECT_EQ(snapshot->activeFrameSource, ActiveFrameSource::Direct);
     EXPECT_EQ(snapshot->displayedFrame, domain::FrameId{0});
     EXPECT_FALSE(snapshot->requestedFrame.has_value());
     EXPECT_EQ(snapshot->canonicalFrameCount, 12U);

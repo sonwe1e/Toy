@@ -64,7 +64,6 @@ template <typename Predicate>
     snapshot.playbackGeneration = domain::PlaybackGeneration{5U};
     snapshot.sessionState = domain::SessionState::kReady;
     snapshot.playbackState = domain::PlaybackState::kPaused;
-    snapshot.activeFrameSource = application::ActiveFrameSource::Direct;
     snapshot.displayedFrame = domain::FrameId{frame};
     snapshot.canonicalFrameCount = frameCount;
     return snapshot;
@@ -137,7 +136,6 @@ void completeLastCommand(
     backend->terminals.push_back(application::CommandTerminal{
         .context = application::commandContext(backend->submitted.back()),
         .outcome = outcome,
-        .jobId = std::nullopt,
         .error = std::nullopt,
     });
 }

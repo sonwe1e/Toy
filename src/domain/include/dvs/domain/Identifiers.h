@@ -66,8 +66,6 @@ struct PlaybackGenerationTag;
 struct DeviceGenerationTag;
 struct RequestIdTag;
 struct CommandIdTag;
-struct JobIdTag;
-struct JobAttemptTag;
 struct ProjectRevisionTag;
 
 using SessionId = CounterId<SessionIdTag>;
@@ -76,8 +74,6 @@ using PlaybackGeneration = CounterId<PlaybackGenerationTag>;
 using DeviceGeneration = CounterId<DeviceGenerationTag>;
 using RequestId = CounterId<RequestIdTag>;
 using CommandId = CounterId<CommandIdTag>;
-using JobId = CounterId<JobIdTag>;
-using JobAttempt = CounterId<JobAttemptTag>;
 using ProjectRevision = CounterId<ProjectRevisionTag>;
 
 // Persistent IDs are supplied by a caller (normally a UUID-producing adapter). The domain only
@@ -101,11 +97,7 @@ private:
 };
 
 struct ProjectIdTag;
-struct ClipIdTag;
-struct ExportRecordIdTag;
 
 using ProjectId = PersistentId<ProjectIdTag>;
-using ClipId = PersistentId<ClipIdTag>;
-using ExportRecordId = PersistentId<ExportRecordIdTag>;
 
 } // namespace dvs::domain

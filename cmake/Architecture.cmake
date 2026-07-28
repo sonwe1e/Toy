@@ -21,14 +21,13 @@ function(_dvs_allowed_dependencies target outputVariable)
     elseif(target STREQUAL "dvs_platform_windows")
         set(allowed dvs_application)
     elseif(target MATCHES
-           "^dvs_(media_ffmpeg|jobs_ffmpeg|persistence_json|ui_qml)$")
+           "^dvs_(media_ffmpeg|persistence_json|ui_qml)$")
         set(allowed dvs_application dvs_platform_windows)
     elseif(target MATCHES "^DualVideoStudio(Cli)?$")
         set(
             allowed
             dvs_platform_windows
             dvs_media_ffmpeg
-            dvs_jobs_ffmpeg
             dvs_persistence_json
             dvs_ui_qml
         )

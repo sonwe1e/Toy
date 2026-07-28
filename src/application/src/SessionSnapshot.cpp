@@ -18,16 +18,15 @@ bool SessionSnapshot::isConsistent() const noexcept {
 
     switch (sessionState) {
     case domain::SessionState::kEmpty:
-        return playbackState == domain::PlaybackState::kPaused && !activeFrameSource.has_value() &&
-               !displayedFrame.has_value() && !requestedFrame.has_value() &&
-               canonicalFrameCount == 0U;
+        return playbackState == domain::PlaybackState::kPaused && !displayedFrame.has_value() &&
+               !requestedFrame.has_value() && canonicalFrameCount == 0U;
     case domain::SessionState::kLoading:
-        return !activeFrameSource.has_value() && !displayedFrame.has_value();
+        return !displayedFrame.has_value();
     case domain::SessionState::kReady:
-        return activeFrameSource.has_value() && canonicalFrameCount != 0U;
+        return canonicalFrameCount != 0U;
     case domain::SessionState::kInvalid:
     case domain::SessionState::kError:
-        return playbackState == domain::PlaybackState::kPaused && !activeFrameSource.has_value();
+        return playbackState == domain::PlaybackState::kPaused;
     }
     return false;
 }

@@ -638,13 +638,6 @@ private:
         }
 
         const auto& request = std::get<application::FrameProviderOpenRequest>(operation->request);
-        if (request.source != application::ActiveFrameSource::Direct) {
-            postFailed(operation,
-                       providerError(domain::MediaErrorCode::kInvalidArgument,
-                                     domain::SourceRole::kPair,
-                                     "DirectFrameProvider can only open the direct frame source."));
-            return;
-        }
 
         const auto validatedSources =
             domain::SourcePairValidator::validate(request.sourceA, request.sourceB);
@@ -919,8 +912,7 @@ private:
                                                sourceA.value().handle,
                                                sourceA.value().presentationTime,
                                                sourceB.value().handle,
-                                               sourceB.value().presentationTime,
-                                               application::ActiveFrameSource::Direct);
+                                               sourceB.value().presentationTime);
             if (!pair) {
                 postFailed(operation,
                            providerError(

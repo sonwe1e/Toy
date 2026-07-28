@@ -55,7 +55,6 @@ enum class CommandOutcome {
 using EventContext = std::variant<RequestContext,
                                   PlaybackRequestContext,
                                   FrameRequestContext,
-                                  JobRequestContext,
                                   SaveRequestContext>;
 
 // Graphics device notifications deliberately have no session identity: a device can become
@@ -85,7 +84,6 @@ using RequestTerminal = std::variant<RequestSucceeded, RequestFailed, RequestCan
 struct CommandTerminal final {
     CommandContext context;
     CommandOutcome outcome;
-    std::optional<domain::JobId> jobId;
     std::optional<domain::MediaError> error;
 };
 
@@ -125,12 +123,6 @@ struct GraphicsDeviceLost final {
 struct DeadlineElapsed final {
     PlaybackRequestContext context;
     std::uint64_t timerId;
-};
-
-struct JobProgress final {
-    JobRequestContext context;
-    std::uint64_t completedUnits;
-    std::uint64_t totalUnits;
 };
 
 // Settings are intentionally key/value data at this boundary. JSON parsing and persistence stay
@@ -181,7 +173,6 @@ using ApplicationEvent = std::variant<RequestTerminal,
                                       GraphicsDeviceUnavailable,
                                       GraphicsDeviceLost,
                                       DeadlineElapsed,
-                                      JobProgress,
                                       ProjectLoaded,
                                       SourceRelinkPrepared,
                                       ProjectSaved,

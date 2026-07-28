@@ -44,7 +44,6 @@ $requiredTokens = @(
     'application',
     'platform_windows',
     'media_ffmpeg',
-    'jobs_ffmpeg',
     'persistence_json',
     'ui_qml',
     '80%',

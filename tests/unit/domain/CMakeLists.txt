@@ -2,8 +2,6 @@ include(GoogleTest)
 
 add_executable(
     dvs_domain_unit_tests
-    ClipTests.cpp
-    ExportPlanTests.cpp
     FrameTimelineTests.cpp
      FrameTimelineCanonicalContractTests.cpp
      VfrMediaDescriptorConsistencyTests.cpp

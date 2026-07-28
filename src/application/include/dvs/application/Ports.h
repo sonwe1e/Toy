@@ -1,7 +1,6 @@
 #pragma once
 
 #include "dvs/application/Events.h"
-#include "dvs/domain/ExportPlan.h"
 #include "dvs/domain/FrameTimeline.h"
 
 #include <chrono>
@@ -37,7 +36,6 @@ struct MediaProbeRequest final {
 
 struct FrameProviderOpenRequest final {
     PlaybackRequestContext context;
-    ActiveFrameSource source;
     domain::MediaDescriptor sourceA;
     domain::MediaDescriptor sourceB;
     // The canonical timeline carries either a rational CFR rate or an immutable, normalized,
@@ -54,17 +52,6 @@ struct FrameRequest final {
 
 struct FrameProviderCloseRequest final {
     PlaybackRequestContext context;
-};
-
-struct ProxyRequest final {
-    JobRequestContext context;
-    domain::MediaDescriptor sourceA;
-    domain::MediaDescriptor sourceB;
-};
-
-struct ExportRequest final {
-    JobRequestContext context;
-    domain::ExportPlan plan;
 };
 
 struct ProjectLoadRequest final {
@@ -145,24 +132,6 @@ public:
     submit(const FrameProviderCloseRequest& request,
            std::shared_ptr<IApplicationEventSink> events) = 0;
     virtual void cancel(const PlaybackRequestContext& context) noexcept = 0;
-};
-
-class IProxyService {
-public:
-    virtual ~IProxyService() = default;
-
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const ProxyRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    virtual void cancel(const JobRequestContext& context) noexcept = 0;
-};
-
-class IExportService {
-public:
-    virtual ~IExportService() = default;
-
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const ExportRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    virtual void cancel(const JobRequestContext& context) noexcept = 0;
 };
 
 class IProjectRepository {

@@ -119,8 +119,7 @@ makeContext(const std::uint64_t requestId = 1U,
                                           *frameA,
                                           domain::MediaTime{100'000},
                                           *frameB,
-                                          domain::MediaTime{100'000},
-                                          application::ActiveFrameSource::Direct);
+                                          domain::MediaTime{100'000});
 }
 
 template <typename Predicate>

@@ -3,7 +3,7 @@
 ## Project Structure and Dependencies
 
 `src/domain` owns rules; `src/application` owns ports. `platform_windows` provides Windows
-services. Outer adapters—`media_ffmpeg`, `jobs_ffmpeg`, `persistence_json`, and `ui_qml`—implement
+services. Outer adapters—`media_ffmpeg`, `persistence_json`, and `ui_qml`—implement
 ports and may use platform services. `src/app` composes them; outer types never enter core.
 `tests/smoke` contains startup checks; place other tests under `tests/<layer>/<module>` and
 shared support under `tests/support`.
@@ -47,7 +47,7 @@ Future `domain` and `application` suites require 80% line coverage.
 On the D3D11VA runner, paired 1080p60 and 4K30 playback must run five minutes. Exclude
 first two seconds and seek/pause intervals. Never split A/B; paired-frame drops are at most
 0.5%, seek P95 at most 500 ms, UI response at most 100 ms, and decoded-frame
-cache usage at most 256 MiB. The UI limit applies during proxy generation.
+cache usage at most 256 MiB.
 
 ## Commits, Pull Requests, and Agent Invariants
 

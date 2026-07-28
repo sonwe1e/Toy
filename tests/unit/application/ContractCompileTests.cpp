@@ -82,8 +82,7 @@ TEST(ContractCompileTests, FrameHandleAndPairRequireCompleteValidResources) {
                                                *handleA,
                                                domain::MediaTime{0},
                                                *handleB,
-                                               domain::MediaTime{0},
-                                               ActiveFrameSource::Direct);
+                                               domain::MediaTime{0});
     EXPECT_FALSE(invalidPair.has_value());
 
     const auto negativeTimePair = FramePair::create(domain::FrameId{0},
@@ -91,8 +90,7 @@ TEST(ContractCompileTests, FrameHandleAndPairRequireCompleteValidResources) {
                                                     *handleA,
                                                     domain::MediaTime{0},
                                                     *handleB,
-                                                    domain::MediaTime{0},
-                                                    ActiveFrameSource::Direct);
+                                                    domain::MediaTime{0});
     EXPECT_FALSE(negativeTimePair.has_value());
 
     const auto completePair = FramePair::create(domain::FrameId{0},
@@ -100,10 +98,8 @@ TEST(ContractCompileTests, FrameHandleAndPairRequireCompleteValidResources) {
                                                 *handleA,
                                                 domain::MediaTime{0},
                                                 *handleB,
-                                                domain::MediaTime{0},
-                                                ActiveFrameSource::Proxy);
+                                                domain::MediaTime{0});
     ASSERT_TRUE(completePair.has_value());
-    EXPECT_EQ(completePair->source(), ActiveFrameSource::Proxy);
     EXPECT_EQ(completePair->frameId(), domain::FrameId{0});
 }
 
@@ -117,15 +113,14 @@ TEST(ContractCompileTests, RequestContextsKeepIndependentInvalidationScopes) {
         .request = request,
         .playbackGeneration = domain::PlaybackGeneration{8},
     };
-    const JobRequestContext job{
+    const SaveRequestContext save{
         .request = request,
-        .jobId = domain::JobId{4},
-        .jobAttempt = domain::JobAttempt{2},
+        .projectRevision = domain::ProjectRevision{2},
     };
 
     EXPECT_EQ(playback.request.sessionEpoch, domain::SessionEpoch{3});
-    EXPECT_EQ(job.jobAttempt, domain::JobAttempt{2});
-    EXPECT_NE(playback.playbackGeneration.value(), job.jobAttempt.value());
+    EXPECT_EQ(save.projectRevision, domain::ProjectRevision{2});
+    EXPECT_NE(playback.playbackGeneration.value(), save.projectRevision.value());
 }
 
 TEST(ContractCompileTests, SnapshotCarriesIndependentGraphicsReadiness) {
@@ -143,7 +138,6 @@ TEST(ContractCompileTests, SnapshotCarriesIndependentGraphicsReadiness) {
         .deviceGeneration = domain::DeviceGeneration{2},
         .sessionState = domain::SessionState::kReady,
         .playbackState = domain::PlaybackState::kPaused,
-        .activeFrameSource = ActiveFrameSource::Direct,
         .displayedFrame = domain::FrameId{0},
         .requestedFrame = std::nullopt,
         .canonicalFrameCount = 1U,

@@ -23,28 +23,10 @@ enum class PlaybackState {
     kBuffering,
 };
 
-enum class ProxyJobState {
-    kPending,
-    kRunning,
-    kSucceeded,
-    kFailed,
-    kCanceled,
-};
-
-enum class ExportJobState {
-    kPending,
-    kRunning,
-    kSucceeded,
-    kFailed,
-    kCanceled,
-    kInterrupted,
-};
-
 enum class MediaErrorCode {
     kInvalidArgument,
     kInvalidRate,
     kInvalidFrameId,
-    kInvalidFrameRange,
     kInvalidFrameCount,
     kInvalidDimensions,
     kInvalidDuration,
@@ -53,15 +35,7 @@ enum class MediaErrorCode {
     kSourceFrameRateMismatch,
     kSourceFrameCountMismatch,
     kSourceDurationMismatch,
-    kDuplicateIdentifier,
-    kMarksIncomplete,
-    kMarksReversed,
-    kClipOutOfRange,
-    kClipNotFound,
-    kExportRecordNotFound,
-    kDuplicateClipSelection,
-    kInvalidExportMode,
-    kInvalidExportGeometry,
+    kFrameOutOfRange,
     kUnsupportedProjectSchema,
     kInvalidProjectSchema,
     kSourceMissing,
@@ -85,8 +59,6 @@ enum class MediaOperation {
     kMediaDescriptorValidation,
     kSourcePairValidation,
     kProjectMutation,
-    kClipMutation,
-    kExportPlanBuild,
     kProjectPersistence,
     kMediaProbe,
     kMediaDecode,
@@ -100,14 +72,10 @@ enum class SourceRole {
     kB,
     kPair,
     kProject,
-    kClip,
-    kExport,
 };
 
 [[nodiscard]] std::string_view stableId(SessionState state) noexcept;
 [[nodiscard]] std::string_view stableId(PlaybackState state) noexcept;
-[[nodiscard]] std::string_view stableId(ProxyJobState state) noexcept;
-[[nodiscard]] std::string_view stableId(ExportJobState state) noexcept;
 [[nodiscard]] std::string_view stableId(MediaErrorCode code) noexcept;
 [[nodiscard]] std::string_view stableId(MediaOperation operation) noexcept;
 [[nodiscard]] std::string_view stableId(SourceRole sourceRole) noexcept;

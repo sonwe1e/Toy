@@ -1,5 +1,4 @@
 #include "dvs/domain/SourcePairValidator.h"
-#include "dvs/jobs/Module.h"
 #include "dvs/media/DirectFrameProvider.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/Module.h"
@@ -116,14 +115,12 @@ void printUsage() {
     constexpr std::array kExpectedModules{
         std::string_view{"dvs_platform_windows"},
         std::string_view{"dvs_media_ffmpeg"},
-        std::string_view{"dvs_jobs_ffmpeg"},
         std::string_view{"dvs_persistence_json"},
         std::string_view{"dvs_ui_qml"},
     };
     const std::array kActualModules{
         dvs::platform::moduleName(),
         dvs::media::moduleName(),
-        dvs::jobs::moduleName(),
         dvs::persistence::moduleName(),
         dvs::ui::moduleName(),
     };

@@ -15,7 +15,7 @@ struct RequestContext final {
 };
 
 // Playback generations are deliberately scoped separately from source-pair epochs. A seek can
-// invalidate frame work without invalidating a save or an export job.
+// invalidate frame work without invalidating a save.
 struct PlaybackRequestContext final {
     RequestContext request;
     domain::PlaybackGeneration playbackGeneration;
@@ -28,14 +28,6 @@ struct FrameRequestContext final {
     domain::DeviceGeneration deviceGeneration;
 
     [[nodiscard]] constexpr bool operator==(const FrameRequestContext&) const = default;
-};
-
-struct JobRequestContext final {
-    RequestContext request;
-    domain::JobId jobId;
-    domain::JobAttempt jobAttempt;
-
-    [[nodiscard]] constexpr bool operator==(const JobRequestContext&) const = default;
 };
 
 struct SaveRequestContext final {

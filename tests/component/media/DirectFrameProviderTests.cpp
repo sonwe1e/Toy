@@ -103,7 +103,6 @@ makeOpenRequest(const std::uint64_t requestId,
     EXPECT_TRUE(sourceB);
     return application::FrameProviderOpenRequest{
         .context = makePlaybackContext(requestId),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = sourceA.value(),
         .sourceB = sourceB.value(),
         .timeline = std::move(timeline),
@@ -217,7 +216,6 @@ TEST(DirectFrameProviderTests, OpensDirectSourcesAndPublishesOnlyACompleteExactP
     ASSERT_NE(ready, nullptr);
     EXPECT_EQ(ready->context, request.context);
     EXPECT_EQ(ready->pair.frameId(), request.frameId);
-    EXPECT_EQ(ready->pair.source(), application::ActiveFrameSource::Direct);
     EXPECT_EQ(ready->pair.frameA().geometry().width, 320U);
     EXPECT_EQ(ready->pair.frameA().geometry().height, 180U);
     EXPECT_EQ(ready->pair.frameB().geometry().width, 160U);
@@ -439,7 +437,6 @@ TEST(DirectFrameProviderTests, OpensPairWhereAVfrAndBCfrUsesSourceAVfrTimeline) 
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(110U),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = sourceA->descriptor,
         .sourceB = sourceB->descriptor,
         .timeline = domain::CanonicalTimeline{sourceA->timeline},
@@ -468,7 +465,6 @@ TEST(DirectFrameProviderTests, OpensPairWhereAVfrAndBCfrUsesSourceAVfrTimeline) 
     ASSERT_TRUE(ready.has_value());
     EXPECT_EQ(ready->context, frameContext);
     EXPECT_EQ(ready->pair.frameId(), domain::FrameId{1});
-    EXPECT_EQ(ready->pair.source(), application::ActiveFrameSource::Direct);
     EXPECT_EQ(ready->pair.frameA().geometry().width, 320U);
     EXPECT_EQ(ready->pair.frameA().geometry().height, 180U);
     EXPECT_EQ(ready->pair.frameB().geometry().width, 160U);
@@ -507,7 +503,6 @@ TEST(DirectFrameProviderTests, OpensPairWhereACfrBVfrUsesRationalTimeline) {
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(130U),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = sourceA->descriptor,
         .sourceB = sourceB->descriptor,
         .timeline = domain::CanonicalTimeline{makeRate()},
@@ -565,7 +560,6 @@ TEST(DirectFrameProviderTests, OpensPairWhereBothVfrRespectsSourceACanonicalTime
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(150U),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = sourceA->descriptor,
         .sourceB = sourceB->descriptor,
         .timeline = domain::CanonicalTimeline{sourceA->timeline},

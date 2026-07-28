@@ -7,7 +7,6 @@ add_executable(
     FrameBudgetTests.cpp
     FrameMailboxTests.cpp
     PresentationAckMailboxTests.cpp
-    ProcessRunnerTests.cpp
     SourceIdentityServiceTests.cpp
     SteadyDeadlineSchedulerTests.cpp
 )

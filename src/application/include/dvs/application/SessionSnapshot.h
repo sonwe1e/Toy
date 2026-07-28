@@ -19,7 +19,6 @@ struct SessionSnapshot final {
     bool graphicsReady = false;
     domain::SessionState sessionState = domain::SessionState::kEmpty;
     domain::PlaybackState playbackState = domain::PlaybackState::kPaused;
-    std::optional<ActiveFrameSource> activeFrameSource;
     std::optional<domain::FrameId> displayedFrame;
     std::optional<domain::FrameId> requestedFrame;
     std::uint64_t canonicalFrameCount = 0;

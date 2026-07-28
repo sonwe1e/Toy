@@ -453,8 +453,7 @@ makeHorizontalLumaPair(platform::FrameBudget& budget,
                                           *frameA,
                                           domain::MediaTime{0},
                                           *frameB,
-                                          domain::MediaTime{0},
-                                          application::ActiveFrameSource::Direct);
+                                          domain::MediaTime{0});
 }
 
 [[nodiscard]] std::optional<application::FramePair>
@@ -481,8 +480,7 @@ makeSolidPairWithMetadata(platform::FrameBudget& budget,
                                           *left,
                                           domain::MediaTime{0},
                                           *right,
-                                          domain::MediaTime{0},
-                                          application::ActiveFrameSource::Direct);
+                                          domain::MediaTime{0});
 }
 
 [[nodiscard]] std::optional<application::FramePair> makeSolidPair(platform::FrameBudget& budget,

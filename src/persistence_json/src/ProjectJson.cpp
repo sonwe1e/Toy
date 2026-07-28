@@ -10,7 +10,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace dvs::persistence {
 namespace {
@@ -365,29 +364,6 @@ colorRangeFromId(const std::string_view identifier) noexcept {
     return "unknown";
 }
 
-[[nodiscard]] std::optional<domain::ExportJobState>
-exportJobStateFromId(const std::string_view identifier) noexcept {
-    if (identifier == "pending") {
-        return domain::ExportJobState::kPending;
-    }
-    if (identifier == "running") {
-        return domain::ExportJobState::kRunning;
-    }
-    if (identifier == "succeeded") {
-        return domain::ExportJobState::kSucceeded;
-    }
-    if (identifier == "failed") {
-        return domain::ExportJobState::kFailed;
-    }
-    if (identifier == "canceled") {
-        return domain::ExportJobState::kCanceled;
-    }
-    if (identifier == "interrupted") {
-        return domain::ExportJobState::kInterrupted;
-    }
-    return std::nullopt;
-}
-
 [[nodiscard]] std::optional<domain::MediaErrorCode>
 mediaErrorCodeFromId(const std::string_view identifier) noexcept {
     using Code = domain::MediaErrorCode;
@@ -399,9 +375,6 @@ mediaErrorCodeFromId(const std::string_view identifier) noexcept {
     }
     if (identifier == "invalid-frame-id") {
         return Code::kInvalidFrameId;
-    }
-    if (identifier == "invalid-frame-range") {
-        return Code::kInvalidFrameRange;
     }
     if (identifier == "invalid-frame-count") {
         return Code::kInvalidFrameCount;
@@ -426,33 +399,6 @@ mediaErrorCodeFromId(const std::string_view identifier) noexcept {
     }
     if (identifier == "source-duration-mismatch") {
         return Code::kSourceDurationMismatch;
-    }
-    if (identifier == "duplicate-identifier") {
-        return Code::kDuplicateIdentifier;
-    }
-    if (identifier == "marks-incomplete") {
-        return Code::kMarksIncomplete;
-    }
-    if (identifier == "marks-reversed") {
-        return Code::kMarksReversed;
-    }
-    if (identifier == "clip-out-of-range") {
-        return Code::kClipOutOfRange;
-    }
-    if (identifier == "clip-not-found") {
-        return Code::kClipNotFound;
-    }
-    if (identifier == "export-record-not-found") {
-        return Code::kExportRecordNotFound;
-    }
-    if (identifier == "duplicate-clip-selection") {
-        return Code::kDuplicateClipSelection;
-    }
-    if (identifier == "invalid-export-mode") {
-        return Code::kInvalidExportMode;
-    }
-    if (identifier == "invalid-export-geometry") {
-        return Code::kInvalidExportGeometry;
     }
     if (identifier == "unsupported-project-schema") {
         return Code::kUnsupportedProjectSchema;
@@ -493,6 +439,9 @@ mediaErrorCodeFromId(const std::string_view identifier) noexcept {
     if (identifier == "frame-budget-exceeded") {
         return Code::kFrameBudgetExceeded;
     }
+    if (identifier == "frame-out-of-range") {
+        return Code::kFrameOutOfRange;
+    }
     return std::nullopt;
 }
 
@@ -510,12 +459,6 @@ mediaOperationFromId(const std::string_view identifier) noexcept {
     }
     if (identifier == "project-mutation") {
         return Operation::kProjectMutation;
-    }
-    if (identifier == "clip-mutation") {
-        return Operation::kClipMutation;
-    }
-    if (identifier == "export-plan-build") {
-        return Operation::kExportPlanBuild;
     }
     if (identifier == "project-persistence") {
         return Operation::kProjectPersistence;
@@ -546,12 +489,6 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
     }
     if (identifier == "project") {
         return Role::kProject;
-    }
-    if (identifier == "clip") {
-        return Role::kClip;
-    }
-    if (identifier == "export") {
-        return Role::kExport;
     }
     return std::nullopt;
 }
@@ -604,93 +541,6 @@ sourceRoleFromId(const std::string_view identifier) noexcept {
     }
     return domain::Result<std::optional<domain::RationalRate>>::success(
         std::optional<domain::RationalRate>{std::move(rate).value()});
-}
-
-[[nodiscard]] Json encodeMediaError(const domain::MediaError& error) {
-    Json requestId = nullptr;
-    if (error.requestId.has_value()) {
-        requestId = error.requestId->value();
-    }
-    return Json{
-        {"code", std::string{domain::stableId(error.code)}},
-        {"operation", std::string{domain::stableId(error.operation)}},
-        {"sourceRole", std::string{domain::stableId(error.sourceRole)}},
-        {"requestId", std::move(requestId)},
-        {"recoverable", error.recoverable},
-        {"userMessageKey", error.userMessageKey},
-        {"technicalDetail", error.technicalDetail},
-    };
-}
-
-[[nodiscard]] domain::Result<domain::MediaError> decodeMediaError(const Json& document) {
-    constexpr domain::SourceRole kErrorRole = domain::SourceRole::kExport;
-    if (!document.is_object()) {
-        return invalidSchema<domain::MediaError>(kErrorRole, "Export error must be a JSON object.");
-    }
-
-    auto codeId = stringMember(document, "code", kErrorRole);
-    if (!codeId) {
-        return domain::Result<domain::MediaError>::failure(codeId.error());
-    }
-    const auto code = mediaErrorCodeFromId(codeId.value());
-    if (!code.has_value()) {
-        return invalidSchema<domain::MediaError>(kErrorRole, "Export error code is unknown.");
-    }
-
-    auto operationId = stringMember(document, "operation", kErrorRole);
-    if (!operationId) {
-        return domain::Result<domain::MediaError>::failure(operationId.error());
-    }
-    const auto operation = mediaOperationFromId(operationId.value());
-    if (!operation.has_value()) {
-        return invalidSchema<domain::MediaError>(kErrorRole, "Export error operation is unknown.");
-    }
-
-    auto sourceRoleId = stringMember(document, "sourceRole", kErrorRole);
-    if (!sourceRoleId) {
-        return domain::Result<domain::MediaError>::failure(sourceRoleId.error());
-    }
-    const auto sourceRole = sourceRoleFromId(sourceRoleId.value());
-    if (!sourceRole.has_value()) {
-        return invalidSchema<domain::MediaError>(kErrorRole,
-                                                 "Export error source role is unknown.");
-    }
-
-    auto requestIdDocument = requiredMember(document, "requestId", kErrorRole);
-    if (!requestIdDocument) {
-        return domain::Result<domain::MediaError>::failure(requestIdDocument.error());
-    }
-    std::optional<domain::RequestId> requestId;
-    if (!requestIdDocument.value()->is_null()) {
-        auto requestIdValue = uint64Value(*requestIdDocument.value(), kErrorRole, "requestId");
-        if (!requestIdValue) {
-            return domain::Result<domain::MediaError>::failure(requestIdValue.error());
-        }
-        requestId = domain::RequestId{requestIdValue.value()};
-    }
-
-    auto recoverable = boolMember(document, "recoverable", kErrorRole);
-    if (!recoverable) {
-        return domain::Result<domain::MediaError>::failure(recoverable.error());
-    }
-    auto userMessageKey = stringMember(document, "userMessageKey", kErrorRole);
-    if (!userMessageKey) {
-        return domain::Result<domain::MediaError>::failure(userMessageKey.error());
-    }
-    auto technicalDetail = stringMember(document, "technicalDetail", kErrorRole);
-    if (!technicalDetail) {
-        return domain::Result<domain::MediaError>::failure(technicalDetail.error());
-    }
-
-    return domain::Result<domain::MediaError>::success(domain::MediaError{
-        .code = *code,
-        .operation = *operation,
-        .sourceRole = *sourceRole,
-        .requestId = requestId,
-        .recoverable = recoverable.value(),
-        .userMessageKey = std::move(userMessageKey).value(),
-        .technicalDetail = std::move(technicalDetail).value(),
-    });
 }
 
 [[nodiscard]] Json encodeDescriptor(const domain::MediaDescriptor& descriptor) {
@@ -952,118 +802,6 @@ decodeSource(const Json& document,
     });
 }
 
-[[nodiscard]] Json encodeClip(const domain::Clip& clip) {
-    return Json{
-        {"id", clip.id.value()},
-        {"name", clip.name},
-        {"note", clip.note},
-        {"inFrame", clip.range.first().value()},
-        {"outFrame", clip.range.last().value()},
-    };
-}
-
-[[nodiscard]] domain::Result<domain::Clip> decodeClip(const Json& document) {
-    constexpr domain::SourceRole kClipRole = domain::SourceRole::kClip;
-    if (!document.is_object()) {
-        return invalidSchema<domain::Clip>(kClipRole, "Clip entry must be a JSON object.");
-    }
-    auto id = stringMember(document, "id", kClipRole);
-    if (!id) {
-        return domain::Result<domain::Clip>::failure(id.error());
-    }
-    auto name = stringMember(document, "name", kClipRole);
-    if (!name) {
-        return domain::Result<domain::Clip>::failure(name.error());
-    }
-    auto note = stringMember(document, "note", kClipRole);
-    if (!note) {
-        return domain::Result<domain::Clip>::failure(note.error());
-    }
-    auto inFrame = int64Member(document, "inFrame", kClipRole);
-    if (!inFrame) {
-        return domain::Result<domain::Clip>::failure(inFrame.error());
-    }
-    auto outFrame = int64Member(document, "outFrame", kClipRole);
-    if (!outFrame) {
-        return domain::Result<domain::Clip>::failure(outFrame.error());
-    }
-
-    auto range = domain::FrameRange::inclusive(domain::FrameId{inFrame.value()},
-                                               domain::FrameId{outFrame.value()});
-    if (!range) {
-        return invalidSchema<domain::Clip>(kClipRole, "Clip frames must form an inclusive range.");
-    }
-    return domain::Result<domain::Clip>::success(domain::Clip{
-        .id = domain::ClipId{std::move(id).value()},
-        .name = std::move(name).value(),
-        .note = std::move(note).value(),
-        .range = std::move(range).value(),
-    });
-}
-
-[[nodiscard]] Json encodeExportRecord(const domain::ExportRecord& record) {
-    Json error = nullptr;
-    if (record.error.has_value()) {
-        error = encodeMediaError(*record.error);
-    }
-    return Json{
-        {"id", record.id.value()},
-        {"clipId", record.clipId.value()},
-        {"state", std::string{domain::stableId(record.state)}},
-        {"outputReference", record.outputReference},
-        {"error", std::move(error)},
-    };
-}
-
-[[nodiscard]] domain::Result<domain::ExportRecord> decodeExportRecord(const Json& document) {
-    constexpr domain::SourceRole kExportRole = domain::SourceRole::kExport;
-    if (!document.is_object()) {
-        return invalidSchema<domain::ExportRecord>(kExportRole,
-                                                   "Export entry must be a JSON object.");
-    }
-    auto id = stringMember(document, "id", kExportRole);
-    if (!id) {
-        return domain::Result<domain::ExportRecord>::failure(id.error());
-    }
-    auto clipId = stringMember(document, "clipId", kExportRole);
-    if (!clipId) {
-        return domain::Result<domain::ExportRecord>::failure(clipId.error());
-    }
-    auto stateId = stringMember(document, "state", kExportRole);
-    if (!stateId) {
-        return domain::Result<domain::ExportRecord>::failure(stateId.error());
-    }
-    const auto state = exportJobStateFromId(stateId.value());
-    if (!state.has_value()) {
-        return invalidSchema<domain::ExportRecord>(kExportRole, "Export state is unknown.");
-    }
-    auto outputReference = stringMember(document, "outputReference", kExportRole);
-    if (!outputReference) {
-        return domain::Result<domain::ExportRecord>::failure(outputReference.error());
-    }
-    auto errorDocument = requiredMember(document, "error", kExportRole);
-    if (!errorDocument) {
-        return domain::Result<domain::ExportRecord>::failure(errorDocument.error());
-    }
-
-    std::optional<domain::MediaError> error;
-    if (!errorDocument.value()->is_null()) {
-        auto decodedError = decodeMediaError(*errorDocument.value());
-        if (!decodedError) {
-            return domain::Result<domain::ExportRecord>::failure(decodedError.error());
-        }
-        error = std::move(decodedError).value();
-    }
-
-    return domain::Result<domain::ExportRecord>::success(domain::ExportRecord{
-        .id = domain::ExportRecordId{std::move(id).value()},
-        .clipId = domain::ClipId{std::move(clipId).value()},
-        .state = *state,
-        .outputReference = std::move(outputReference).value(),
-        .error = std::move(error),
-    });
-}
-
 [[nodiscard]] domain::Result<std::optional<domain::FrameId>>
 decodeNullableFrame(const Json& document, const std::string_view field) {
     constexpr domain::SourceRole kProjectRole = domain::SourceRole::kProject;
@@ -1139,15 +877,6 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
         return domain::Result<Json>::failure(workspace.error());
     }
 
-    Json clips = Json::array();
-    for (const domain::Clip& clip : project.clips()) {
-        clips.push_back(encodeClip(clip));
-    }
-    Json exports = Json::array();
-    for (const domain::ExportRecord& record : project.exportRecords()) {
-        exports.push_back(encodeExportRecord(record));
-    }
-
     Json inMark = nullptr;
     if (project.inMark().has_value()) {
         inMark = project.inMark()->value();
@@ -1174,8 +903,6 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
              {"frameRate", encodeOptionalRate(project.sources().canonicalRate())},
              {"frameCount", project.sources().canonicalFrameCount()},
          }},
-        {"clips", std::move(clips)},
-        {"exports", std::move(exports)},
         {"marks",
          Json{
              {"inFrame", std::move(inMark)},
@@ -1269,34 +996,6 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
             "Canonical timeline does not match the validated source descriptors.");
     }
 
-    auto clipsDocument = arrayMember(document, "clips", kProjectRole);
-    if (!clipsDocument) {
-        return domain::Result<domain::Project>::failure(clipsDocument.error());
-    }
-    std::vector<domain::Clip> clips;
-    clips.reserve(clipsDocument.value()->size());
-    for (const Json& clipDocument : *clipsDocument.value()) {
-        auto clip = decodeClip(clipDocument);
-        if (!clip) {
-            return domain::Result<domain::Project>::failure(clip.error());
-        }
-        clips.push_back(std::move(clip).value());
-    }
-
-    auto exportsDocument = arrayMember(document, "exports", kProjectRole);
-    if (!exportsDocument) {
-        return domain::Result<domain::Project>::failure(exportsDocument.error());
-    }
-    std::vector<domain::ExportRecord> exports;
-    exports.reserve(exportsDocument.value()->size());
-    for (const Json& exportDocument : *exportsDocument.value()) {
-        auto record = decodeExportRecord(exportDocument);
-        if (!record) {
-            return domain::Result<domain::Project>::failure(record.error());
-        }
-        exports.push_back(std::move(record).value());
-    }
-
     auto marksDocument = objectMember(document, "marks", kProjectRole);
     if (!marksDocument) {
         return domain::Result<domain::Project>::failure(marksDocument.error());
@@ -1332,8 +1031,6 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
         .id = domain::ProjectId{std::move(id).value()},
         .displayName = std::move(displayName).value(),
         .sources = std::move(sources).value(),
-        .clips = std::move(clips),
-        .exportRecords = std::move(exports),
         .inMark = std::move(inMark).value(),
         .outMark = std::move(outMark).value(),
         .lastDisplayedFrame = lastFrame,

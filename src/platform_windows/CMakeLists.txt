@@ -15,7 +15,6 @@ add_library(
         src/GpuFrameResource.cpp
         src/GpuTransferActor.cpp
         src/PresentationAckMailbox.cpp
-        src/ProcessRunner.cpp
         src/SourceIdentityService.cpp
         src/SteadyDeadlineScheduler.cpp
         src/WindowsPaths.cpp

@@ -440,7 +440,6 @@ private:
         completedCommands_.push_back(CommandTerminal{
             .context = context,
             .outcome = outcome,
-            .jobId = std::nullopt,
             .error = std::move(error),
         });
     }
@@ -470,7 +469,6 @@ private:
     void resetToEmpty() {
         state_.sessionState = domain::SessionState::kEmpty;
         state_.playbackState = domain::PlaybackState::kPaused;
-        state_.activeFrameSource.reset();
         state_.displayedFrame.reset();
         state_.requestedFrame.reset();
         state_.canonicalFrameCount = 0U;
@@ -504,8 +502,7 @@ private:
             canonicalTimeline_.reset();
             state_.sessionState = domain::SessionState::kError;
             state_.playbackState = domain::PlaybackState::kPaused;
-            state_.activeFrameSource.reset();
-            state_.displayedFrame.reset();
+                state_.displayedFrame.reset();
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
         } else {
@@ -835,8 +832,7 @@ private:
             resetToEmpty();
             state_.sessionState = domain::SessionState::kInvalid;
             state_.playbackState = domain::PlaybackState::kPaused;
-            state_.activeFrameSource.reset();
-            state_.displayedFrame.reset();
+                state_.displayedFrame.reset();
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
             state_.lastError = validated.error();
@@ -877,7 +873,6 @@ private:
         canonicalTimeline_ = std::move(activeTimeline);
         state_.sessionState = domain::SessionState::kLoading;
         state_.playbackState = domain::PlaybackState::kSeeking;
-        state_.activeFrameSource.reset();
         state_.displayedFrame.reset();
         state_.requestedFrame = domain::FrameId{0};
         state_.canonicalFrameCount = static_cast<std::uint64_t>(sources_->canonicalFrameCount());
@@ -895,7 +890,6 @@ private:
 
         const FrameProviderOpenRequest request{
             .context = context,
-            .source = ActiveFrameSource::Direct,
             .sourceA = sources_->sourceA(),
             .sourceB = sources_->sourceB(),
             .timeline = *canonicalTimeline_,
@@ -925,8 +919,7 @@ private:
         } else {
             state_.sessionState = initialFailureState;
             state_.playbackState = domain::PlaybackState::kPaused;
-            state_.activeFrameSource.reset();
-            state_.displayedFrame.reset();
+                state_.displayedFrame.reset();
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
             state_.lastError = error;
@@ -1244,7 +1237,6 @@ private:
         pending_.reset();
         state_.sessionState = domain::SessionState::kReady;
         state_.playbackState = domain::PlaybackState::kPaused;
-        state_.activeFrameSource = ActiveFrameSource::Direct;
         state_.displayedFrame = displayedFrame;
         state_.requestedFrame.reset();
         state_.lastError.reset();
@@ -1431,8 +1423,7 @@ private:
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             ready.context == playbackRun_->frame->context) {
             PendingPlaybackFrame& frame = *playbackRun_->frame;
-            if (ready.pair.frameId() != frame.expectedFrame ||
-                ready.pair.source() != ActiveFrameSource::Direct) {
+            if (ready.pair.frameId() != frame.expectedFrame) {
                 stopPlayback(coordinatorError(
                     domain::MediaErrorCode::kMediaDecodeFailed,
                     "The provider published a mismatched sequential playback pair."));
@@ -1466,13 +1457,6 @@ private:
             return;
         }
         if (pending_->framePublished) {
-            return;
-        }
-        if (ready.pair.source() != ActiveFrameSource::Direct) {
-            failPending(
-                coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                 "The direct coordinator received a pair from another provider."),
-                CommandOutcome::Failed);
             return;
         }
         if (dependencies_.renderChannel->publish(ready.context, ready.pair) ==

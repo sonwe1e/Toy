@@ -107,7 +107,6 @@ TEST(ProbeTimelineContractTests, VfrProbeCompletedCarriesASharedTimeline) {
 TEST(ProbeTimelineContractTests, OpenRequestCanonicalTimelineAcceptsBothTimingPaths) {
     application::FrameProviderOpenRequest cfrRequest{
         .context = makePlaybackContext(),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = cfrDescriptor(),
         .sourceB = cfrDescriptor(),
         .timeline = domain::CanonicalTimeline{domain::RationalRate::create(30, 1).value()},
@@ -116,7 +115,6 @@ TEST(ProbeTimelineContractTests, OpenRequestCanonicalTimelineAcceptsBothTimingPa
     ASSERT_TRUE(vfrTimeline);
     application::FrameProviderOpenRequest vfrRequest{
         .context = makePlaybackContext(),
-        .source = application::ActiveFrameSource::Direct,
         .sourceA = vfrDescriptor(),
         .sourceB = vfrDescriptor(),
         .timeline = domain::CanonicalTimeline{vfrTimeline},

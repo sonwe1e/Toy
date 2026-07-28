@@ -34,40 +34,6 @@ std::string_view stableId(const PlaybackState state) noexcept {
     return "unknown";
 }
 
-std::string_view stableId(const ProxyJobState state) noexcept {
-    switch (state) {
-    case ProxyJobState::kPending:
-        return "pending";
-    case ProxyJobState::kRunning:
-        return "running";
-    case ProxyJobState::kSucceeded:
-        return "succeeded";
-    case ProxyJobState::kFailed:
-        return "failed";
-    case ProxyJobState::kCanceled:
-        return "canceled";
-    }
-    return "unknown";
-}
-
-std::string_view stableId(const ExportJobState state) noexcept {
-    switch (state) {
-    case ExportJobState::kPending:
-        return "pending";
-    case ExportJobState::kRunning:
-        return "running";
-    case ExportJobState::kSucceeded:
-        return "succeeded";
-    case ExportJobState::kFailed:
-        return "failed";
-    case ExportJobState::kCanceled:
-        return "canceled";
-    case ExportJobState::kInterrupted:
-        return "interrupted";
-    }
-    return "unknown";
-}
-
 std::string_view stableId(const MediaErrorCode code) noexcept {
     switch (code) {
     case MediaErrorCode::kInvalidArgument:
@@ -76,8 +42,6 @@ std::string_view stableId(const MediaErrorCode code) noexcept {
         return "invalid-rate";
     case MediaErrorCode::kInvalidFrameId:
         return "invalid-frame-id";
-    case MediaErrorCode::kInvalidFrameRange:
-        return "invalid-frame-range";
     case MediaErrorCode::kInvalidFrameCount:
         return "invalid-frame-count";
     case MediaErrorCode::kInvalidDimensions:
@@ -94,24 +58,8 @@ std::string_view stableId(const MediaErrorCode code) noexcept {
         return "source-frame-count-mismatch";
     case MediaErrorCode::kSourceDurationMismatch:
         return "source-duration-mismatch";
-    case MediaErrorCode::kDuplicateIdentifier:
-        return "duplicate-identifier";
-    case MediaErrorCode::kMarksIncomplete:
-        return "marks-incomplete";
-    case MediaErrorCode::kMarksReversed:
-        return "marks-reversed";
-    case MediaErrorCode::kClipOutOfRange:
-        return "clip-out-of-range";
-    case MediaErrorCode::kClipNotFound:
-        return "clip-not-found";
-    case MediaErrorCode::kExportRecordNotFound:
-        return "export-record-not-found";
-    case MediaErrorCode::kDuplicateClipSelection:
-        return "duplicate-clip-selection";
-    case MediaErrorCode::kInvalidExportMode:
-        return "invalid-export-mode";
-    case MediaErrorCode::kInvalidExportGeometry:
-        return "invalid-export-geometry";
+    case MediaErrorCode::kFrameOutOfRange:
+        return "frame-out-of-range";
     case MediaErrorCode::kUnsupportedProjectSchema:
         return "unsupported-project-schema";
     case MediaErrorCode::kInvalidProjectSchema:
@@ -158,10 +106,6 @@ std::string_view stableId(const MediaOperation operation) noexcept {
         return "source-pair-validation";
     case MediaOperation::kProjectMutation:
         return "project-mutation";
-    case MediaOperation::kClipMutation:
-        return "clip-mutation";
-    case MediaOperation::kExportPlanBuild:
-        return "export-plan-build";
     case MediaOperation::kProjectPersistence:
         return "project-persistence";
     case MediaOperation::kMediaProbe:
@@ -188,10 +132,6 @@ std::string_view stableId(const SourceRole sourceRole) noexcept {
         return "pair";
     case SourceRole::kProject:
         return "project";
-    case SourceRole::kClip:
-        return "clip";
-    case SourceRole::kExport:
-        return "export";
     }
     return "unknown-source";
 }

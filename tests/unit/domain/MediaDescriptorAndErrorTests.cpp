@@ -100,21 +100,9 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(PlaybackState::kPlaying), "playing");
     EXPECT_EQ(stableId(PlaybackState::kSeeking), "seeking");
     EXPECT_EQ(stableId(PlaybackState::kBuffering), "buffering");
-    EXPECT_EQ(stableId(ProxyJobState::kPending), "pending");
-    EXPECT_EQ(stableId(ProxyJobState::kRunning), "running");
-    EXPECT_EQ(stableId(ProxyJobState::kSucceeded), "succeeded");
-    EXPECT_EQ(stableId(ProxyJobState::kFailed), "failed");
-    EXPECT_EQ(stableId(ProxyJobState::kCanceled), "canceled");
-    EXPECT_EQ(stableId(ExportJobState::kPending), "pending");
-    EXPECT_EQ(stableId(ExportJobState::kRunning), "running");
-    EXPECT_EQ(stableId(ExportJobState::kSucceeded), "succeeded");
-    EXPECT_EQ(stableId(ExportJobState::kFailed), "failed");
-    EXPECT_EQ(stableId(ExportJobState::kCanceled), "canceled");
-    EXPECT_EQ(stableId(ExportJobState::kInterrupted), "interrupted");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidArgument), "invalid-argument");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidRate), "invalid-rate");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidFrameId), "invalid-frame-id");
-    EXPECT_EQ(stableId(MediaErrorCode::kInvalidFrameRange), "invalid-frame-range");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidFrameCount), "invalid-frame-count");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidDimensions), "invalid-dimensions");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidDuration), "invalid-duration");
@@ -123,15 +111,7 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaErrorCode::kSourceFrameRateMismatch), "source-frame-rate-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceFrameCountMismatch), "source-frame-count-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceDurationMismatch), "source-duration-mismatch");
-    EXPECT_EQ(stableId(MediaErrorCode::kDuplicateIdentifier), "duplicate-identifier");
-    EXPECT_EQ(stableId(MediaErrorCode::kMarksIncomplete), "marks-incomplete");
-    EXPECT_EQ(stableId(MediaErrorCode::kMarksReversed), "marks-reversed");
-    EXPECT_EQ(stableId(MediaErrorCode::kClipOutOfRange), "clip-out-of-range");
-    EXPECT_EQ(stableId(MediaErrorCode::kClipNotFound), "clip-not-found");
-    EXPECT_EQ(stableId(MediaErrorCode::kExportRecordNotFound), "export-record-not-found");
-    EXPECT_EQ(stableId(MediaErrorCode::kDuplicateClipSelection), "duplicate-clip-selection");
-    EXPECT_EQ(stableId(MediaErrorCode::kInvalidExportMode), "invalid-export-mode");
-    EXPECT_EQ(stableId(MediaErrorCode::kInvalidExportGeometry), "invalid-export-geometry");
+    EXPECT_EQ(stableId(MediaErrorCode::kFrameOutOfRange), "frame-out-of-range");
     EXPECT_EQ(stableId(MediaErrorCode::kUnsupportedProjectSchema), "unsupported-project-schema");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidProjectSchema), "invalid-project-schema");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceMissing), "source-missing");
@@ -152,8 +132,6 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaOperation::kMediaDescriptorValidation), "media-descriptor-validation");
     EXPECT_EQ(stableId(MediaOperation::kSourcePairValidation), "source-pair-validation");
     EXPECT_EQ(stableId(MediaOperation::kProjectMutation), "project-mutation");
-    EXPECT_EQ(stableId(MediaOperation::kClipMutation), "clip-mutation");
-    EXPECT_EQ(stableId(MediaOperation::kExportPlanBuild), "export-plan-build");
     EXPECT_EQ(stableId(MediaOperation::kProjectPersistence), "project-persistence");
     EXPECT_EQ(stableId(MediaOperation::kMediaProbe), "media-probe");
     EXPECT_EQ(stableId(MediaOperation::kMediaDecode), "media-decode");
@@ -164,8 +142,6 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(SourceRole::kB), "b");
     EXPECT_EQ(stableId(SourceRole::kPair), "pair");
     EXPECT_EQ(stableId(SourceRole::kProject), "project");
-    EXPECT_EQ(stableId(SourceRole::kClip), "clip");
-    EXPECT_EQ(stableId(SourceRole::kExport), "export");
 
     const MediaError error = makeMediaError(MediaErrorCode::kInvalidFrameCount,
                                             MediaOperation::kMediaDescriptorValidation,

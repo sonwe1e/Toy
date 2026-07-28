@@ -13,7 +13,6 @@ set(
     dvs_app_dependencies
     dvs_platform_windows
     dvs_media_ffmpeg
-    dvs_jobs_ffmpeg
     dvs_persistence_json
     dvs_ui_qml
 )

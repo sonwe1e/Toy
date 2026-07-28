@@ -1,8 +1,6 @@
 add_library(
     dvs_domain
     STATIC
-        src/Clip.cpp
-        src/ExportPlan.cpp
         src/FrameTimeline.cpp
         src/MediaDescriptor.cpp
         src/MediaError.cpp

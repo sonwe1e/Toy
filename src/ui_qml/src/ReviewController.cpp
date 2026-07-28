@@ -322,8 +322,6 @@ private:
                 case domain::SourceRole::kNone:
                 case domain::SourceRole::kPair:
                 case domain::SourceRole::kProject:
-                case domain::SourceRole::kClip:
-                case domain::SourceRole::kExport:
                     next.pairErrorKey = key;
                     break;
                 }

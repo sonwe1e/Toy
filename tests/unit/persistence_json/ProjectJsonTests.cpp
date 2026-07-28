@@ -49,8 +49,6 @@ makeDescriptor(const std::filesystem::path& path,
 
 [[nodiscard]] domain::Project makeProject(
     const std::filesystem::path& projectPath,
-    const domain::MediaOperation errorOperation = domain::MediaOperation::kProjectPersistence,
-    const domain::MediaErrorCode errorCode = domain::MediaErrorCode::kProjectFileIo,
     const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
     const auto sources = domain::SourcePairValidator::validate(
         makeDescriptor(
@@ -66,19 +64,6 @@ makeDescriptor(const std::filesystem::path& path,
 
     EXPECT_TRUE(project.setInMark(domain::FrameId{1}));
     EXPECT_TRUE(project.setOutMark(domain::FrameId{2}));
-    EXPECT_TRUE(project.addClipFromMarks(domain::ClipId{"clip-1"}, "Clip", "note"));
-    EXPECT_TRUE(project.addExportRecord(domain::ExportRecord{
-        .id = domain::ExportRecordId{"export-1"},
-        .clipId = domain::ClipId{"clip-1"},
-        .state = domain::ExportJobState::kFailed,
-        .outputReference = "exports/clip-1.mov",
-        .error = domain::makeMediaError(errorCode,
-                                        errorOperation,
-                                        domain::SourceRole::kExport,
-                                        true,
-                                        "write failed",
-                                        domain::RequestId{91}),
-    }));
     EXPECT_TRUE(project.setLastDisplayedFrame(domain::FrameId{2}));
     project.setWorkspaceState({{"comparisonMode", "difference"}, {"zoom", "125"}});
     return project;
@@ -115,9 +100,7 @@ makeDescriptor(const std::filesystem::path& path,
 }
 
 [[nodiscard]] domain::Project makeVfrProject(
-    const std::filesystem::path& projectPath,
-    const domain::MediaOperation errorOperation = domain::MediaOperation::kProjectPersistence,
-    const domain::MediaErrorCode errorCode = domain::MediaErrorCode::kProjectFileIo) {
+    const std::filesystem::path& projectPath) {
     const auto sources = domain::SourcePairValidator::validate(
         makeVfrDescriptor(projectPath.parent_path() / "source-a.mov", std::string(64, 'a')),
         makeVfrDescriptor(projectPath.parent_path() / "source-b.mov", std::string(64, 'b')));
@@ -130,19 +113,6 @@ makeDescriptor(const std::filesystem::path& path,
 
     EXPECT_TRUE(project.setInMark(domain::FrameId{1}));
     EXPECT_TRUE(project.setOutMark(domain::FrameId{2}));
-    EXPECT_TRUE(project.addClipFromMarks(domain::ClipId{"clip-1"}, "Clip", "note"));
-    EXPECT_TRUE(project.addExportRecord(domain::ExportRecord{
-        .id = domain::ExportRecordId{"export-1"},
-        .clipId = domain::ClipId{"clip-1"},
-        .state = domain::ExportJobState::kFailed,
-        .outputReference = "exports/clip-1.mov",
-        .error = domain::makeMediaError(errorCode,
-                                        errorOperation,
-                                        domain::SourceRole::kExport,
-                                        true,
-                                        "write failed",
-                                        domain::RequestId{91}),
-    }));
     EXPECT_TRUE(project.setLastDisplayedFrame(domain::FrameId{2}));
     project.setWorkspaceState({{"comparisonMode", "difference"}});
     return project;
@@ -273,57 +243,25 @@ TEST(ProjectJsonTests, RoundTripsCompleteSchemaOneDocument) {
               domain::ColorMatrix::kBt709);
     EXPECT_EQ(decoded.value().sources().sourceA().colorMetadata.range, domain::ColorRange::kFull);
     EXPECT_FALSE(decoded.value().sources().sourceA().colorMetadata.matrixInferred);
-    ASSERT_EQ(decoded.value().clips().size(), 1U);
-    EXPECT_EQ(decoded.value().clips().front().id, domain::ClipId{"clip-1"});
-    EXPECT_EQ(decoded.value().clips().front().range.first(), domain::FrameId{1});
-    EXPECT_EQ(decoded.value().clips().front().range.last(), domain::FrameId{2});
-    ASSERT_EQ(decoded.value().exportRecords().size(), 1U);
-    EXPECT_EQ(decoded.value().exportRecords().front().state, domain::ExportJobState::kFailed);
-    ASSERT_TRUE(decoded.value().exportRecords().front().error.has_value());
-    EXPECT_EQ(decoded.value().exportRecords().front().error->requestId, domain::RequestId{91});
     EXPECT_EQ(decoded.value().inMark(), project.inMark());
     EXPECT_EQ(decoded.value().outMark(), project.outMark());
     EXPECT_EQ(decoded.value().lastDisplayedFrame(), project.lastDisplayedFrame());
     EXPECT_EQ(decoded.value().workspaceState(), project.workspaceState());
 }
 
-TEST(ProjectJsonTests, RoundTripsMediaProbeErrorOperations) {
-    const std::filesystem::path projectPath =
-        std::filesystem::temp_directory_path() / "dvs-project-json" / "media-probe.dvsproject";
-    const domain::Project project = makeProject(projectPath, domain::MediaOperation::kMediaProbe);
-
-    const auto encoded = ProjectJson::encodeText(project, projectPath);
-    ASSERT_TRUE(encoded);
-    EXPECT_NE(encoded.value().find("\"operation\": \"media-probe\""), std::string::npos);
-
-    const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
-    ASSERT_TRUE(decoded);
-    ASSERT_EQ(decoded.value().exportRecords().size(), 1U);
-    ASSERT_TRUE(decoded.value().exportRecords().front().error.has_value());
-    EXPECT_EQ(decoded.value().exportRecords().front().error->operation,
-              domain::MediaOperation::kMediaProbe);
-}
-
-TEST(ProjectJsonTests, RoundTripsIndexedFrameCountsAndTimelineErrors) {
+TEST(ProjectJsonTests, RoundTripsIndexedFrameCounts) {
     const std::filesystem::path projectPath =
         std::filesystem::temp_directory_path() / "dvs-project-json" / "indexed-timeline.dvsproject";
-    const domain::Project project = makeProject(projectPath,
-                                                domain::MediaOperation::kMediaDecode,
-                                                domain::MediaErrorCode::kFrameTimelineInvalid,
-                                                domain::FrameCountOrigin::kIndexed);
+    const domain::Project project = makeProject(projectPath, domain::FrameCountOrigin::kIndexed);
 
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
     EXPECT_NE(encoded.value().find("\"origin\": \"indexed\""), std::string::npos);
-    EXPECT_NE(encoded.value().find("\"code\": \"frame-timeline-invalid\""), std::string::npos);
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
     EXPECT_EQ(decoded.value().sources().sourceA().frameCount.origin,
               domain::FrameCountOrigin::kIndexed);
-    ASSERT_TRUE(decoded.value().exportRecords().front().error.has_value());
-    EXPECT_EQ(decoded.value().exportRecords().front().error->code,
-              domain::MediaErrorCode::kFrameTimelineInvalid);
 }
 
 TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsoluteSources) {
@@ -352,26 +290,6 @@ TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsolu
               (relocatedProjectPath.parent_path() / "media" / "source-a.mov").lexically_normal());
     EXPECT_EQ(decoded.value().sources().sourceB().normalizedPath,
               externalSourcePath.lexically_normal());
-}
-
-TEST(ProjectJsonTests, RestoresRunningExportsAsInterrupted) {
-    const std::filesystem::path projectPath =
-        std::filesystem::temp_directory_path() / "dvs-project-json" / "interrupted.dvsproj";
-    domain::Project project = makeProject(projectPath);
-    ASSERT_TRUE(project.addExportRecord(domain::ExportRecord{
-        .id = domain::ExportRecordId{"export-running"},
-        .clipId = domain::ClipId{"clip-1"},
-        .state = domain::ExportJobState::kRunning,
-        .outputReference = "exports/running.mov",
-        .error = std::nullopt,
-    }));
-
-    const auto encoded = ProjectJson::encodeText(project, projectPath);
-    ASSERT_TRUE(encoded);
-    const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
-    ASSERT_TRUE(decoded);
-    ASSERT_EQ(decoded.value().exportRecords().size(), 2U);
-    EXPECT_EQ(decoded.value().exportRecords()[1].state, domain::ExportJobState::kInterrupted);
 }
 
 TEST(ProjectJsonTests, RejectsMalformedJsonWithStableSchemaError) {
