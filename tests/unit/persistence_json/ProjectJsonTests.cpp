@@ -1,5 +1,7 @@
 #include "dvs/persistence/ProjectJson.h"
 
+#include "dvs/domain/ComparisonValidator.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>

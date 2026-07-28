@@ -642,39 +642,26 @@ TEST(MultiSourceFrameProviderTests, OpensPairWhereBothVfrRespectsSourceACanonica
     EXPECT_EQ(budget.reservedBytes(), 0U);
 }
 
-TEST(MultiSourceFrameProviderTests, PublishesMissingEntryWhenFrameIdExceedsSourceFrameCount) {
+TEST(MultiSourceFrameProviderTests, PublishesMissingEntriesWhenFrameIdExceedsSourceFrameCounts) {
     platform::FrameBudget budget{4U * 1024U * 1024U};
     MultiSourceFrameProvider provider{budget};
     const auto events = std::make_shared<RecordingEventSink>();
 
-    // Source 0: 12 frames, Source 1: claim only 5 frames
-    const auto source0 = MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
-    const auto source1 = MediaProbe::inspect(fixture("h264_b_160x90_30fps_12.mp4"), 1U);
-    ASSERT_TRUE(source0);
-    ASSERT_TRUE(source1);
-    auto truncatedDescriptor = source1.value();
-    truncatedDescriptor.frameCount.value = 5;
-
-    const application::FrameProviderOpenRequest open{
-        .context = makePlaybackContext(900U),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = source0.value(), .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = truncatedDescriptor, .displayName = "Source 1"},
-        },
-        .timeline = domain::CanonicalTimeline{makeRate()},
-    };
-
+    // Both fixtures carry 12 frames (indices 0..11); frame 12 is beyond both sources.
+    const application::FrameProviderOpenRequest open = makeOpenRequest(900U);
     ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
     ASSERT_TRUE(events->waitForEventCount(1U));
 
     const application::FrameRequest request{
         .context = makeFrameContext(901U),
-        .frameId = domain::FrameId{7},
+        .frameId = domain::FrameId{12},
         .priority = application::FrameRequestPriority::Exact,
     };
     ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
     ASSERT_TRUE(events->waitForEventCount(3U));
 
+    // The request succeeds with an incomplete set whose entries are explicitly Missing
+    // instead of failing or substituting neighbor frames.
     const auto recorded = events->events();
     ASSERT_EQ(recorded.size(), 3U);
     const auto* const ready = std::get_if<application::FrameSetReady>(&recorded[1]);
@@ -684,14 +671,19 @@ TEST(MultiSourceFrameProviderTests, PublishesMissingEntryWhenFrameIdExceedsSourc
 
     const auto* entry0 = ready->set.find(0U);
     ASSERT_NE(entry0, nullptr);
-    EXPECT_TRUE(entry0->hasFrame());
-    EXPECT_EQ(entry0->matchKind, application::FrameMatchKind::ExactIndex);
+    EXPECT_FALSE(entry0->hasFrame());
+    EXPECT_EQ(entry0->matchKind, application::FrameMatchKind::Missing);
+    EXPECT_FALSE(entry0->sourceFrameId.has_value());
 
     const auto* entry1 = ready->set.find(1U);
     ASSERT_NE(entry1, nullptr);
     EXPECT_FALSE(entry1->hasFrame());
     EXPECT_EQ(entry1->matchKind, application::FrameMatchKind::Missing);
     EXPECT_FALSE(entry1->sourceFrameId.has_value());
+
+    const auto* const frameTerminal = std::get_if<application::RequestTerminal>(&recorded[2]);
+    ASSERT_NE(frameTerminal, nullptr);
+    EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*frameTerminal));
 }
 
 } // namespace

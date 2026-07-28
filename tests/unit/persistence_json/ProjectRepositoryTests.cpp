@@ -1,6 +1,8 @@
 #include "dvs/persistence/FingerprintService.h"
 #include "dvs/persistence/ProjectRepository.h"
 
+#include "dvs/domain/ComparisonValidator.h"
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>

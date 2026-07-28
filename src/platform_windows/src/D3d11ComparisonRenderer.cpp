@@ -505,7 +505,7 @@ public:
         case FrameMailboxReadStatus::Available:
             break;
         }
-        if (!read.publication.has_value() || !read.publication->pair) {
+        if (!read.publication.has_value() || !read.publication->set) {
             return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::BackgroundOnly
                                                        : ComparisonRenderResult::ResourceFailure;
         }
@@ -513,7 +513,7 @@ public:
         const FrameMailboxPublication publication = *read.publication;
         if (frontPublication_.has_value() &&
             frontPublication_->publicationSerial == publication.publicationSerial &&
-            frontPublication_->pair == publication.set) {
+            frontPublication_->set == publication.set) {
             return drawFrontOrBackground(state, lease) ? ComparisonRenderResult::Presented
                                                        : ComparisonRenderResult::ResourceFailure;
         }

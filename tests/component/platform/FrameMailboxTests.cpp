@@ -123,7 +123,7 @@ makeSet(FrameBudget& budget,
     return backing != nullptr ? backing->token() : 0U;
 }
 
-TEST(FrameMailboxTests, ReplacesOnlyWithACompleteSetAndReleasesTheDisplacedBudget) {
+TEST(FrameMailboxTests, ReplacesThePublishedSetAndAcceptsPartialSets) {
     FrameBudget budget{40U};
     FrameMailbox mailbox{domain::DeviceGeneration{5}};
 
@@ -163,10 +163,20 @@ TEST(FrameMailboxTests, ReplacesOnlyWithACompleteSetAndReleasesTheDisplacedBudge
     EXPECT_EQ(tokenOf(slotB->frame), 201U);
     EXPECT_EQ(latest->accountedBytes(), 20U);
 
-    // Incomplete set (missing slot) should fail creation.
-    std::vector<GpuFrameSlot> incompleteSlots{GpuFrameSlot{.sourceId = 0U, .frame = slotA->frame}};
-    const auto incomplete = GpuFrameSet::create(latest->context(), latest->frameId(), std::move(incompleteSlots));
-    EXPECT_EQ(incomplete, nullptr);
+    // A partial set (one of the session's frames) is a legitimate publication: the
+    // renderer draws the missing slot as background. It replaces the prior set.
+    std::vector<GpuFrameSlot> partialSlots{GpuFrameSlot{.sourceId = 0U, .frame = slotA->frame}};
+    const auto partial = GpuFrameSet::create(latest->context(), latest->frameId(), std::move(partialSlots));
+    ASSERT_NE(partial, nullptr);
+    EXPECT_EQ(partial->frameCount(), 1U);
+    ASSERT_EQ(mailbox.publish(partial), FrameMailboxPublishResult::Published);
+    const FrameMailboxReadResult partialRead = mailbox.tryLatest(domain::DeviceGeneration{5});
+    ASSERT_EQ(partialRead.status, FrameMailboxReadStatus::Available);
+    ASSERT_TRUE(partialRead.publication.has_value());
+    ASSERT_NE(partialRead.publication->set, nullptr);
+    EXPECT_EQ(partialRead.publication->set->frameCount(), 1U);
+    EXPECT_NE(partialRead.publication->set->find(0U), nullptr);
+    EXPECT_EQ(partialRead.publication->set->find(1U), nullptr);
 }
 
 TEST(FrameMailboxTests, RejectsStaleGenerationsAndAdvancingGenerationClearsTheSet) {

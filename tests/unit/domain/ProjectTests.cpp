@@ -1,3 +1,4 @@
+#include "dvs/domain/ComparisonValidator.h"
 #include "dvs/domain/Project.h"
 
 #include <filesystem>
