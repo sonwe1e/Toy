@@ -47,14 +47,16 @@ Set-Location $runnerRoot
   --replace
 ```
 
-runner 目录中的 `.env` 保存非敏感、机器相关的固定路径：
+仓库变量保存非敏感、机器相关的固定路径。使用专用名称，避免
+`ilammy/msvc-dev-cmd` 用 Visual Studio 内置 vcpkg 覆盖 `VCPKG_ROOT`：
 
 ```text
-VCPKG_ROOT=C:\Users\Sonwe\vcpkg
+DVS_VCPKG_ROOT=C:\Users\Sonwe\vcpkg
+DVS_PERFORMANCE_FIXTURE_ROOT=G:\GitHubActions\Toy-data\performance
 ```
 
-仓库变量 `DVS_PERFORMANCE_FIXTURE_ROOT` 指向不受 checkout/clean 影响的素材目录，例如
-`G:\GitHubActions\Toy-data\performance`。该目录必须包含：
+`DVS_PERFORMANCE_FIXTURE_ROOT` 指向不受 checkout/clean 影响的素材目录。该目录必须
+包含：
 
 ```text
 gate-1080p60-a.mp4

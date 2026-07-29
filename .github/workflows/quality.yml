@@ -46,6 +46,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, Windows, X64, dvs-toolchain-4.4]
     timeout-minutes: 60
+    env:
+      DVS_VCPKG_ROOT: ${{ vars.DVS_VCPKG_ROOT }}
 
     steps:
       - name: Check out repository
@@ -65,12 +67,14 @@ jobs:
           if ($cmakeVersion -notmatch '^cmake version 4\.4(\.|$)') {
             throw "Expected CMake 4.4.x, found: $cmakeVersion"
           }
-          $vcpkgRoot = if ($env:VCPKG_ROOT) {
+          $vcpkgRoot = if ($env:DVS_VCPKG_ROOT) {
+            $env:DVS_VCPKG_ROOT
+          } elseif ($env:VCPKG_ROOT) {
             $env:VCPKG_ROOT
           } elseif ($env:VCPKG_INSTALLATION_ROOT) {
             $env:VCPKG_INSTALLATION_ROOT
           } else {
-            throw 'Set VCPKG_ROOT or VCPKG_INSTALLATION_ROOT on the runner.'
+            throw 'Set the DVS_VCPKG_ROOT repository variable.'
           }
           if (-not (Test-Path -LiteralPath "$vcpkgRoot\scripts\buildsystems\vcpkg.cmake")) {
             throw "Invalid vcpkg root: $vcpkgRoot"
