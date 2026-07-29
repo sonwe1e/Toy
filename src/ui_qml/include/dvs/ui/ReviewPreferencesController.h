@@ -18,14 +18,16 @@ class ReviewPreferencesController final : public QObject {
                    NOTIFY preferencesChanged)
     Q_PROPERTY(DifferenceGain differenceGain READ differenceGain WRITE setDifferenceGain NOTIFY
                    preferencesChanged)
-    Q_PROPERTY(DifferenceReference differenceReference READ differenceReference WRITE
-                   setDifferenceReference NOTIFY preferencesChanged)
+    Q_PROPERTY(DifferenceEdge differenceEdge READ differenceEdge WRITE setDifferenceEdge NOTIFY
+                   preferencesChanged)
     Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
                    NOTIFY preferencesChanged)
 
 public:
     enum class ViewMode {
         SideBySide,
+        ThreeUp,
+        ReferenceFocus,
         Difference,
     };
     Q_ENUM(ViewMode)
@@ -47,11 +49,13 @@ public:
     };
     Q_ENUM(DifferenceGain)
 
-    enum class DifferenceReference {
-        ReferenceA,
-        ReferenceB,
+    // Which two source slots the difference view compares (slot order = session source order).
+    enum class DifferenceEdge {
+        Edge0And1,
+        Edge0And2,
+        Edge1And2,
     };
-    Q_ENUM(DifferenceReference)
+    Q_ENUM(DifferenceEdge)
 
     enum class DifferenceFilter {
         Nearest,
@@ -73,14 +77,14 @@ public:
     [[nodiscard]] ViewMode viewMode() const noexcept;
     [[nodiscard]] DifferenceMetric differenceMetric() const noexcept;
     [[nodiscard]] DifferenceGain differenceGain() const noexcept;
-    [[nodiscard]] DifferenceReference differenceReference() const noexcept;
+    [[nodiscard]] DifferenceEdge differenceEdge() const noexcept;
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
 
     void setLargeStepFrames(int value);
     void setViewMode(ViewMode value);
     void setDifferenceMetric(DifferenceMetric value);
     void setDifferenceGain(DifferenceGain value);
-    void setDifferenceReference(DifferenceReference value);
+    void setDifferenceEdge(DifferenceEdge value);
     void setDifferenceFilter(DifferenceFilter value);
 
     Q_INVOKABLE void stop() noexcept;

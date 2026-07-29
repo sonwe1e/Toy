@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/application/Alignment.h"
 #include "dvs/application/RequestContext.h"
 #include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaDescriptor.h"
@@ -63,6 +64,31 @@ struct PauseCommand final {
     CommandContext context;
 };
 
+// Applies one explicit global frame offset per named source without reopening decoders. Omitted
+// sources reset to strict-index offset zero. The canonical source must remain at zero.
+struct SetAlignmentOffsetsCommand final {
+    CommandContext context;
+    std::vector<SourceFrameOffset> sourceOffsets;
+};
+
+struct EstimateAlignmentCommand final {
+    CommandContext context;
+};
+
+struct AnalyzeSequenceAlignmentCommand final {
+    CommandContext context;
+};
+
+struct SetManualAlignmentAnchorCommand final {
+    CommandContext context;
+    domain::SourceId sourceId = 0;
+    ManualAlignmentAnchor anchor;
+};
+
+struct ClearManualAlignmentAnchorsCommand final {
+    CommandContext context;
+};
+
 struct CloseSessionCommand final {
     CommandContext context;
 };
@@ -75,6 +101,11 @@ using PlaybackCommand = std::variant<OpenComparisonCommand,
                                      LastFrameCommand,
                                      PlayCommand,
                                      PauseCommand,
+                                     SetAlignmentOffsetsCommand,
+                                     EstimateAlignmentCommand,
+                                     AnalyzeSequenceAlignmentCommand,
+                                     SetManualAlignmentAnchorCommand,
+                                     ClearManualAlignmentAnchorsCommand,
                                      CloseSessionCommand>;
 
 [[nodiscard]] inline const CommandContext& commandContext(const PlaybackCommand& command) noexcept {

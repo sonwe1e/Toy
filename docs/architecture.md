@@ -1,10 +1,12 @@
 # Target Architecture
 
-Status: **core model implemented** (USERPLAN phases 0–2 done). The FrameSet model,
-2–3 source validation with compatibility reports, missing-frame semantics, and the
-multi-source decode/render pipeline are in the codebase today; per-source parallel
-decode actors, three-up layouts, and the alignment service (phases 3–6) are the
-remaining work. The historical A/B design is archived in
+Status: **phases 0–4 implemented; phase 5 in progress**. The FrameSet model,
+2–3 source validation with compatibility reports, missing-frame semantics, parallel
+multi-source decode/render pipeline, three-up/reference-focus layouts, selectable
+difference edges, confidence-gated global/sequence alignment, manual anchors, and
+timeline diagnostics are in the codebase today. Phase 5 already includes selectable
+RGB absolute, luma, chroma, and heatmap difference metrics; threshold masks, ROI zoom,
+and the complete analysis grid remain. The historical A/B design is archived in
 [design/architecture-overview.md](design/architecture-overview.md).
 
 DualVideoStudio is a VFI-dedicated comparator. Its job is not "play two videos" but
@@ -55,11 +57,10 @@ ComparisonSurface / D3D11      (2-up, 3-up, reference-focus, analysis-grid)
 PresentationAck                (UI frame counter advances only after real paint)
 ```
 
-Per-source decode actors make frame latency `max(T_sources) + T_assemble` instead of
-today's serialized `T_A + T_B` on a single worker. The existing DirectFrameProvider
+Per-source decoder slots make frame latency `max(T_sources) + T_assemble` instead of
+serialized `T_A + T_B` work. The existing frame-provider
 priority scheme (control > exact > sequential > prefetch), cancellation by request
-identity, and pair cache carry over into each actor; the assembler replaces the
-two-decoder tail of `executeFrame`.
+identity, and bounded set cache remain intact.
 
 ## Frame-step semantics
 
@@ -82,6 +83,7 @@ cache-cursor move. Playing → first frame-step pauses, then seeks.
 The inward-only dependency allow-list stays: `domain` depends on nothing,
 `application` only on `domain`, adapters (`media_ffmpeg`, `platform_windows`,
 `persistence_json`, `ui_qml`) implement application ports, `app` composes. New target
-modules from USERPLAN §10 (`alignment/` with OffsetEstimator, SequenceAligner,
-ManualAnchorMap; split TimelineIndexer/FrameCache) land as their phases arrive;
-`jobs_ffmpeg` is removed in Phase 1.
+modules from USERPLAN §10 are introduced by capability rather than leaking adapter
+types into the core: offset estimation, banded sequence alignment, and manual-anchor
+mapping now live in `application`; split TimelineIndexer/FrameCache work remains for
+later media/performance phases. `jobs_ffmpeg` was removed in Phase 1.

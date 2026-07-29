@@ -1,7 +1,7 @@
 #include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/FrameTimeline.h"
-#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/media/MediaProbe.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/platform/FrameBudget.h"
 
 #include <chrono>
@@ -96,18 +96,23 @@ makeFrameContext(const std::uint64_t requestId, const std::uint64_t generation =
 [[nodiscard]] application::FrameProviderOpenRequest
 makeOpenRequest(const std::uint64_t requestId,
                 domain::CanonicalTimeline timeline = domain::CanonicalTimeline{makeRate()}) {
-    const auto source0 =
-        MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
-    const auto source1 =
-        MediaProbe::inspect(fixture("h264_b_160x90_30fps_12.mp4"), 1U);
+    const auto source0 = MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
+    const auto source1 = MediaProbe::inspect(fixture("h264_b_160x90_30fps_12.mp4"), 1U);
     EXPECT_TRUE(source0);
     EXPECT_TRUE(source1);
     return application::FrameProviderOpenRequest{
         .context = makePlaybackContext(requestId),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = source0.value(), .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = source1.value(), .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = source0.value(),
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = source1.value(),
+                                         .displayName = "Source 1"},
+            },
         .timeline = std::move(timeline),
     };
 }
@@ -470,10 +475,17 @@ TEST(MultiSourceFrameProviderTests, OpensPairWhereAVfrAndBCfrUsesSourceAVfrTimel
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(110U),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceA->descriptor, .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceB->descriptor, .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceA->descriptor,
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceB->descriptor,
+                                         .displayName = "Source 1"},
+            },
         .timeline = domain::CanonicalTimeline{sourceA->timeline},
     };
     MultiSourceFrameProvider provider{budget};
@@ -532,16 +544,23 @@ TEST(MultiSourceFrameProviderTests, OpensPairWhereACfrBVfrUsesRationalTimeline) 
     ASSERT_TRUE(sourceA.has_value());
     ASSERT_EQ(sourceA->descriptor.timingConfidence, domain::TimingConfidence::kVerifiedCfr);
     ASSERT_TRUE(sourceA->descriptor.frameRate.has_value());
-    const std::optional<ProbedSource> sourceB = probeSource(
-        fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U, events, 121U);
+    const std::optional<ProbedSource> sourceB =
+        probeSource(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U, events, 121U);
     ASSERT_TRUE(sourceB.has_value());
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(130U),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceA->descriptor, .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceB->descriptor, .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceA->descriptor,
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceB->descriptor,
+                                         .displayName = "Source 1"},
+            },
         .timeline = domain::CanonicalTimeline{makeRate()},
     };
     MultiSourceFrameProvider provider{budget};
@@ -591,16 +610,23 @@ TEST(MultiSourceFrameProviderTests, OpensPairWhereBothVfrRespectsSourceACanonica
         probeSource(fixture("h264_vfr_320x180_12.mp4"), 0U, events, 140U);
     ASSERT_TRUE(sourceA.has_value());
     ASSERT_TRUE(sourceA->timeline);
-    const std::optional<ProbedSource> sourceB = probeSource(
-        fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U, events, 141U);
+    const std::optional<ProbedSource> sourceB =
+        probeSource(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U, events, 141U);
     ASSERT_TRUE(sourceB.has_value());
 
     const application::FrameProviderOpenRequest open{
         .context = makePlaybackContext(150U),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceA->descriptor, .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = sourceB->descriptor, .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceA->descriptor,
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = sourceB->descriptor,
+                                         .displayName = "Source 1"},
+            },
         .timeline = domain::CanonicalTimeline{sourceA->timeline},
     };
     MultiSourceFrameProvider provider{budget};
@@ -684,6 +710,115 @@ TEST(MultiSourceFrameProviderTests, PublishesMissingEntriesWhenFrameIdExceedsSou
     const auto* const frameTerminal = std::get_if<application::RequestTerminal>(&recorded[2]);
     ASSERT_NE(frameTerminal, nullptr);
     EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*frameTerminal));
+}
+
+TEST(MultiSourceFrameProviderTests, AppliesGlobalOffsetsAndPublishesBoundaryMissingEntries) {
+    platform::FrameBudget budget{4U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(910U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    events->clear();
+    const application::FrameRequest shifted{
+        .context = makeFrameContext(911U),
+        .frameId = domain::FrameId{1},
+        .priority = application::FrameRequestPriority::Exact,
+        .sourceOffsets =
+            {
+                application::SourceFrameOffset{.sourceId = 0U, .frames = -1},
+                application::SourceFrameOffset{.sourceId = 1U, .frames = 1},
+            },
+    };
+    ASSERT_EQ(provider.submit(shifted, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+    std::optional<application::FrameSetReady> ready = findFrameSetReady(events, shifted.context);
+    ASSERT_TRUE(ready.has_value());
+    ASSERT_NE(ready->set.find(0U), nullptr);
+    ASSERT_NE(ready->set.find(1U), nullptr);
+    EXPECT_EQ(ready->set.find(0U)->sourceFrameId, domain::FrameId{0});
+    EXPECT_EQ(ready->set.find(1U)->sourceFrameId, domain::FrameId{2});
+    EXPECT_EQ(ready->set.find(0U)->matchKind, application::FrameMatchKind::GlobalOffset);
+    EXPECT_EQ(ready->set.find(1U)->matchKind, application::FrameMatchKind::GlobalOffset);
+
+    events->clear();
+    const application::FrameRequest boundary{
+        .context = makeFrameContext(912U),
+        .frameId = domain::FrameId{0},
+        .priority = application::FrameRequestPriority::Exact,
+        .sourceOffsets = {application::SourceFrameOffset{.sourceId = 0U, .frames = -1}},
+    };
+    ASSERT_EQ(provider.submit(boundary, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+    ready = findFrameSetReady(events, boundary.context);
+    ASSERT_TRUE(ready.has_value());
+    EXPECT_FALSE(ready->set.find(0U)->hasFrame());
+    EXPECT_EQ(ready->set.find(0U)->matchKind, application::FrameMatchKind::Missing);
+    EXPECT_TRUE(ready->set.find(1U)->hasFrame());
+    EXPECT_EQ(ready->set.find(1U)->matchKind, application::FrameMatchKind::ExactIndex);
+}
+
+TEST(MultiSourceFrameProviderTests, CollectsBoundedLumaEvidenceAndPublishesAnEstimate) {
+    platform::FrameBudget budget{4U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(920U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    events->clear();
+    const application::AlignmentEstimateRequest request{
+        .context = makePlaybackContext(921U),
+        .canonicalSourceId = 0U,
+    };
+    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+
+    const auto recorded = events->events();
+    ASSERT_EQ(recorded.size(), 2U);
+    const auto* const estimated = std::get_if<application::AlignmentEstimated>(&recorded[0]);
+    ASSERT_NE(estimated, nullptr);
+    EXPECT_EQ(estimated->context, request.context);
+    ASSERT_EQ(estimated->estimates.size(), 1U);
+    EXPECT_EQ(estimated->estimates.front().sourceId, 1U);
+    EXPECT_GE(estimated->estimates.front().bestOffset, -4);
+    EXPECT_LE(estimated->estimates.front().bestOffset, 4);
+    EXPECT_GE(estimated->estimates.front().evidenceCount, 3U);
+
+    const auto* const terminal = std::get_if<application::RequestTerminal>(&recorded[1]);
+    ASSERT_NE(terminal, nullptr);
+    EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*terminal));
+}
+
+TEST(MultiSourceFrameProviderTests, DecodesFullSequencesAndPublishesABandedMap) {
+    platform::FrameBudget budget{4U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(930U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    events->clear();
+    const application::SequenceAlignmentRequest request{
+        .context = makePlaybackContext(931U),
+        .canonicalSourceId = 0U,
+    };
+    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+
+    const auto recorded = events->events();
+    ASSERT_EQ(recorded.size(), 2U);
+    const auto* const analyzed = std::get_if<application::SequenceAlignmentAnalyzed>(&recorded[0]);
+    ASSERT_NE(analyzed, nullptr);
+    EXPECT_EQ(analyzed->context, request.context);
+    ASSERT_EQ(analyzed->results.size(), 1U);
+    EXPECT_EQ(analyzed->results.front().sourceId, 1U);
+    EXPECT_EQ(analyzed->results.front().entries.size(), 12U);
+
+    const auto* const terminal = std::get_if<application::RequestTerminal>(&recorded[1]);
+    ASSERT_NE(terminal, nullptr);
+    EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*terminal));
 }
 
 } // namespace

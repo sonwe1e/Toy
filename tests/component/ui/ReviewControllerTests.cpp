@@ -162,8 +162,8 @@ TEST_F(ReviewControllerTests, CanonicalizesUnicodeLocalFilesAndDispatchesScopedO
         notificationThread = std::this_thread::get_id();
     });
 
-    ASSERT_TRUE(
-        controller.openComparison(QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)));
+    ASSERT_TRUE(controller.openComparison(QUrl::fromLocalFile(sourceAPath),
+                                          QUrl::fromLocalFile(sourceBPath)));
     ASSERT_EQ(backend->submitted.size(), 1U);
     const auto* const command =
         std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
@@ -185,6 +185,52 @@ TEST_F(ReviewControllerTests, CanonicalizesUnicodeLocalFilesAndDispatchesScopedO
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests, DispatchesThreeSourcesWithTheSelectedReferenceRole) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("reference.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("prediction_1.mp4"));
+    const QString sourceCPath = createFile(directory, QStringLiteral("prediction_2.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+    ASSERT_FALSE(sourceCPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    ASSERT_TRUE(controller.openComparisonSet(QUrl::fromLocalFile(sourceAPath),
+                                             QUrl::fromLocalFile(sourceBPath),
+                                             QUrl::fromLocalFile(sourceCPath),
+                                             0));
+
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* const command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+    ASSERT_EQ(command->sources.size(), 3U);
+    EXPECT_EQ(command->sources[0].role, domain::ComparisonRole::kReference);
+    EXPECT_EQ(command->sources[1].role, domain::ComparisonRole::kPrediction);
+    EXPECT_EQ(command->sources[2].role, domain::ComparisonRole::kPrediction);
+    EXPECT_EQ(controller.sourceCFilename(), QStringLiteral("prediction_2.mp4"));
+    EXPECT_TRUE(controller.sourceCErrorKey().isEmpty());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, RejectsAnAbsentOrOutOfRangeReferenceSource) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("first.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("second.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    EXPECT_FALSE(controller.openComparisonSet(
+        QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath), QUrl{}, 2));
+    EXPECT_TRUE(backend->submitted.empty());
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispatch) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
@@ -194,21 +240,21 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
     ReviewController controller{dependenciesFor(backend)};
 
     EXPECT_FALSE(controller.openComparison(QUrl{QStringLiteral("https://example.invalid/a.mp4")},
-                                     QUrl::fromLocalFile(validPath)));
+                                           QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("invalid-argument"));
     EXPECT_TRUE(controller.sourceAFilename().isEmpty());
     EXPECT_EQ(controller.sourceBFilename(), QStringLiteral("valid.mp4"));
     EXPECT_TRUE(backend->submitted.empty());
 
     const QString missingPath = directory.filePath(QStringLiteral("missing.mp4"));
-    EXPECT_FALSE(
-        controller.openComparison(QUrl::fromLocalFile(validPath), QUrl::fromLocalFile(missingPath)));
+    EXPECT_FALSE(controller.openComparison(QUrl::fromLocalFile(validPath),
+                                           QUrl::fromLocalFile(missingPath)));
     EXPECT_TRUE(controller.sourceAErrorKey().isEmpty());
     EXPECT_EQ(controller.sourceBErrorKey(), QStringLiteral("source-missing"));
     EXPECT_TRUE(backend->submitted.empty());
 
-    EXPECT_FALSE(
-        controller.openComparison(QUrl::fromLocalFile(directory.path()), QUrl::fromLocalFile(validPath)));
+    EXPECT_FALSE(controller.openComparison(QUrl::fromLocalFile(directory.path()),
+                                           QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("source-missing"));
     EXPECT_TRUE(backend->submitted.empty());
     controller.stop();
@@ -290,6 +336,112 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     }));
 
     backend->currentSnapshot = readySnapshot(2, 5U);
+    backend->currentSnapshot.presentedSources = {
+        application::PresentedSourceState{
+            .sourceId = 0U,
+            .sourceFrameId = domain::FrameId{2},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+        },
+        application::PresentedSourceState{
+            .sourceId = 1U,
+            .sourceFrameId = domain::FrameId{3},
+            .matchKind = application::FrameMatchKind::AutoAligned,
+            .alignmentConfidence = 0.64F,
+        },
+        application::PresentedSourceState{
+            .sourceId = 2U,
+            .sourceFrameId = std::nullopt,
+            .matchKind = application::FrameMatchKind::Missing,
+        },
+    };
+    backend->currentSnapshot.compatibilityWarnings = {
+        domain::MediaErrorCode::kSourceFrameCountMismatch};
+    backend->currentSnapshot.alignmentEstimates = {
+        application::GlobalOffsetEstimate{
+            .sourceId = 1U,
+            .bestOffset = 1,
+            .bestCost = 0.08F,
+            .runnerUpCost = 0.22F,
+            .confidence = 0.64F,
+            .evidenceCount = 5U,
+            .autoApplicable = true,
+        },
+        application::GlobalOffsetEstimate{
+            .sourceId = 2U,
+            .bestOffset = -2,
+            .bestCost = 0.24F,
+            .runnerUpCost = 0.25F,
+            .confidence = 0.04F,
+            .evidenceCount = 5U,
+            .autoApplicable = false,
+        },
+    };
+    backend->currentSnapshot.sequenceAlignments = {
+        application::SequenceAlignmentResult{
+            .sourceId = 1U,
+            .entries =
+                {
+                    application::SequenceAlignmentEntry{
+                        .canonicalFrameId = domain::FrameId{0},
+                        .sourceFrameId = domain::FrameId{0},
+                        .confidence = 0.20F,
+                    },
+                    application::SequenceAlignmentEntry{
+                        .canonicalFrameId = domain::FrameId{1},
+                        .sourceFrameId = domain::FrameId{1},
+                        .confidence = 0.18F,
+                    },
+                    application::SequenceAlignmentEntry{
+                        .canonicalFrameId = domain::FrameId{2},
+                        .sourceFrameId = domain::FrameId{2},
+                        .confidence = 0.82F,
+                    },
+                    application::SequenceAlignmentEntry{
+                        .canonicalFrameId = domain::FrameId{3},
+                        .sourceFrameId = std::nullopt,
+                        .matchKind = application::FrameMatchKind::Missing,
+                        .confidence = 0.0F,
+                    },
+                    application::SequenceAlignmentEntry{
+                        .canonicalFrameId = domain::FrameId{4},
+                        .sourceFrameId = domain::FrameId{5},
+                        .confidence = 0.25F,
+                    },
+                },
+            .anomalies =
+                {
+                    application::SequenceAlignmentAnomaly{
+                        .kind = application::SequenceAlignmentAnomalyKind::TargetFrameMissing,
+                        .canonicalFrameId = domain::FrameId{3},
+                    },
+                    application::SequenceAlignmentAnomaly{
+                        .kind = application::SequenceAlignmentAnomalyKind::TargetFrameDuplicate,
+                        .canonicalFrameId = domain::FrameId{4},
+                        .sourceFrameId = domain::FrameId{5},
+                    },
+                },
+            .totalCost = 0.2F,
+            .meanMatchCost = 0.02F,
+            .confidence = 0.82F,
+            .autoApplicable = true,
+        },
+    };
+    backend->currentSnapshot.manualAlignmentAnchors = {
+        application::SourceAlignmentAnchors{
+            .sourceId = 1U,
+            .anchors =
+                {
+                    application::ManualAlignmentAnchor{
+                        .canonicalFrameId = domain::FrameId{3},
+                        .sourceFrameId = domain::FrameId{4},
+                    },
+                    application::ManualAlignmentAnchor{
+                        .canonicalFrameId = domain::FrameId{8},
+                        .sourceFrameId = domain::FrameId{10},
+                    },
+                },
+        },
+    };
     backend->currentSnapshot.lastError =
         domain::makeMediaError(domain::MediaErrorCode::kMediaProbeFailed,
                                domain::MediaOperation::kMediaProbe,
@@ -301,6 +453,35 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
                controller.currentFrame() == 2;
     }));
     EXPECT_EQ(controller.totalFrames(), 5U);
+    EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("B: source frame 4")));
+    EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("C: Missing frame")));
+    EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("auto offset +1, 64%")));
+    EXPECT_TRUE(controller.alignmentEstimateStatus().contains(QStringLiteral("B: auto +1 (64%)")));
+    EXPECT_TRUE(controller.alignmentEstimateStatus().contains(
+        QStringLiteral("C: suggested -2 (4%, review manually)")));
+    EXPECT_TRUE(controller.autoAlignmentActive());
+    EXPECT_TRUE(controller.sequenceAlignmentStatus().contains(
+        QStringLiteral("B: sequence mapped, 82% confidence")));
+    EXPECT_TRUE(controller.sequenceAlignmentStatus().contains(QStringLiteral("missing @ 4")));
+    EXPECT_TRUE(controller.sequenceAlignmentStatus().contains(QStringLiteral("duplicate @ 5")));
+    EXPECT_TRUE(controller.manualAnchorActive());
+    EXPECT_EQ(controller.manualAnchorStatus(), QStringLiteral("B: anchors 4↔5, 9↔11"));
+    const QVariantList timelineMarkers = controller.alignmentTimelineMarkers();
+    ASSERT_EQ(timelineMarkers.size(), 6);
+    EXPECT_EQ(timelineMarkers[0].toMap().value(QStringLiteral("kind")).toString(),
+              QStringLiteral("missing"));
+    EXPECT_EQ(timelineMarkers[0].toMap().value(QStringLiteral("frame")).toULongLong(), 3U);
+    EXPECT_EQ(timelineMarkers[1].toMap().value(QStringLiteral("kind")).toString(),
+              QStringLiteral("duplicate"));
+    EXPECT_EQ(timelineMarkers[2].toMap().value(QStringLiteral("kind")).toString(),
+              QStringLiteral("anchor"));
+    EXPECT_EQ(timelineMarkers[2].toMap().value(QStringLiteral("frame")).toULongLong(), 3U);
+    EXPECT_EQ(timelineMarkers[4].toMap().value(QStringLiteral("kind")).toString(),
+              QStringLiteral("low-confidence"));
+    EXPECT_EQ(timelineMarkers[4].toMap().value(QStringLiteral("frame")).toULongLong(), 0U);
+    EXPECT_EQ(timelineMarkers[5].toMap().value(QStringLiteral("frame")).toULongLong(), 4U);
+    EXPECT_EQ(controller.compatibilityWarningKeys(),
+              QStringList{QStringLiteral("source-frame-count-mismatch")});
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("media-probe-failed"));
     EXPECT_TRUE(controller.sourceBErrorKey().isEmpty());
     EXPECT_TRUE(controller.pairErrorKey().isEmpty());
@@ -314,6 +495,17 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
         return controller.sourceBErrorKey() == QStringLiteral("source-missing");
     }));
     EXPECT_TRUE(controller.sourceAErrorKey().isEmpty());
+
+    backend->currentSnapshot.lastError =
+        domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
+                               domain::MediaOperation::kMediaDecode,
+                               domain::SourceId{2},
+                               true);
+    ASSERT_TRUE(waitUntil([&controller] {
+        return controller.sourceCErrorKey() == QStringLiteral("media-decode-failed");
+    }));
+    EXPECT_TRUE(controller.sourceAErrorKey().isEmpty());
+    EXPECT_TRUE(controller.sourceBErrorKey().isEmpty());
 
     backend->currentSnapshot.lastError =
         domain::makeMediaError(domain::MediaErrorCode::kSourceFrameCountMismatch,
@@ -482,6 +674,76 @@ TEST_F(ReviewControllerTests, GenericStepAndSeekDispatchExactCommandsAndRejectIn
     ASSERT_TRUE(waitUntil([&controller] { return controller.currentFrame() == 9; }));
     EXPECT_FALSE(controller.stepFrames(5));
     EXPECT_TRUE(controller.stepFrames(-5));
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, DispatchesExplicitAlignmentOffsetsAsOneAtomicCommand) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_TRUE(controller.applyAlignmentOffsets(0, 2, 7));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* const command =
+        std::get_if<application::SetAlignmentOffsetsCommand>(&backend->submitted.back());
+    ASSERT_NE(command, nullptr);
+    ASSERT_EQ(command->sourceOffsets.size(), 1U);
+    EXPECT_EQ(command->sourceOffsets.front(),
+              (application::SourceFrameOffset{.sourceId = 1U, .frames = 2}));
+    EXPECT_TRUE(controller.busy());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentAsOneBusyCommand) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_TRUE(controller.estimateAlignment());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_NE(std::get_if<application::EstimateAlignmentCommand>(&backend->submitted.back()),
+              nullptr);
+    EXPECT_TRUE(controller.busy());
+    EXPECT_FALSE(controller.estimateAlignment());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, DispatchesSequenceAnalysisAsOneBusyCommand) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_TRUE(controller.analyzeSequenceAlignment());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_NE(std::get_if<application::AnalyzeSequenceAlignmentCommand>(&backend->submitted.back()),
+              nullptr);
+    EXPECT_TRUE(controller.busy());
+    EXPECT_FALSE(controller.analyzeSequenceAlignment());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, DispatchesManualAnchorUpsertAndClearCommands) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    EXPECT_FALSE(controller.setManualAlignmentAnchor(-1, 5, 6));
+    EXPECT_FALSE(controller.setManualAlignmentAnchor(1, -1, 6));
+    ASSERT_TRUE(controller.setManualAlignmentAnchor(1, 5, 6));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* const anchor =
+        std::get_if<application::SetManualAlignmentAnchorCommand>(&backend->submitted.back());
+    ASSERT_NE(anchor, nullptr);
+    EXPECT_EQ(anchor->sourceId, 1U);
+    EXPECT_EQ(anchor->anchor.canonicalFrameId, domain::FrameId{5});
+    EXPECT_EQ(anchor->anchor.sourceFrameId, domain::FrameId{6});
+
+    completeLastCommand(backend);
+    ASSERT_TRUE(waitUntil([&controller] { return !controller.busy(); }));
+    ASSERT_TRUE(controller.clearManualAlignmentAnchors());
+    EXPECT_NE(
+        std::get_if<application::ClearManualAlignmentAnchorsCommand>(&backend->submitted.back()),
+        nullptr);
     controller.stop();
 }
 

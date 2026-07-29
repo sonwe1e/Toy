@@ -152,6 +152,13 @@ public:
                window_->setProperty("selectedSourceB", QVariant::fromValue(sourceB));
     }
 
+    [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
+                                                       const QUrl& sourceB,
+                                                       const QUrl& sourceC) noexcept {
+        return setSelectedSourcesForAutomation(sourceA, sourceB) && window_ != nullptr &&
+               window_->setProperty("selectedSourceC", QVariant::fromValue(sourceC));
+    }
+
     [[nodiscard]] bool clickControlForAutomation(const std::string_view objectName) noexcept {
         if (window_ == nullptr || objectName.empty()) {
             return false;
@@ -295,6 +302,12 @@ void DesktopApplication::exit(const int exitCode) noexcept {
 bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,
                                                          const QUrl& sourceB) noexcept {
     return impl_->setSelectedSourcesForAutomation(sourceA, sourceB);
+}
+
+bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,
+                                                         const QUrl& sourceB,
+                                                         const QUrl& sourceC) noexcept {
+    return impl_->setSelectedSourcesForAutomation(sourceA, sourceB, sourceC);
 }
 
 bool DesktopApplication::clickControlForAutomation(const std::string_view objectName) noexcept {

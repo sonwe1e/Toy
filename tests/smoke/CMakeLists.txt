@@ -71,6 +71,19 @@ dvs_add_test(
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
 )
 
+dvs_add_test(
+    NAME app.ui-three-source-smoke
+    LAYER e2e
+    MODULE app
+    TIMEOUT 40
+    COMMAND
+        $<TARGET_FILE:DualVideoStudio>
+        --ui-smoke
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h265_a_320x180_30fps_12.mp4"
+)
+
 # Exercises shutdown immediately after the WARP scene graph becomes ready. The timeout includes
 # process startup and therefore leaves a small allowance above the runtime's seven-second bound.
 dvs_add_test(

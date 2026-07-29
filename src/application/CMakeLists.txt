@@ -1,6 +1,7 @@
 add_library(
     dvs_application
     STATIC
+        src/Alignment.cpp
         src/Module.cpp
         src/PlaybackCoordinator.cpp
         src/SessionSnapshot.cpp

@@ -1,5 +1,7 @@
 #include "dvs/application/SessionSnapshot.h"
 
+#include <cstddef>
+
 namespace dvs::application {
 
 bool SessionSnapshot::isConsistent() const noexcept {
@@ -13,6 +15,21 @@ bool SessionSnapshot::isConsistent() const noexcept {
                 static_cast<std::uint64_t>(frame->value()) < canonicalFrameCount);
     };
     if (!validFrame(displayedFrame) || !validFrame(requestedFrame)) {
+        return false;
+    }
+    for (std::size_t index = 0U; index < presentedSources.size(); ++index) {
+        const PresentedSourceState& source = presentedSources[index];
+        if ((source.matchKind == FrameMatchKind::Missing) != !source.sourceFrameId.has_value() ||
+            (source.sourceFrameId.has_value() && !source.sourceFrameId->isValid())) {
+            return false;
+        }
+        for (std::size_t other = index + 1U; other < presentedSources.size(); ++other) {
+            if (presentedSources[other].sourceId == source.sourceId) {
+                return false;
+            }
+        }
+    }
+    if (!displayedFrame.has_value() && !presentedSources.empty()) {
         return false;
     }
 

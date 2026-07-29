@@ -2,6 +2,7 @@ include(GoogleTest)
 
 add_executable(
     dvs_application_unit_tests
+    AlignmentTests.cpp
     ContractCompileTests.cpp
     PlaybackCoordinatorTests.cpp
 )

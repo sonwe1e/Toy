@@ -62,6 +62,8 @@ struct D3dScissorRect final {
 
 enum class SurfaceViewMode : std::uint8_t {
     SideBySide,
+    ThreeUp,
+    ReferenceFocus,
     Difference,
 };
 
@@ -80,11 +82,12 @@ enum class SurfaceDifferenceGain : std::uint8_t {
     Gain16x,
 };
 
-// Reference enum for difference view. SourceA and SourceB now mean slot-0 and slot-1
-// respectively; the names are retained for this phase and will be renamed in a later UI migration.
-enum class SurfaceDifferenceReference : std::uint8_t {
-    SourceA,
-    SourceB,
+// Selects which pair of source slots the difference view compares (USERPLAN 7): any two
+// loaded sources may form the difference edge. Slot indices follow session source order.
+enum class SurfaceDifferenceEdge : std::uint8_t {
+    Between0And1,
+    Between0And2,
+    Between1And2,
 };
 
 enum class SurfaceDifferenceFilter : std::uint8_t {
@@ -109,8 +112,9 @@ struct SurfaceRenderState final {
     SurfaceViewMode viewMode = SurfaceViewMode::SideBySide;
     SurfaceDifferenceMetric differenceMetric = SurfaceDifferenceMetric::RgbAbsolute;
     SurfaceDifferenceGain differenceGain = SurfaceDifferenceGain::Gain1x;
-    SurfaceDifferenceReference differenceReference = SurfaceDifferenceReference::SourceA;
+    SurfaceDifferenceEdge differenceEdge = SurfaceDifferenceEdge::Between0And1;
     SurfaceDifferenceFilter differenceFilter = SurfaceDifferenceFilter::Bilinear;
+    std::uint8_t referenceSlot = 0U;
 
     [[nodiscard]] bool isValid() const noexcept;
 };

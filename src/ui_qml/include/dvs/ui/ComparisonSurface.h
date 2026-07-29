@@ -27,14 +27,18 @@ class ComparisonSurface : public QQuickItem {
                    NOTIFY differenceMetricChanged)
     Q_PROPERTY(DifferenceGain differenceGain READ differenceGain WRITE setDifferenceGain NOTIFY
                    differenceGainChanged)
-    Q_PROPERTY(DifferenceReference differenceReference READ differenceReference WRITE
-                   setDifferenceReference NOTIFY differenceReferenceChanged)
+    Q_PROPERTY(DifferenceEdge differenceEdge READ differenceEdge WRITE setDifferenceEdge NOTIFY
+                   differenceEdgeChanged)
     Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
                    NOTIFY differenceFilterChanged)
+    Q_PROPERTY(
+        int referenceSlot READ referenceSlot WRITE setReferenceSlot NOTIFY referenceSlotChanged)
 
 public:
     enum ViewMode {
         SideBySide,
+        ThreeUp,
+        ReferenceFocus,
         Difference,
     };
     Q_ENUM(ViewMode)
@@ -56,11 +60,14 @@ public:
     };
     Q_ENUM(DifferenceGain)
 
-    enum DifferenceReference {
-        ReferenceA,
-        ReferenceB,
+    // Selects which two source slots the difference view compares (slot order = session
+    // source order).
+    enum DifferenceEdge {
+        Edge0And1,
+        Edge0And2,
+        Edge1And2,
     };
-    Q_ENUM(DifferenceReference)
+    Q_ENUM(DifferenceEdge)
 
     enum DifferenceFilter {
         Nearest,
@@ -81,10 +88,12 @@ public:
     void setDifferenceMetric(DifferenceMetric value);
     [[nodiscard]] DifferenceGain differenceGain() const noexcept;
     void setDifferenceGain(DifferenceGain value);
-    [[nodiscard]] DifferenceReference differenceReference() const noexcept;
-    void setDifferenceReference(DifferenceReference value);
+    [[nodiscard]] DifferenceEdge differenceEdge() const noexcept;
+    void setDifferenceEdge(DifferenceEdge value);
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
     void setDifferenceFilter(DifferenceFilter value);
+    [[nodiscard]] int referenceSlot() const noexcept;
+    void setReferenceSlot(int value);
 
     [[nodiscard]] bool
     attachRendererServices(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -98,8 +107,9 @@ signals:
     void viewModeChanged();
     void differenceMetricChanged();
     void differenceGainChanged();
-    void differenceReferenceChanged();
+    void differenceEdgeChanged();
     void differenceFilterChanged();
+    void referenceSlotChanged();
 
 protected:
     [[nodiscard]] QSGNode* updatePaintNode(QSGNode* oldNode,
@@ -115,8 +125,9 @@ private:
     ViewMode viewMode_ = SideBySide;
     DifferenceMetric differenceMetric_ = RgbAbsolute;
     DifferenceGain differenceGain_ = Gain1x;
-    DifferenceReference differenceReference_ = ReferenceA;
+    DifferenceEdge differenceEdge_ = Edge0And1;
     DifferenceFilter differenceFilter_ = Bilinear;
+    int referenceSlot_ = 0;
 };
 
 } // namespace dvs::ui

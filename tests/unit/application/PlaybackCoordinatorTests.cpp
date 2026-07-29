@@ -285,6 +285,34 @@ public:
         return PortSubmitResult::Accepted;
     }
 
+    [[nodiscard]] PortSubmitResult submit(const AlignmentEstimateRequest& request,
+                                          std::shared_ptr<IApplicationEventSink> events) override {
+        if (!events) {
+            return PortSubmitResult::Closed;
+        }
+        {
+            std::scoped_lock lock(mutex_);
+            alignmentRequests_.push_back(request);
+            events_ = std::move(events);
+        }
+        condition_.notify_all();
+        return PortSubmitResult::Accepted;
+    }
+
+    [[nodiscard]] PortSubmitResult submit(const SequenceAlignmentRequest& request,
+                                          std::shared_ptr<IApplicationEventSink> events) override {
+        if (!events) {
+            return PortSubmitResult::Closed;
+        }
+        {
+            std::scoped_lock lock(mutex_);
+            sequenceRequests_.push_back(request);
+            events_ = std::move(events);
+        }
+        condition_.notify_all();
+        return PortSubmitResult::Accepted;
+    }
+
     [[nodiscard]] PortSubmitResult submit(const FrameProviderCloseRequest& request,
                                           std::shared_ptr<IApplicationEventSink> events) override {
         if (!events) {
@@ -325,6 +353,18 @@ public:
             lock, 5s, [this, count] { return closeRequests_.size() >= count; });
     }
 
+    [[nodiscard]] bool waitForAlignmentRequestCount(const std::size_t count) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, 5s, [this, count] { return alignmentRequests_.size() >= count; });
+    }
+
+    [[nodiscard]] bool waitForSequenceRequestCount(const std::size_t count) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, 5s, [this, count] { return sequenceRequests_.size() >= count; });
+    }
+
     [[nodiscard]] bool waitForCancelCount(const std::size_t count) {
         std::unique_lock lock(mutex_);
         return condition_.wait_for(
@@ -346,6 +386,24 @@ public:
             return std::nullopt;
         }
         return frameRequests_[index];
+    }
+
+    [[nodiscard]] std::optional<AlignmentEstimateRequest>
+    alignmentRequest(const std::size_t index = 0U) const {
+        std::scoped_lock lock(mutex_);
+        if (index >= alignmentRequests_.size()) {
+            return std::nullopt;
+        }
+        return alignmentRequests_[index];
+    }
+
+    [[nodiscard]] std::optional<SequenceAlignmentRequest>
+    sequenceRequest(const std::size_t index = 0U) const {
+        std::scoped_lock lock(mutex_);
+        if (index >= sequenceRequests_.size()) {
+            return std::nullopt;
+        }
+        return sequenceRequests_[index];
     }
 
     [[nodiscard]] std::optional<FrameProviderCloseRequest>
@@ -412,6 +470,38 @@ public:
                          }}}) == EventPostResult::Accepted;
     }
 
+    [[nodiscard]] bool postAlignmentEstimated(const AlignmentEstimateRequest& request,
+                                              std::vector<GlobalOffsetEstimate> estimates) const {
+        const std::shared_ptr<IApplicationEventSink> events = eventSink();
+        return events && events->postCritical(ApplicationEvent{AlignmentEstimated{
+                             .context = request.context,
+                             .estimates = std::move(estimates),
+                         }}) == EventPostResult::Accepted;
+    }
+
+    [[nodiscard]] bool postAlignmentSucceeded(const AlignmentEstimateRequest& request) const {
+        const std::shared_ptr<IApplicationEventSink> events = eventSink();
+        return events && events->postCritical(ApplicationEvent{RequestTerminal{RequestSucceeded{
+                             .context = EventContext{request.context},
+                         }}}) == EventPostResult::Accepted;
+    }
+
+    [[nodiscard]] bool postSequenceAnalyzed(const SequenceAlignmentRequest& request,
+                                            std::vector<SequenceAlignmentResult> results) const {
+        const std::shared_ptr<IApplicationEventSink> events = eventSink();
+        return events && events->postCritical(ApplicationEvent{SequenceAlignmentAnalyzed{
+                             .context = request.context,
+                             .results = std::move(results),
+                         }}) == EventPostResult::Accepted;
+    }
+
+    [[nodiscard]] bool postSequenceSucceeded(const SequenceAlignmentRequest& request) const {
+        const std::shared_ptr<IApplicationEventSink> events = eventSink();
+        return events && events->postCritical(ApplicationEvent{RequestTerminal{RequestSucceeded{
+                             .context = EventContext{request.context},
+                         }}}) == EventPostResult::Accepted;
+    }
+
     [[nodiscard]] bool postCloseSucceeded(const FrameProviderCloseRequest& request) const {
         const std::shared_ptr<IApplicationEventSink> events = eventSink();
         return events && events->postCritical(ApplicationEvent{RequestTerminal{RequestSucceeded{
@@ -430,6 +520,8 @@ private:
     std::weak_ptr<IApplicationEventSink> events_;
     std::vector<FrameProviderOpenRequest> openRequests_;
     std::vector<FrameRequest> frameRequests_;
+    std::vector<AlignmentEstimateRequest> alignmentRequests_;
+    std::vector<SequenceAlignmentRequest> sequenceRequests_;
     std::vector<FrameProviderCloseRequest> closeRequests_;
     std::vector<PlaybackRequestContext> canceledContexts_;
 };
@@ -715,11 +807,48 @@ private:
         .presentationTime = domain::MediaTime{frameId.value() * 33'333},
         .matchKind = FrameMatchKind::ExactIndex,
     });
-    auto set = FrameSet::create(frameId,
-                                domain::MediaTime{frameId.value() * 33'333},
-                                std::move(sources));
+    auto set =
+        FrameSet::create(frameId, domain::MediaTime{frameId.value() * 33'333}, std::move(sources));
     EXPECT_TRUE(set.has_value());
     return *set;
+}
+
+[[nodiscard]] SequenceAlignmentResult
+makeMissingFrameSequenceResult(const bool autoApplicable = true) {
+    SequenceAlignmentResult result{
+        .sourceId = 1U,
+        .anomalies =
+            {
+                SequenceAlignmentAnomaly{
+                    .kind = SequenceAlignmentAnomalyKind::TargetFrameMissing,
+                    .canonicalFrameId = domain::FrameId{4},
+                    .sourceFrameId = std::nullopt,
+                },
+            },
+        .totalCost = 0.18F,
+        .meanMatchCost = 0.02F,
+        .confidence = autoApplicable ? 0.82F : 0.08F,
+        .autoApplicable = autoApplicable,
+    };
+    result.entries.reserve(12U);
+    for (std::int64_t frame = 0; frame < 12; ++frame) {
+        if (frame == 4) {
+            result.entries.push_back(SequenceAlignmentEntry{
+                .canonicalFrameId = domain::FrameId{frame},
+                .sourceFrameId = std::nullopt,
+                .matchKind = FrameMatchKind::Missing,
+                .confidence = 0.0F,
+            });
+        } else {
+            result.entries.push_back(SequenceAlignmentEntry{
+                .canonicalFrameId = domain::FrameId{frame},
+                .sourceFrameId = domain::FrameId{frame < 4 ? frame : frame - 1},
+                .matchKind = FrameMatchKind::AutoAligned,
+                .confidence = autoApplicable ? 0.90F : 0.08F,
+            });
+        }
+    }
+    return result;
 }
 
 struct ObservableFrameSet final {
@@ -760,9 +889,8 @@ struct ObservableFrameSet final {
         .presentationTime = domain::MediaTime{frameId.value() * 33'333},
         .matchKind = FrameMatchKind::ExactIndex,
     });
-    auto set = FrameSet::create(frameId,
-                                domain::MediaTime{frameId.value() * 33'333},
-                                std::move(sources));
+    auto set =
+        FrameSet::create(frameId, domain::MediaTime{frameId.value() * 33'333}, std::move(sources));
     EXPECT_TRUE(set.has_value());
     return ObservableFrameSet{
         .set = std::move(*set),
@@ -824,33 +952,32 @@ void openReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                const domain::CommandId commandId = domain::CommandId{1}) {
     const std::shared_ptr<const SessionSnapshot> initial = coordinator->snapshot();
     ASSERT_NE(initial, nullptr);
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = commandId,
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = commandId,
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const std::optional<FrameProviderOpenRequest> open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -873,6 +1000,321 @@ void openReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
     ASSERT_EQ(terminals.size(), 1U);
     EXPECT_EQ(terminals.front().context.commandId, commandId);
     EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+}
+
+[[nodiscard]] std::shared_ptr<PlaybackCoordinator>
+makeCoordinator(const std::shared_ptr<FakeFrameProvider>& provider,
+                const std::shared_ptr<FakeRenderChannel>& render,
+                std::shared_ptr<IMediaProbe> mediaProbe,
+                std::shared_ptr<IDeadlineScheduler> deadlineScheduler,
+                std::shared_ptr<ISteadyClock> clock);
+void markGraphicsReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
+                       domain::DeviceGeneration generation);
+[[nodiscard]] CommandContext commandContext(const std::shared_ptr<PlaybackCoordinator>& coordinator,
+                                            domain::CommandId commandId);
+
+TEST(PlaybackCoordinatorAlignmentTests, AppliesOffsetsWithoutReopeningAndReseeksAtomically) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+    EXPECT_EQ(
+        coordinator->snapshot()->compatibilityWarnings,
+        std::vector<domain::MediaErrorCode>{domain::MediaErrorCode::kSourceResolutionMismatch});
+
+    ASSERT_EQ(coordinator->submit(SetAlignmentOffsetsCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .sourceOffsets = {SourceFrameOffset{.sourceId = 1U, .frames = 2}},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const std::optional<FrameRequest> aligned = provider->frameRequest(1U);
+    ASSERT_TRUE(aligned.has_value());
+    EXPECT_EQ(aligned->frameId, domain::FrameId{0});
+    ASSERT_EQ(aligned->sourceOffsets.size(), 1U);
+    EXPECT_EQ(aligned->sourceOffsets.front(), (SourceFrameOffset{.sourceId = 1U, .frames = 2}));
+    EXPECT_EQ(provider->openRequestCount(), 1U);
+
+    ASSERT_TRUE(provider->postFrameReady(*aligned, makeFrameSet(aligned->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*aligned));
+    presentPublished(coordinator, render, 1U);
+    const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests, RejectsANonzeroCanonicalOffset) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(SetAlignmentOffsetsCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .sourceOffsets = {SourceFrameOffset{.sourceId = 0U, .frames = 1}},
+              }),
+              PortSubmitResult::Accepted);
+    const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Failed);
+    EXPECT_EQ(provider->frameRequestCount(), 1U);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests,
+     AppliesHighConfidenceAutomaticOffsetOnlyAfterReseekPresentation) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(EstimateAlignmentCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForAlignmentRequestCount(1U));
+    const auto request = provider->alignmentRequest();
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->canonicalSourceId, 0U);
+    ASSERT_TRUE(provider->postAlignmentEstimated(*request,
+                                                 {GlobalOffsetEstimate{
+                                                     .sourceId = 1U,
+                                                     .bestOffset = 2,
+                                                     .bestCost = 0.08F,
+                                                     .runnerUpCost = 0.22F,
+                                                     .confidence = 0.64F,
+                                                     .evidenceCount = 5U,
+                                                     .autoApplicable = true,
+                                                 }}));
+    ASSERT_TRUE(provider->postAlignmentSucceeded(*request));
+
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    EXPECT_TRUE(coordinator->takeCompletedCommands().empty());
+    const auto aligned = provider->frameRequest(1U);
+    ASSERT_TRUE(aligned.has_value());
+    ASSERT_EQ(aligned->sourceOffsets.size(), 1U);
+    EXPECT_EQ(aligned->sourceOffsets.front().sourceId, 1U);
+    EXPECT_EQ(aligned->sourceOffsets.front().frames, 2);
+    EXPECT_EQ(aligned->sourceOffsets.front().matchKind, FrameMatchKind::AutoAligned);
+    EXPECT_FLOAT_EQ(aligned->sourceOffsets.front().confidence, 0.64F);
+
+    ASSERT_TRUE(provider->postFrameReady(*aligned, makeFrameSet(aligned->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*aligned));
+    presentPublished(coordinator, render, 1U);
+    const auto terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    ASSERT_EQ(coordinator->snapshot()->alignmentEstimates.size(), 1U);
+    EXPECT_TRUE(coordinator->snapshot()->alignmentEstimates.front().autoApplicable);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests, KeepsAmbiguousEstimateWithoutChangingMapping) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(EstimateAlignmentCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForAlignmentRequestCount(1U));
+    const auto request = provider->alignmentRequest();
+    ASSERT_TRUE(request.has_value());
+    ASSERT_TRUE(provider->postAlignmentEstimated(*request,
+                                                 {GlobalOffsetEstimate{
+                                                     .sourceId = 1U,
+                                                     .bestOffset = -1,
+                                                     .bestCost = 0.18F,
+                                                     .runnerUpCost = 0.19F,
+                                                     .confidence = 0.05F,
+                                                     .evidenceCount = 5U,
+                                                     .autoApplicable = false,
+                                                 }}));
+    ASSERT_TRUE(provider->postAlignmentSucceeded(*request));
+
+    const auto terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    EXPECT_EQ(provider->frameRequestCount(), 1U);
+    const auto snapshot = coordinator->snapshot();
+    ASSERT_EQ(snapshot->alignmentEstimates.size(), 1U);
+    EXPECT_EQ(snapshot->alignmentEstimates.front().bestOffset, -1);
+    EXPECT_FALSE(snapshot->alignmentEstimates.front().autoApplicable);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests,
+     AppliesConfidentSequenceMapAndPublishesExplicitMissingMappings) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(AnalyzeSequenceAlignmentCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForSequenceRequestCount(1U));
+    const auto analysis = provider->sequenceRequest();
+    ASSERT_TRUE(analysis.has_value());
+    EXPECT_EQ(analysis->canonicalSourceId, 0U);
+    EXPECT_EQ(analysis->options.bandWidth, 16U);
+    ASSERT_TRUE(provider->postSequenceAnalyzed(*analysis, {makeMissingFrameSequenceResult()}));
+    ASSERT_TRUE(provider->postSequenceSucceeded(*analysis));
+
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const auto mappedCurrent = provider->frameRequest(1U);
+    ASSERT_TRUE(mappedCurrent.has_value());
+    ASSERT_EQ(mappedCurrent->sourceOffsets.size(), 1U);
+    EXPECT_EQ(mappedCurrent->sourceOffsets.front().sourceId, 1U);
+    EXPECT_EQ(mappedCurrent->sourceOffsets.front().frames, 0);
+    EXPECT_EQ(mappedCurrent->sourceOffsets.front().matchKind, FrameMatchKind::AutoAligned);
+    ASSERT_TRUE(provider->postFrameReady(*mappedCurrent, makeFrameSet(mappedCurrent->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*mappedCurrent));
+    presentPublished(coordinator, render, 1U);
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+
+    ASSERT_EQ(coordinator->submit(SeekFrameCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .frameId = domain::FrameId{4},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const auto missing = provider->frameRequest(2U);
+    ASSERT_TRUE(missing.has_value());
+    ASSERT_EQ(missing->sourceOffsets.size(), 1U);
+    EXPECT_EQ(missing->sourceOffsets.front().sourceId, 1U);
+    EXPECT_EQ(missing->sourceOffsets.front().matchKind, FrameMatchKind::Missing);
+    EXPECT_EQ(missing->sourceOffsets.front().frames, 0);
+
+    const auto snapshot = coordinator->snapshot();
+    ASSERT_EQ(snapshot->sequenceAlignments.size(), 1U);
+    ASSERT_EQ(snapshot->sequenceAlignments.front().anomalies.size(), 1U);
+    EXPECT_TRUE(snapshot->sequenceAlignments.front().autoApplicable);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests, KeepsAmbiguousSequenceDiagnosticsWithoutReseeking) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(AnalyzeSequenceAlignmentCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForSequenceRequestCount(1U));
+    const auto analysis = provider->sequenceRequest();
+    ASSERT_TRUE(analysis.has_value());
+    ASSERT_TRUE(provider->postSequenceAnalyzed(*analysis, {makeMissingFrameSequenceResult(false)}));
+    ASSERT_TRUE(provider->postSequenceSucceeded(*analysis));
+
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+    EXPECT_EQ(provider->frameRequestCount(), 1U);
+    ASSERT_EQ(coordinator->snapshot()->sequenceAlignments.size(), 1U);
+    EXPECT_FALSE(coordinator->snapshot()->sequenceAlignments.front().autoApplicable);
+}
+
+TEST(PlaybackCoordinatorAlignmentTests,
+     ManualAnchorsOverrideAutomaticMapsAndRejectCrossingAnchors) {
+    auto provider = std::make_shared<FakeFrameProvider>();
+    auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{2});
+    openReady(coordinator, provider, render);
+
+    const auto submitAnchor = [&](const domain::CommandId commandId,
+                                  const std::int64_t canonical,
+                                  const std::int64_t source) {
+        return coordinator->submit(SetManualAlignmentAnchorCommand{
+            .context = commandContext(coordinator, commandId),
+            .sourceId = 1U,
+            .anchor =
+                ManualAlignmentAnchor{
+                    .canonicalFrameId = domain::FrameId{canonical},
+                    .sourceFrameId = domain::FrameId{source},
+                },
+        });
+    };
+
+    ASSERT_EQ(submitAnchor(domain::CommandId{2}, 4, 5), PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const auto firstAnchor = provider->frameRequest(1U);
+    ASSERT_TRUE(firstAnchor.has_value());
+    ASSERT_EQ(firstAnchor->sourceOffsets.size(), 1U);
+    EXPECT_EQ(firstAnchor->sourceOffsets.front().frames, 1);
+    EXPECT_EQ(firstAnchor->sourceOffsets.front().matchKind, FrameMatchKind::ManualAnchor);
+    ASSERT_TRUE(provider->postFrameReady(*firstAnchor, makeFrameSet(firstAnchor->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*firstAnchor));
+    presentPublished(coordinator, render, 1U);
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+
+    ASSERT_EQ(submitAnchor(domain::CommandId{3}, 8, 10), PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const auto secondAnchor = provider->frameRequest(2U);
+    ASSERT_TRUE(secondAnchor.has_value());
+    ASSERT_TRUE(provider->postFrameReady(*secondAnchor, makeFrameSet(secondAnchor->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(3U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*secondAnchor));
+    presentPublished(coordinator, render, 2U);
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+
+    ASSERT_EQ(coordinator->submit(SeekFrameCommand{
+                  .context = commandContext(coordinator, domain::CommandId{4}),
+                  .frameId = domain::FrameId{6},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(4U));
+    const auto interpolated = provider->frameRequest(3U);
+    ASSERT_TRUE(interpolated.has_value());
+    ASSERT_EQ(interpolated->sourceOffsets.size(), 1U);
+    EXPECT_EQ(interpolated->sourceOffsets.front().frames, 2);
+    EXPECT_EQ(interpolated->sourceOffsets.front().matchKind, FrameMatchKind::ManualAnchor);
+
+    // Supersede the unfinished seek before validating a crossing anchor.
+    ASSERT_EQ(submitAnchor(domain::CommandId{5}, 6, 4), PortSubmitResult::Accepted);
+    const auto terminals = waitForTerminals(coordinator, 2U);
+    ASSERT_EQ(terminals.size(), 2U);
+    EXPECT_EQ(terminals.back().outcome, CommandOutcome::Failed);
+    ASSERT_EQ(coordinator->snapshot()->manualAlignmentAnchors.size(), 1U);
+    EXPECT_EQ(coordinator->snapshot()->manualAlignmentAnchors.front().anchors.size(), 2U);
 }
 
 void openVfrReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
@@ -2003,33 +2445,32 @@ TEST(PlaybackCoordinatorTests, RequiresProviderTerminalAndPresentationInEitherOr
     const auto coordinator =
         makeCoordinator(provider, render, std::make_shared<FakeMediaProbe>(), scheduler);
     const auto initial = coordinator->snapshot();
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const auto open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -2083,33 +2524,32 @@ TEST(PlaybackCoordinatorTests, AcceptsProviderSuccessBeforeTheFrameSet) {
     const auto render = std::make_shared<FakeRenderChannel>();
     const auto coordinator = makeCoordinator(provider, render);
     const auto initial = coordinator->snapshot();
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const auto open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -2136,33 +2576,32 @@ TEST(PlaybackCoordinatorTests, ExactDeadlineBoundsAProviderThatNeverPublishesAFr
     const auto coordinator =
         makeCoordinator(provider, render, std::make_shared<FakeMediaProbe>(), scheduler);
     const auto initial = coordinator->snapshot();
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const auto open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -2338,33 +2777,32 @@ TEST(PlaybackCoordinatorTests, ClampsAllEndpointCommandsForAOneFrameComparisonSe
     const auto render = std::make_shared<FakeRenderChannel>();
     const auto coordinator = makeCoordinator(provider, render);
     const auto initial = coordinator->snapshot();
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}, 1),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}, 1),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}, 1),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}, 1),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const auto open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -2486,33 +2924,32 @@ TEST(PlaybackCoordinatorTests, ReleasesCpuFrameResourcesAfterPresentationCommit)
     ASSERT_NE(coordinator, nullptr);
 
     const auto initial = coordinator->snapshot();
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = initial->sessionId,
-                    .sessionEpoch = initial->sessionEpoch,
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const auto open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -2645,7 +3082,8 @@ TEST(PlaybackCoordinatorTests, StepDuringPlaybackPausesBeforeSeekingTheTarget) {
     markGraphicsReady(coordinator);
     openReady(coordinator, provider, render);
 
-    ASSERT_EQ(coordinator->submit(PlayCommand{.context = commandContext(coordinator, domain::CommandId{2})}),
+    ASSERT_EQ(coordinator->submit(
+                  PlayCommand{.context = commandContext(coordinator, domain::CommandId{2})}),
               PortSubmitResult::Accepted);
     std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
     ASSERT_EQ(terminals.size(), 1U);
@@ -2764,45 +3202,49 @@ TEST(PlaybackCoordinatorTests, InvalidReplacementPreservesTheDisplayedReadySessi
     ASSERT_NE(ready, nullptr);
     // Submit a replacement with an invalid descriptor (zero extent). The ComparisonValidator
     // rejects individually invalid descriptors as a fatal error, preserving the existing session.
-    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
-                  .context =
-                      CommandContext{
-                          .sessionId = ready->sessionId,
-                          .sessionEpoch = ready->sessionEpoch,
-                          .commandId = domain::CommandId{2},
-                      },
-                  .sources =
-                      {
-                          domain::ComparisonSource{
-                              .id = 0,
-                              .role = domain::ComparisonRole::kPrediction,
-                              .descriptor =
-                                  domain::MediaDescriptor{
-                                      .normalizedPath = "new-a.mp4",
-                                      .extent = domain::MediaExtent{.width = 0, .height = 0},
-                                      .frameRate = makeRate(),
-                                      .frameCount =
-                                          domain::FrameCountInfo{
-                                              .value = 12,
-                                              .origin = domain::FrameCountOrigin::kReported,
+    ASSERT_EQ(coordinator
+                  ->submit(
+                      OpenDirectComparisonCommand{
+                          .context =
+                              CommandContext{
+                                  .sessionId = ready->sessionId,
+                                  .sessionEpoch = ready->sessionEpoch,
+                                  .commandId = domain::CommandId{2},
+                              },
+                          .sources =
+                              {
+                                  domain::ComparisonSource{
+                                      .id = 0,
+                                      .role = domain::ComparisonRole::kPrediction,
+                                      .descriptor =
+                                          domain::MediaDescriptor{
+                                              .normalizedPath = "new-a.mp4",
+                                              .extent =
+                                                  domain::MediaExtent{.width = 0, .height = 0},
+                                              .frameRate = makeRate(),
+                                              .frameCount =
+                                                  domain::FrameCountInfo{
+                                                      .value = 12,
+                                                      .origin = domain::FrameCountOrigin::kReported,
+                                                  },
+                                              .duration = domain::MediaTime{400000},
+                                              .codecId = "h264",
+                                              .pixelFormatId = "yuv420p",
+                                              .bitDepth = 8,
+                                              .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
                                           },
-                                      .duration = domain::MediaTime{400000},
-                                      .codecId = "h264",
-                                      .pixelFormatId = "yuv420p",
-                                      .bitDepth = 8,
-                                      .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+                                      .displayName = "new-a",
                                   },
-                              .displayName = "new-a",
-                          },
-                          domain::ComparisonSource{
-                              .id = 1,
-                              .role = domain::ComparisonRole::kPrediction,
-                              .descriptor = makeDescriptor(
-                                  "new-b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                              .displayName = "new-b",
-                          },
-                      },
-              }),
+                                  domain::ComparisonSource{
+                                      .id = 1,
+                                      .role = domain::ComparisonRole::kPrediction,
+                                      .descriptor = makeDescriptor(
+                                          "new-b.mp4",
+                                          domain::MediaExtent{.width = 160, .height = 90}),
+                                      .displayName = "new-b",
+                                  },
+                              },
+                      }),
               PortSubmitResult::Accepted);
 
     const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
@@ -2896,33 +3338,32 @@ TEST(PlaybackCoordinatorTests, PreservesCriticalTerminalsWhenTheBoundedQueueIsFu
         });
     ASSERT_NE(coordinator, nullptr);
 
-    ASSERT_EQ(
-        coordinator->submit(OpenDirectComparisonCommand{
-            .context =
-                CommandContext{
-                    .sessionId = domain::SessionId{91},
-                    .sessionEpoch = domain::SessionEpoch{0},
-                    .commandId = domain::CommandId{1},
-                },
-            .sources =
-                {
-                    domain::ComparisonSource{
-                        .id = 0,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
-                        .displayName = "a",
-                    },
-                    domain::ComparisonSource{
-                        .id = 1,
-                        .role = domain::ComparisonRole::kPrediction,
-                        .descriptor =
-                            makeDescriptor("b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
-                        .displayName = "b",
-                    },
-                },
-        }),
-        PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = domain::SessionId{91},
+                          .sessionEpoch = domain::SessionEpoch{0},
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "a",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "b",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
     ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
     const std::optional<FrameProviderOpenRequest> open = provider->openRequest();
     ASSERT_TRUE(open.has_value());
@@ -3051,7 +3492,8 @@ TEST(PlaybackCoordinatorTests, VfrContinuousPlayUsesAbsoluteNonuniformDeadlinesR
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
 }
 
-TEST(PlaybackCoordinatorTests, VfrSlowDecodeCatchUpSkipsCompleteFrameSetAndPreservesFinalSemantics) {
+TEST(PlaybackCoordinatorTests,
+     VfrSlowDecodeCatchUpSkipsCompleteFrameSetAndPreservesFinalSemantics) {
     const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
     const auto clock = std::make_shared<FakeSteadyClock>();
     const auto probe = std::make_shared<FakeMediaProbe>();

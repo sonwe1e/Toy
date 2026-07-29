@@ -10,7 +10,6 @@
 #include <QUrl>
 
 #include <algorithm>
-#include <array>
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
@@ -44,21 +43,26 @@ enum class SmokeStage {
     WaitingForLocalizedError,
 };
 
+struct SmokeSources final {
+    std::filesystem::path first;
+    std::filesystem::path second;
+    std::optional<std::filesystem::path> third;
+};
+
 [[nodiscard]] bool hasReviewError(const dvs::ui::ReviewController& controller) {
     return !controller.sourceAErrorKey().isEmpty() || !controller.sourceBErrorKey().isEmpty() ||
-           !controller.pairErrorKey().isEmpty();
+           !controller.sourceCErrorKey().isEmpty() || !controller.pairErrorKey().isEmpty();
 }
 
 [[nodiscard]] QUrl localFileUrl(const std::filesystem::path& path) {
     return QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
 }
 
-[[nodiscard]] int
-runDesktop(int& argc,
-           char** argv,
-           const bool smokeMode,
-           const std::optional<std::array<std::filesystem::path, 2U>>& smokeSources = std::nullopt,
-           const bool shutdownDuringOpen = false) {
+[[nodiscard]] int runDesktop(int& argc,
+                             char** argv,
+                             const bool smokeMode,
+                             const std::optional<SmokeSources>& smokeSources = std::nullopt,
+                             const bool shutdownDuringOpen = false) {
     dvs::ui::configureGraphicsBackend();
     dvs::ui::DesktopApplication desktop{
         argc,
@@ -105,7 +109,7 @@ runDesktop(int& argc,
             }
 
             switch (smokeStage) {
-            case SmokeStage::WaitingForGraphics:
+            case SmokeStage::WaitingForGraphics: {
                 if (!controller.graphicsReady()) {
                     return;
                 }
@@ -114,9 +118,15 @@ runDesktop(int& argc,
                     desktop.exit(EXIT_SUCCESS);
                     return;
                 }
-                if (!desktop.setSelectedSourcesForAutomation(localFileUrl((*smokeSources)[0U]),
-                                                             localFileUrl((*smokeSources)[1U])) ||
-                    !desktop.clickControlForAutomation("openPairButton")) {
+                const bool sourcesSelected = smokeSources->third.has_value()
+                                                 ? desktop.setSelectedSourcesForAutomation(
+                                                       localFileUrl(smokeSources->first),
+                                                       localFileUrl(smokeSources->second),
+                                                       localFileUrl(*smokeSources->third))
+                                                 : desktop.setSelectedSourcesForAutomation(
+                                                       localFileUrl(smokeSources->first),
+                                                       localFileUrl(smokeSources->second));
+                if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
                     std::cerr << "DVS_UI_SMOKE_OPEN_REJECTED\n";
                     desktop.exit(EXIT_FAILURE);
                     return;
@@ -132,6 +142,7 @@ runDesktop(int& argc,
                     desktop.exit(EXIT_SUCCESS);
                 }
                 return;
+            }
             case SmokeStage::WaitingForFirstFrame:
                 if (controller.busy() || controller.currentFrame() != 0) {
                     return;
@@ -328,10 +339,10 @@ runDesktop(int& argc,
                 if (!controller.busy() && controller.totalFrames() > 0U &&
                     controller.currentFrame() ==
                         static_cast<qint64>(controller.totalFrames() - 1U)) {
-                    std::filesystem::path missingSource = (*smokeSources)[0U];
+                    std::filesystem::path missingSource = smokeSources->first;
                     missingSource += ".missing";
                     if (!desktop.setSelectedSourcesForAutomation(
-                            localFileUrl(missingSource), localFileUrl((*smokeSources)[1U])) ||
+                            localFileUrl(missingSource), localFileUrl(smokeSources->second)) ||
                         !desktop.clickControlForAutomation("openPairButton")) {
                         std::cerr << "DVS_UI_SMOKE_ERROR_PATH_REJECTED\n";
                         desktop.exit(EXIT_FAILURE);
@@ -404,18 +415,28 @@ int main(int argc, char* argv[]) {
             return runDesktop(argc,
                               argv,
                               true,
-                              std::array<std::filesystem::path, 2U>{
-                                  std::filesystem::path{argv[2]},
-                                  std::filesystem::path{argv[3]},
+                              SmokeSources{
+                                  .first = std::filesystem::path{argv[2]},
+                                  .second = std::filesystem::path{argv[3]},
+                              });
+        }
+        if (argc == 5 && std::string_view{argv[1]} == "--ui-smoke") {
+            return runDesktop(argc,
+                              argv,
+                              true,
+                              SmokeSources{
+                                  .first = std::filesystem::path{argv[2]},
+                                  .second = std::filesystem::path{argv[3]},
+                                  .third = std::filesystem::path{argv[4]},
                               });
         }
         if (argc == 4 && std::string_view{argv[1]} == "--ui-shutdown-smoke") {
             return runDesktop(argc,
                               argv,
                               true,
-                              std::array<std::filesystem::path, 2U>{
-                                  std::filesystem::path{argv[2]},
-                                  std::filesystem::path{argv[3]},
+                              SmokeSources{
+                                  .first = std::filesystem::path{argv[2]},
+                                  .second = std::filesystem::path{argv[3]},
                               },
                               true);
         }

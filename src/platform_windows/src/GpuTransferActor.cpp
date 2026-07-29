@@ -549,8 +549,9 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         return UploadResult{.kind = UploadResultKind::Cancelled};
     }
 
-    // This phase supports up to 2 sources; additional sources are not yet supported.
-    if (task.cpu.sources.size() > 2U) {
+    // The comparison contract permits at most three present sources. Missing entries have
+    // already been removed by inspectSet and therefore consume no upload slot.
+    if (task.cpu.sources.size() > 3U) {
         return UploadResult{.kind = UploadResultKind::Failed};
     }
 

@@ -32,6 +32,12 @@ public:
     submit(const application::FrameRequest& request,
            std::shared_ptr<application::IApplicationEventSink> events) override;
     [[nodiscard]] application::PortSubmitResult
+    submit(const application::AlignmentEstimateRequest& request,
+           std::shared_ptr<application::IApplicationEventSink> events) override;
+    [[nodiscard]] application::PortSubmitResult
+    submit(const application::SequenceAlignmentRequest& request,
+           std::shared_ptr<application::IApplicationEventSink> events) override;
+    [[nodiscard]] application::PortSubmitResult
     submit(const application::FrameProviderCloseRequest& request,
            std::shared_ptr<application::IApplicationEventSink> events) override;
     void cancel(const application::PlaybackRequestContext& context) noexcept override;

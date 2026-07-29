@@ -1,6 +1,7 @@
 #include "dvs/media/MultiSourceFrameProvider.h"
 
 #include "dvs/domain/FrameTimeline.h"
+#include "dvs/platform/CpuNv12FrameResource.h"
 #include "dvs/platform/FrameBudget.h"
 
 #include "SoftwareDecoder.h"
@@ -10,6 +11,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <future>
@@ -34,6 +36,8 @@ inline constexpr std::size_t kSetTableCapacity = 16U;
 enum class ProviderOperationKind {
     kOpen,
     kFrame,
+    kAlignment,
+    kSequenceAlignment,
     kClose,
 };
 
@@ -43,12 +47,15 @@ enum class ProviderOperationLifecycle {
     kTerminalClaimed,
 };
 
+using ProviderRequest = std::variant<application::FrameProviderOpenRequest,
+                                     application::FrameRequest,
+                                     application::AlignmentEstimateRequest,
+                                     application::SequenceAlignmentRequest,
+                                     application::FrameProviderCloseRequest>;
+
 struct ProviderOperation final {
     ProviderOperationKind kind;
-    std::variant<application::FrameProviderOpenRequest,
-                 application::FrameRequest,
-                 application::FrameProviderCloseRequest>
-        request;
+    ProviderRequest request;
     std::weak_ptr<application::IApplicationEventSink> events;
     std::atomic<ProviderOperationLifecycle> lifecycle = ProviderOperationLifecycle::kPending;
     std::atomic<application::CancellationReason> cancellationReason =
@@ -56,9 +63,7 @@ struct ProviderOperation final {
     std::atomic<bool> cancellationRequested = false;
 
     ProviderOperation(const ProviderOperationKind kindValue,
-                      std::variant<application::FrameProviderOpenRequest,
-                                   application::FrameRequest,
-                                   application::FrameProviderCloseRequest> requestValue,
+                      ProviderRequest requestValue,
                       std::weak_ptr<application::IApplicationEventSink> eventsValue)
         : kind(kindValue), request(std::move(requestValue)), events(std::move(eventsValue)) {}
 
@@ -114,6 +119,10 @@ playbackContext(const ProviderOperation& operation) {
         return std::get<application::FrameProviderOpenRequest>(operation.request).context;
     case ProviderOperationKind::kFrame:
         return std::get<application::FrameRequest>(operation.request).context.playback;
+    case ProviderOperationKind::kAlignment:
+        return std::get<application::AlignmentEstimateRequest>(operation.request).context;
+    case ProviderOperationKind::kSequenceAlignment:
+        return std::get<application::SequenceAlignmentRequest>(operation.request).context;
     case ProviderOperationKind::kClose:
         return std::get<application::FrameProviderCloseRequest>(operation.request).context;
     }
@@ -205,6 +214,90 @@ void postFrameSetSucceeded(const std::shared_ptr<ProviderOperation>& operation,
                  }});
 }
 
+void postAlignmentSucceeded(const std::shared_ptr<ProviderOperation>& operation,
+                            std::vector<application::GlobalOffsetEstimate> estimates) noexcept {
+    if (!operation->claimTerminal()) {
+        postCanceled(operation);
+        return;
+    }
+    const application::PlaybackRequestContext context =
+        std::get<application::AlignmentEstimateRequest>(operation->request).context;
+    postCritical(operation->events,
+                 application::ApplicationEvent{application::AlignmentEstimated{
+                     .context = context,
+                     .estimates = std::move(estimates),
+                 }});
+    postCritical(operation->events,
+                 application::ApplicationEvent{application::RequestSucceeded{
+                     .context = application::EventContext{context},
+                 }});
+}
+
+void postSequenceAlignmentSucceeded(
+    const std::shared_ptr<ProviderOperation>& operation,
+    std::vector<application::SequenceAlignmentResult> results) noexcept {
+    if (!operation->claimTerminal()) {
+        postCanceled(operation);
+        return;
+    }
+    const application::PlaybackRequestContext context =
+        std::get<application::SequenceAlignmentRequest>(operation->request).context;
+    postCritical(operation->events,
+                 application::ApplicationEvent{application::SequenceAlignmentAnalyzed{
+                     .context = context,
+                     .results = std::move(results),
+                 }});
+    postCritical(operation->events,
+                 application::ApplicationEvent{application::RequestSucceeded{
+                     .context = application::EventContext{context},
+                 }});
+}
+
+[[nodiscard]] std::optional<application::FrameLumaSignature>
+signatureFromFrame(const domain::FrameId frameId, const application::FrameHandle& handle) noexcept {
+    const auto resource =
+        std::dynamic_pointer_cast<const platform::CpuNv12FrameResource>(handle.resource());
+    if (!resource) {
+        return std::nullopt;
+    }
+    const platform::Nv12FrameLayout& layout = resource->layout();
+    const std::span<const std::uint8_t> plane = resource->yPlane();
+    if (!layout.isValid() || plane.empty()) {
+        return std::nullopt;
+    }
+
+    std::array<std::uint8_t, application::kAlignmentSignaturePixels> luma{};
+    for (std::size_t targetY = 0U; targetY < application::kAlignmentSignatureHeight; ++targetY) {
+        const std::size_t sourceY0 = targetY * static_cast<std::size_t>(layout.height) /
+                                     application::kAlignmentSignatureHeight;
+        const std::size_t sourceY1 =
+            std::max(sourceY0 + 1U,
+                     (targetY + 1U) * static_cast<std::size_t>(layout.height) /
+                         application::kAlignmentSignatureHeight);
+        for (std::size_t targetX = 0U; targetX < application::kAlignmentSignatureWidth; ++targetX) {
+            const std::size_t sourceX0 = targetX * static_cast<std::size_t>(layout.width) /
+                                         application::kAlignmentSignatureWidth;
+            const std::size_t sourceX1 =
+                std::max(sourceX0 + 1U,
+                         (targetX + 1U) * static_cast<std::size_t>(layout.width) /
+                             application::kAlignmentSignatureWidth);
+            std::uint64_t sum = 0U;
+            std::size_t count = 0U;
+            for (std::size_t sourceY = sourceY0; sourceY < sourceY1 && sourceY < layout.height;
+                 ++sourceY) {
+                for (std::size_t sourceX = sourceX0; sourceX < sourceX1 && sourceX < layout.width;
+                     ++sourceX) {
+                    sum += plane[sourceY * layout.yStride + sourceX];
+                    ++count;
+                }
+            }
+            luma[targetY * application::kAlignmentSignatureWidth + targetX] =
+                count == 0U ? 0U : static_cast<std::uint8_t>(sum / count);
+        }
+    }
+    return application::makeFrameLumaSignature(frameId, luma);
+}
+
 [[nodiscard]] std::uint64_t frameDistance(const domain::FrameId left,
                                           const domain::FrameId right) noexcept {
     if (!left.isValid() || !right.isValid()) {
@@ -234,9 +327,7 @@ public:
         }
         auto operation = std::make_shared<ProviderOperation>(
             ProviderOperationKind::kOpen,
-            std::variant<application::FrameProviderOpenRequest,
-                         application::FrameRequest,
-                         application::FrameProviderCloseRequest>{request},
+            ProviderRequest{request},
             std::weak_ptr<application::IApplicationEventSink>{events});
         std::vector<std::shared_ptr<ProviderOperation>> displaced;
         bool interrupt = false;
@@ -265,9 +356,7 @@ public:
         }
         auto operation = std::make_shared<ProviderOperation>(
             ProviderOperationKind::kFrame,
-            std::variant<application::FrameProviderOpenRequest,
-                         application::FrameRequest,
-                         application::FrameProviderCloseRequest>{request},
+            ProviderRequest{request},
             std::weak_ptr<application::IApplicationEventSink>{events});
         std::vector<std::shared_ptr<ProviderOperation>> displaced;
         bool interrupt = false;
@@ -355,6 +444,64 @@ public:
     }
 
     [[nodiscard]] application::PortSubmitResult
+    submit(const application::AlignmentEstimateRequest& request,
+           const std::shared_ptr<application::IApplicationEventSink>& events) {
+        if (!events) {
+            return application::PortSubmitResult::Closed;
+        }
+        auto operation = std::make_shared<ProviderOperation>(
+            ProviderOperationKind::kAlignment,
+            ProviderRequest{request},
+            std::weak_ptr<application::IApplicationEventSink>{events});
+        std::vector<std::shared_ptr<ProviderOperation>> displaced;
+        bool interrupt = false;
+        {
+            std::scoped_lock lock(mutex_);
+            if (closed_) {
+                return application::PortSubmitResult::Closed;
+            }
+            cancelQueuedLocked(application::CancellationReason::Superseded, &displaced);
+            interrupt = cancelActiveLocked(application::CancellationReason::Superseded);
+            controlQueue_.push_back(std::move(operation));
+        }
+        if (interrupt) {
+            interruptRequested_.store(true, std::memory_order_release);
+        }
+        postCanceledAll(displaced);
+        condition_.notify_one();
+        return application::PortSubmitResult::Accepted;
+    }
+
+    [[nodiscard]] application::PortSubmitResult
+    submit(const application::SequenceAlignmentRequest& request,
+           const std::shared_ptr<application::IApplicationEventSink>& events) {
+        if (!events) {
+            return application::PortSubmitResult::Closed;
+        }
+        auto operation = std::make_shared<ProviderOperation>(
+            ProviderOperationKind::kSequenceAlignment,
+            ProviderRequest{request},
+            std::weak_ptr<application::IApplicationEventSink>{events});
+        std::vector<std::shared_ptr<ProviderOperation>> displaced;
+        bool interrupt = false;
+        {
+            std::scoped_lock lock(mutex_);
+            if (closed_) {
+                return application::PortSubmitResult::Closed;
+            }
+            cancelQueuedLocked(application::CancellationReason::Superseded, &displaced);
+            interrupt = cancelActiveLocked(application::CancellationReason::Superseded);
+            controlQueue_.push_back(std::move(operation));
+        }
+        if (interrupt) {
+            interruptRequested_.store(true, std::memory_order_release);
+        }
+        postCanceledAll(displaced);
+        condition_.notify_one();
+        return application::PortSubmitResult::Accepted;
+    }
+
+    [[nodiscard]] application::PortSubmitResult
     submit(const application::FrameProviderCloseRequest& request,
            const std::shared_ptr<application::IApplicationEventSink>& events) {
         if (!events) {
@@ -362,9 +509,7 @@ public:
         }
         auto operation = std::make_shared<ProviderOperation>(
             ProviderOperationKind::kClose,
-            std::variant<application::FrameProviderOpenRequest,
-                         application::FrameRequest,
-                         application::FrameProviderCloseRequest>{request},
+            ProviderRequest{request},
             std::weak_ptr<application::IApplicationEventSink>{events});
         std::vector<std::shared_ptr<ProviderOperation>> displaced;
         bool interrupt = false;
@@ -656,30 +801,30 @@ private:
                 return;
             }
             if (canonicalDescriptor.frameRate.has_value()) {
-                postFailed(
-                    operation,
-                    providerError(
-                        domain::MediaErrorCode::kSourceFrameRateMismatch,
-                        std::nullopt,
-                        "A VFR timeline requires the canonical source to declare no rational frame rate."));
+                postFailed(operation,
+                           providerError(domain::MediaErrorCode::kSourceFrameRateMismatch,
+                                         std::nullopt,
+                                         "A VFR timeline requires the canonical source to declare "
+                                         "no rational frame rate."));
                 return;
             }
             if (variableTimeline->frameCount() != canonicalDescriptor.frameCount.value) {
-                postFailed(operation,
-                           providerError(domain::MediaErrorCode::kInvalidFrameCount,
-                                         std::nullopt,
-                                         "The VFR timeline frame count does not match the canonical "
-                                         "source frame count."));
+                postFailed(
+                    operation,
+                    providerError(domain::MediaErrorCode::kInvalidFrameCount,
+                                  std::nullopt,
+                                  "The VFR timeline frame count does not match the canonical "
+                                  "source frame count."));
                 return;
             }
         } else if (!canonicalDescriptor.frameRate.has_value() ||
                    std::get<domain::RationalRate>(request.timeline) !=
                        canonicalDescriptor.frameRate.value()) {
-            postFailed(operation,
-                       providerError(
-                           domain::MediaErrorCode::kSourceFrameRateMismatch,
-                           std::nullopt,
-                           "The rational timeline must match the canonical source frame rate."));
+            postFailed(
+                operation,
+                providerError(domain::MediaErrorCode::kSourceFrameRateMismatch,
+                              std::nullopt,
+                              "The rational timeline must match the canonical source frame rate."));
             return;
         }
 
@@ -696,7 +841,8 @@ private:
             }
 
             for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
-                const domain::Status opened = decoders_[slot]->open(operation->cancellationRequested);
+                const domain::Status opened =
+                    decoders_[slot]->open(operation->cancellationRequested);
                 if (operation->isCanceled()) {
                     closeDecoders();
                     postCanceled(operation);
@@ -734,11 +880,12 @@ private:
                                      true));
         } catch (...) {
             closeDecoders();
-            postFailed(operation,
-                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     std::nullopt,
-                                     "Unexpected non-standard multi-source provider open exception.",
-                                     true));
+            postFailed(
+                operation,
+                providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                              std::nullopt,
+                              "Unexpected non-standard multi-source provider open exception.",
+                              true));
         }
     }
 
@@ -871,6 +1018,9 @@ private:
             // into the surrounding handler.
             struct SlotDecode final {
                 domain::SourceId sourceId;
+                domain::FrameId sourceFrameId;
+                application::FrameMatchKind matchKind;
+                float alignmentConfidence;
                 std::future<domain::Result<internal::DecodedFrame>> result;
             };
             std::vector<application::MappedSourceFrame> entries;
@@ -878,37 +1028,103 @@ private:
             std::vector<SlotDecode> decoding;
             decoding.reserve(decoders_.size());
 
+            const auto alignmentFor =
+                [&request](
+                    const domain::SourceId sourceId) -> const application::SourceFrameOffset* {
+                const auto found = std::find_if(
+                    request.sourceOffsets.begin(),
+                    request.sourceOffsets.end(),
+                    [sourceId](const auto& offset) { return offset.sourceId == sourceId; });
+                return found == request.sourceOffsets.end() ? nullptr : &*found;
+            };
+            for (std::size_t index = 0U; index < request.sourceOffsets.size(); ++index) {
+                const auto& offset = request.sourceOffsets[index];
+                const bool known = std::any_of(
+                    activeSession_->sources.begin(),
+                    activeSession_->sources.end(),
+                    [&offset](const auto& source) { return source.id == offset.sourceId; });
+                const bool duplicate = std::any_of(
+                    request.sourceOffsets.begin() + static_cast<std::ptrdiff_t>(index + 1U),
+                    request.sourceOffsets.end(),
+                    [&offset](const auto& other) { return other.sourceId == offset.sourceId; });
+                const bool confidenceValid = offset.confidence >= 0.0F && offset.confidence <= 1.0F;
+                const bool kindValid =
+                    offset.matchKind == application::FrameMatchKind::GlobalOffset ||
+                    offset.matchKind == application::FrameMatchKind::AutoAligned ||
+                    offset.matchKind == application::FrameMatchKind::ManualAnchor ||
+                    offset.matchKind == application::FrameMatchKind::Missing;
+                if (!known || duplicate || !confidenceValid || !kindValid ||
+                    (offset.matchKind == application::FrameMatchKind::Missing &&
+                     offset.frames != 0)) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kInvalidArgument,
+                                             offset.sourceId,
+                                             "Frame mappings must be valid and name each open "
+                                             "source at most once."));
+                    return;
+                }
+            }
+
             for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
                 const domain::ComparisonSource& source = activeSession_->sources[slot];
                 const domain::SourceId sourceId = source.id;
                 const std::int64_t sourceFrameCount = source.descriptor.frameCount.value;
-
-                if (!request.frameId.isValid() || request.frameId.value() >= sourceFrameCount) {
+                const std::int64_t canonicalFrame = request.frameId.value();
+                const application::SourceFrameOffset* const alignment = alignmentFor(sourceId);
+                const std::int64_t offset = alignment == nullptr ? 0 : alignment->frames;
+                if (alignment != nullptr &&
+                    alignment->matchKind == application::FrameMatchKind::Missing) {
                     entries.push_back(application::MappedSourceFrame{
                         .sourceId = sourceId,
                         .sourceFrameId = std::nullopt,
                         .frame = std::nullopt,
                         .presentationTime = domain::MediaTime{0},
                         .matchKind = application::FrameMatchKind::Missing,
-                        .alignmentConfidence = 1.0F,
+                        .alignmentConfidence = alignment->confidence,
+                    });
+                    continue;
+                }
+                const bool underflow = offset < 0 && offset < -canonicalFrame;
+                const bool overflow =
+                    offset > 0 &&
+                    canonicalFrame > (std::numeric_limits<std::int64_t>::max)() - offset;
+                const std::int64_t mappedFrame =
+                    underflow || overflow ? -1 : canonicalFrame + offset;
+
+                if (!request.frameId.isValid() || mappedFrame < 0 ||
+                    mappedFrame >= sourceFrameCount) {
+                    entries.push_back(application::MappedSourceFrame{
+                        .sourceId = sourceId,
+                        .sourceFrameId = std::nullopt,
+                        .frame = std::nullopt,
+                        .presentationTime = domain::MediaTime{0},
+                        .matchKind = application::FrameMatchKind::Missing,
+                        .alignmentConfidence = alignment == nullptr ? 1.0F : alignment->confidence,
                     });
                     continue;
                 }
 
                 internal::SoftwareDecoder* const decoder = decoders_[slot].get();
                 const bool sequential = continueSequentially;
-                const domain::FrameId frameId = request.frameId;
+                const domain::FrameId frameId{mappedFrame};
                 std::atomic<bool>& cancellation = operation->cancellationRequested;
                 decoding.push_back(SlotDecode{
                     .sourceId = sourceId,
-                    .result = std::async(std::launch::async,
-                                         [decoder, frameId, sequential, &cancellation] {
-                                             return sequential
-                                                        ? decoder->decodeSequential(frameId,
-                                                                                    cancellation)
-                                                        : decoder->decodeExact(frameId,
-                                                                               cancellation);
-                                         }),
+                    .sourceFrameId = frameId,
+                    .matchKind = alignment == nullptr
+                                     ? application::FrameMatchKind::ExactIndex
+                                     : (offset == 0 && alignment->matchKind ==
+                                                           application::FrameMatchKind::GlobalOffset
+                                            ? application::FrameMatchKind::ExactIndex
+                                            : alignment->matchKind),
+                    .alignmentConfidence = alignment == nullptr ? 1.0F : alignment->confidence,
+                    .result =
+                        std::async(std::launch::async,
+                                   [decoder, frameId, sequential, &cancellation] {
+                                       return sequential
+                                                  ? decoder->decodeSequential(frameId, cancellation)
+                                                  : decoder->decodeExact(frameId, cancellation);
+                                   }),
                 });
             }
 
@@ -927,18 +1143,18 @@ private:
                         .frame = std::nullopt,
                         .presentationTime = domain::MediaTime{0},
                         .matchKind = application::FrameMatchKind::Missing,
-                        .alignmentConfidence = 1.0F,
+                        .alignmentConfidence = slotDecode.alignmentConfidence,
                     });
                     continue;
                 }
 
                 entries.push_back(application::MappedSourceFrame{
                     .sourceId = slotDecode.sourceId,
-                    .sourceFrameId = request.frameId,
+                    .sourceFrameId = slotDecode.sourceFrameId,
                     .frame = std::move(decoded.value().handle),
                     .presentationTime = decoded.value().presentationTime,
-                    .matchKind = application::FrameMatchKind::ExactIndex,
-                    .alignmentConfidence = 1.0F,
+                    .matchKind = slotDecode.matchKind,
+                    .alignmentConfidence = slotDecode.alignmentConfidence,
                 });
             }
             if (operation->isCanceled()) {
@@ -946,13 +1162,14 @@ private:
                 return;
             }
 
-            auto set = application::FrameSet::create(request.frameId, canonicalTime.value(), std::move(entries));
+            auto set = application::FrameSet::create(
+                request.frameId, canonicalTime.value(), std::move(entries));
             if (!set) {
-                postFailed(operation,
-                           providerError(
-                               domain::MediaErrorCode::kMediaDecodeFailed,
-                               std::nullopt,
-                               "The decoded source frames could not form a valid frame set."));
+                postFailed(
+                    operation,
+                    providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                  std::nullopt,
+                                  "The decoded source frames could not form a valid frame set."));
                 return;
             }
             if (operation->isCanceled()) {
@@ -976,6 +1193,373 @@ private:
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
                                      "Unexpected non-standard multi-source frame decode exception.",
+                                     true));
+        }
+    }
+
+    void executeAlignment(const std::shared_ptr<ProviderOperation>& operation) noexcept {
+        if (operation->isCanceled()) {
+            postCanceled(operation);
+            return;
+        }
+        const auto& request = std::get<application::AlignmentEstimateRequest>(operation->request);
+        if (!activeSession_.has_value() || decoders_.size() != activeSession_->sources.size()) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "No comparison sources are open for alignment estimation.",
+                                     true));
+            return;
+        }
+        if (!request.options.isValid() ||
+            request.candidateSampleCount < request.options.minimumEvidence ||
+            !samePlaybackScope(request.context, activeSession_->context)) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     std::nullopt,
+                                     "The alignment estimate request is invalid or obsolete."));
+            return;
+        }
+
+        const auto canonical = std::find_if(
+            activeSession_->sources.begin(),
+            activeSession_->sources.end(),
+            [&request](const auto& source) { return source.id == request.canonicalSourceId; });
+        if (canonical == activeSession_->sources.end()) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     request.canonicalSourceId,
+                                     "The alignment canonical source is not open."));
+            return;
+        }
+        const std::size_t canonicalSlot =
+            static_cast<std::size_t>(std::distance(activeSession_->sources.begin(), canonical));
+        const std::int64_t canonicalFrameCount = canonical->descriptor.frameCount.value;
+        if (canonicalFrameCount < static_cast<std::int64_t>(request.options.minimumEvidence)) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidFrameCount,
+                                     request.canonicalSourceId,
+                                     "The canonical source has too few frames for alignment."));
+            return;
+        }
+        application::GlobalOffsetEstimationOptions effectiveOptions = request.options;
+        const std::int64_t maximumWindow =
+            (canonicalFrameCount - static_cast<std::int64_t>(effectiveOptions.minimumEvidence)) / 2;
+        effectiveOptions.minimumOffset = std::max(effectiveOptions.minimumOffset, -maximumWindow);
+        effectiveOptions.maximumOffset = std::min(effectiveOptions.maximumOffset, maximumWindow);
+        const std::int64_t safeFirst = std::max<std::int64_t>(0, -effectiveOptions.minimumOffset);
+        const std::int64_t safeLast =
+            canonicalFrameCount - 1 - std::max<std::int64_t>(0, effectiveOptions.maximumOffset);
+        if (safeLast < safeFirst || static_cast<std::uint64_t>(safeLast - safeFirst + 1) <
+                                        request.options.minimumEvidence) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidFrameCount,
+                                     request.canonicalSourceId,
+                                     "The canonical source is too short for the requested "
+                                     "alignment search window."));
+            return;
+        }
+
+        const std::size_t sampleCount = std::min<std::size_t>(
+            request.candidateSampleCount, static_cast<std::size_t>(safeLast - safeFirst + 1));
+        std::vector<domain::FrameId> anchors;
+        anchors.reserve(sampleCount);
+        for (std::size_t index = 0U; index < sampleCount; ++index) {
+            const std::int64_t frame =
+                sampleCount == 1U
+                    ? safeFirst
+                    : safeFirst + static_cast<std::int64_t>(
+                                      (static_cast<std::uint64_t>(safeLast - safeFirst) * index) /
+                                      (sampleCount - 1U));
+            if (anchors.empty() || anchors.back().value() != frame) {
+                anchors.emplace_back(frame);
+            }
+        }
+
+        interruptRequested_.store(false, std::memory_order_release);
+        sequentialSetReady_ = false;
+        setTable_.clear();
+        try {
+            std::vector<application::FrameLumaSignature> reference;
+            reference.reserve(anchors.size());
+            for (const domain::FrameId frameId : anchors) {
+                domain::Result<internal::DecodedFrame> decoded =
+                    decoders_[canonicalSlot]->decodeExact(frameId,
+                                                          operation->cancellationRequested);
+                if (!decoded) {
+                    postFailed(operation, decoded.error());
+                    return;
+                }
+                const auto signature = signatureFromFrame(frameId, decoded.value().handle);
+                if (!signature.has_value()) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                             request.canonicalSourceId,
+                                             "The canonical decoder did not publish CPU NV12 "
+                                             "alignment evidence."));
+                    return;
+                }
+                reference.push_back(*signature);
+            }
+
+            std::vector<application::GlobalOffsetEstimate> estimates;
+            estimates.reserve(activeSession_->sources.size() - 1U);
+            for (std::size_t slot = 0U; slot < activeSession_->sources.size(); ++slot) {
+                const domain::ComparisonSource& source = activeSession_->sources[slot];
+                if (slot == canonicalSlot) {
+                    continue;
+                }
+
+                std::vector<std::int64_t> targetFrames;
+                targetFrames.reserve(anchors.size() *
+                                     static_cast<std::size_t>(effectiveOptions.maximumOffset -
+                                                              effectiveOptions.minimumOffset + 1));
+                for (const domain::FrameId anchor : anchors) {
+                    for (std::int64_t offset = effectiveOptions.minimumOffset;
+                         offset <= effectiveOptions.maximumOffset;
+                         ++offset) {
+                        const std::int64_t frame = anchor.value() + offset;
+                        if (frame >= 0 && frame < source.descriptor.frameCount.value) {
+                            targetFrames.push_back(frame);
+                        }
+                    }
+                }
+                std::sort(targetFrames.begin(), targetFrames.end());
+                targetFrames.erase(std::unique(targetFrames.begin(), targetFrames.end()),
+                                   targetFrames.end());
+
+                std::vector<application::FrameLumaSignature> target;
+                target.reserve(targetFrames.size());
+                std::optional<std::int64_t> previousFrame;
+                for (const std::int64_t frame : targetFrames) {
+                    const domain::FrameId frameId{frame};
+                    domain::Result<internal::DecodedFrame> decoded =
+                        previousFrame.has_value() && frame == *previousFrame + 1
+                            ? decoders_[slot]->decodeSequential(frameId,
+                                                                operation->cancellationRequested)
+                            : decoders_[slot]->decodeExact(frameId,
+                                                           operation->cancellationRequested);
+                    if (!decoded) {
+                        postFailed(operation, decoded.error());
+                        return;
+                    }
+                    const auto signature = signatureFromFrame(frameId, decoded.value().handle);
+                    if (!signature.has_value()) {
+                        postFailed(operation,
+                                   providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                 source.id,
+                                                 "A decoder did not publish CPU NV12 alignment "
+                                                 "evidence."));
+                        return;
+                    }
+                    target.push_back(*signature);
+                    previousFrame = frame;
+                }
+
+                const auto estimate = application::estimateGlobalOffset(
+                    source.id, reference, target, effectiveOptions);
+                if (!estimate.has_value()) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                             source.id,
+                                             "The collected evidence could not produce an "
+                                             "alignment estimate.",
+                                             true));
+                    return;
+                }
+                estimates.push_back(*estimate);
+            }
+            if (operation->isCanceled()) {
+                postCanceled(operation);
+                return;
+            }
+            postAlignmentSucceeded(operation, std::move(estimates));
+        } catch (const std::exception& exception) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "Unexpected alignment estimation exception: " +
+                                         std::string{exception.what()},
+                                     true));
+        } catch (...) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "Unexpected non-standard alignment estimation exception.",
+                                     true));
+        }
+    }
+
+    void executeSequenceAlignment(const std::shared_ptr<ProviderOperation>& operation) noexcept {
+        if (operation->isCanceled()) {
+            postCanceled(operation);
+            return;
+        }
+        const auto& request = std::get<application::SequenceAlignmentRequest>(operation->request);
+        if (!activeSession_.has_value() || decoders_.size() != activeSession_->sources.size()) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "No comparison sources are open for sequence analysis.",
+                                     true));
+            return;
+        }
+        if (!request.options.isValid() || request.maximumFrameCount == 0U ||
+            request.maximumFrameCount > 100'000U ||
+            !samePlaybackScope(request.context, activeSession_->context)) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     std::nullopt,
+                                     "The sequence alignment request is invalid or obsolete."));
+            return;
+        }
+        const auto canonical = std::find_if(
+            activeSession_->sources.begin(),
+            activeSession_->sources.end(),
+            [&request](const auto& source) { return source.id == request.canonicalSourceId; });
+        if (canonical == activeSession_->sources.end()) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     request.canonicalSourceId,
+                                     "The sequence canonical source is not open."));
+            return;
+        }
+        for (std::size_t index = 0U; index < request.expectedOffsets.size(); ++index) {
+            const application::SourceFrameOffset& offset = request.expectedOffsets[index];
+            const bool known =
+                std::any_of(activeSession_->sources.begin(),
+                            activeSession_->sources.end(),
+                            [&offset](const auto& source) { return source.id == offset.sourceId; });
+            const bool duplicate = std::any_of(
+                request.expectedOffsets.begin() + static_cast<std::ptrdiff_t>(index + 1U),
+                request.expectedOffsets.end(),
+                [&offset](const auto& other) { return other.sourceId == offset.sourceId; });
+            if (!known || duplicate || offset.sourceId == request.canonicalSourceId ||
+                std::abs(offset.frames) > static_cast<std::int64_t>(request.options.bandWidth)) {
+                postFailed(operation,
+                           providerError(domain::MediaErrorCode::kInvalidArgument,
+                                         offset.sourceId,
+                                         "Sequence expected offsets must uniquely name open "
+                                         "non-canonical sources inside the search band."));
+                return;
+            }
+        }
+        if (std::any_of(activeSession_->sources.begin(),
+                        activeSession_->sources.end(),
+                        [&request](const auto& source) {
+                            return source.descriptor.frameCount.value >
+                                   static_cast<std::int64_t>(request.maximumFrameCount);
+                        })) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidFrameCount,
+                                     std::nullopt,
+                                     "Sequence analysis currently supports at most " +
+                                         std::to_string(request.maximumFrameCount) +
+                                         " frames per source.",
+                                     true));
+            return;
+        }
+
+        const std::size_t canonicalSlot =
+            static_cast<std::size_t>(std::distance(activeSession_->sources.begin(), canonical));
+        interruptRequested_.store(false, std::memory_order_release);
+        sequentialSetReady_ = false;
+        setTable_.clear();
+        try {
+            std::optional<domain::MediaError> collectionFailure;
+            const auto collect = [&](const std::size_t slot)
+                -> std::optional<std::vector<application::FrameLumaSignature>> {
+                const domain::ComparisonSource& source = activeSession_->sources[slot];
+                std::vector<application::FrameLumaSignature> signatures;
+                signatures.reserve(static_cast<std::size_t>(source.descriptor.frameCount.value));
+                for (std::int64_t frame = 0; frame < source.descriptor.frameCount.value; ++frame) {
+                    const domain::FrameId frameId{frame};
+                    domain::Result<internal::DecodedFrame> decoded =
+                        frame == 0 ? decoders_[slot]->decodeExact(frameId,
+                                                                  operation->cancellationRequested)
+                                   : decoders_[slot]->decodeSequential(
+                                         frameId, operation->cancellationRequested);
+                    if (!decoded) {
+                        collectionFailure = decoded.error();
+                        return std::nullopt;
+                    }
+                    const auto signature = signatureFromFrame(frameId, decoded.value().handle);
+                    if (!signature.has_value()) {
+                        collectionFailure =
+                            providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                          source.id,
+                                          "A decoder did not publish CPU NV12 sequence "
+                                          "evidence.");
+                        return std::nullopt;
+                    }
+                    signatures.push_back(*signature);
+                }
+                return signatures;
+            };
+
+            const auto reference = collect(canonicalSlot);
+            if (!reference.has_value()) {
+                if (operation->isCanceled()) {
+                    postCanceled(operation);
+                } else {
+                    postFailed(operation, *collectionFailure);
+                }
+                return;
+            }
+
+            std::vector<application::SequenceAlignmentResult> results;
+            results.reserve(activeSession_->sources.size() - 1U);
+            for (std::size_t slot = 0U; slot < activeSession_->sources.size(); ++slot) {
+                const domain::ComparisonSource& source = activeSession_->sources[slot];
+                if (slot == canonicalSlot) {
+                    continue;
+                }
+                const auto target = collect(slot);
+                if (!target.has_value()) {
+                    if (operation->isCanceled()) {
+                        postCanceled(operation);
+                    } else {
+                        postFailed(operation, *collectionFailure);
+                    }
+                    return;
+                }
+                application::SequenceAlignmentOptions options = request.options;
+                const auto expected = std::find_if(
+                    request.expectedOffsets.begin(),
+                    request.expectedOffsets.end(),
+                    [&source](const auto& offset) { return offset.sourceId == source.id; });
+                options.expectedOffset =
+                    expected == request.expectedOffsets.end() ? 0 : expected->frames;
+                const auto result =
+                    application::alignFrameSequences(source.id, *reference, *target, options);
+                if (!result.has_value()) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                             source.id,
+                                             "The bounded sequence evidence could not produce "
+                                             "an alignment map.",
+                                             true));
+                    return;
+                }
+                results.push_back(*result);
+            }
+            if (operation->isCanceled()) {
+                postCanceled(operation);
+                return;
+            }
+            postSequenceAlignmentSucceeded(operation, std::move(results));
+        } catch (const std::exception& exception) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "Unexpected sequence alignment exception: " +
+                                         std::string{exception.what()},
+                                     true));
+        } catch (...) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     std::nullopt,
+                                     "Unexpected non-standard sequence alignment exception.",
                                      true));
         }
     }
@@ -1005,6 +1589,12 @@ private:
             return;
         case ProviderOperationKind::kFrame:
             executeFrame(operation);
+            return;
+        case ProviderOperationKind::kAlignment:
+            executeAlignment(operation);
+            return;
+        case ProviderOperationKind::kSequenceAlignment:
+            executeSequenceAlignment(operation);
             return;
         case ProviderOperationKind::kClose:
             executeClose(operation);
@@ -1100,6 +1690,18 @@ MultiSourceFrameProvider::submit(const application::FrameProviderOpenRequest& re
 
 application::PortSubmitResult
 MultiSourceFrameProvider::submit(const application::FrameRequest& request,
+                                 std::shared_ptr<application::IApplicationEventSink> events) {
+    return impl_->submit(request, events);
+}
+
+application::PortSubmitResult
+MultiSourceFrameProvider::submit(const application::AlignmentEstimateRequest& request,
+                                 std::shared_ptr<application::IApplicationEventSink> events) {
+    return impl_->submit(request, events);
+}
+
+application::PortSubmitResult
+MultiSourceFrameProvider::submit(const application::SequenceAlignmentRequest& request,
                                  std::shared_ptr<application::IApplicationEventSink> events) {
     return impl_->submit(request, events);
 }

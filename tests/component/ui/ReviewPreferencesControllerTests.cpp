@@ -140,7 +140,7 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     settings.values.emplace("review.view-mode", "difference");
     settings.values.emplace("review.difference-metric", "heatmap");
     settings.values.emplace("review.difference-gain", "8x");
-    settings.values.emplace("review.difference-reference", "b");
+    settings.values.emplace("review.difference-edge", "1-2");
     settings.values.emplace("review.difference-filter", "bicubic");
     repository->completeLoad(std::move(settings));
 
@@ -149,8 +149,7 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     EXPECT_EQ(controller.differenceMetric(),
               ReviewPreferencesController::DifferenceMetric::Heatmap);
     EXPECT_EQ(controller.differenceGain(), ReviewPreferencesController::DifferenceGain::Gain8x);
-    EXPECT_EQ(controller.differenceReference(),
-              ReviewPreferencesController::DifferenceReference::ReferenceB);
+    EXPECT_EQ(controller.differenceEdge(), ReviewPreferencesController::DifferenceEdge::Edge1And2);
     EXPECT_EQ(controller.differenceFilter(),
               ReviewPreferencesController::DifferenceFilter::Bicubic);
     controller.stop();
@@ -164,7 +163,7 @@ TEST_F(ReviewPreferencesControllerTests, InvalidValuesFallBackWithoutBlockingSta
     settings.values.emplace("review.view-mode", "unknown");
     settings.values.emplace("review.difference-metric", "ssim");
     settings.values.emplace("review.difference-gain", "100x");
-    settings.values.emplace("review.difference-reference", "both");
+    settings.values.emplace("review.difference-edge", "all");
     settings.values.emplace("review.difference-filter", "lanczos");
     repository->completeLoad(std::move(settings));
 
@@ -174,8 +173,7 @@ TEST_F(ReviewPreferencesControllerTests, InvalidValuesFallBackWithoutBlockingSta
     EXPECT_EQ(controller.differenceMetric(),
               ReviewPreferencesController::DifferenceMetric::RgbAbsolute);
     EXPECT_EQ(controller.differenceGain(), ReviewPreferencesController::DifferenceGain::Gain1x);
-    EXPECT_EQ(controller.differenceReference(),
-              ReviewPreferencesController::DifferenceReference::ReferenceA);
+    EXPECT_EQ(controller.differenceEdge(), ReviewPreferencesController::DifferenceEdge::Edge0And1);
     EXPECT_EQ(controller.differenceFilter(),
               ReviewPreferencesController::DifferenceFilter::Bilinear);
     controller.stop();
@@ -195,7 +193,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     controller.setViewMode(ReviewPreferencesController::ViewMode::Difference);
     controller.setDifferenceMetric(ReviewPreferencesController::DifferenceMetric::Chroma);
     controller.setDifferenceGain(ReviewPreferencesController::DifferenceGain::Gain16x);
-    controller.setDifferenceReference(ReviewPreferencesController::DifferenceReference::ReferenceB);
+    controller.setDifferenceEdge(ReviewPreferencesController::DifferenceEdge::Edge0And2);
     controller.setDifferenceFilter(ReviewPreferencesController::DifferenceFilter::Nearest);
 
     ASSERT_TRUE(
@@ -206,7 +204,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     EXPECT_EQ(values.at("review.view-mode"), "difference");
     EXPECT_EQ(values.at("review.difference-metric"), "chroma");
     EXPECT_EQ(values.at("review.difference-gain"), "16x");
-    EXPECT_EQ(values.at("review.difference-reference"), "b");
+    EXPECT_EQ(values.at("review.difference-edge"), "0-2");
     EXPECT_EQ(values.at("review.difference-filter"), "nearest");
     repository->completeSave();
     controller.stop();

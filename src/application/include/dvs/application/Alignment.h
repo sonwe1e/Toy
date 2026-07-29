@@ -1,0 +1,165 @@
+#pragma once
+
+#include "dvs/domain/Identifiers.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <vector>
+
+namespace dvs::application {
+
+inline constexpr std::size_t kAlignmentSignatureWidth = 16U;
+inline constexpr std::size_t kAlignmentSignatureHeight = 9U;
+inline constexpr std::size_t kAlignmentSignaturePixels =
+    kAlignmentSignatureWidth * kAlignmentSignatureHeight;
+
+// How a source's frame was mapped to the canonical frame position. The UI presents this state so
+// auto-aligned views are never mistaken for strict same-frame comparisons.
+enum class FrameMatchKind {
+    ExactIndex,
+    GlobalOffset,
+    AutoAligned,
+    ManualAnchor,
+    Missing,
+};
+
+// Explicit mapping from a canonical frame i to source frame i + offset. Zero means strict-index
+// matching. A negative or out-of-range mapped index becomes Missing; it is never clamped or
+// replaced with a neighboring frame.
+struct SourceFrameOffset final {
+    domain::SourceId sourceId = 0;
+    std::int64_t frames = 0;
+    FrameMatchKind matchKind = FrameMatchKind::GlobalOffset;
+    float confidence = 1.0F;
+
+    [[nodiscard]] bool operator==(const SourceFrameOffset&) const = default;
+};
+
+// Adapter-neutral, low-resolution luma evidence. Media adapters downsample decoder-owned planes
+// into this fixed value before invoking the application algorithm.
+struct FrameLumaSignature final {
+    domain::FrameId frameId{0};
+    std::array<std::uint8_t, kAlignmentSignaturePixels> luma{};
+    std::uint64_t perceptualHash = 0;
+
+    [[nodiscard]] bool isValid() const noexcept;
+    [[nodiscard]] bool operator==(const FrameLumaSignature&) const = default;
+};
+
+struct GlobalOffsetEstimationOptions final {
+    std::int64_t minimumOffset = -16;
+    std::int64_t maximumOffset = 16;
+    std::size_t selectedSampleCount = 9U;
+    std::size_t minimumEvidence = 3U;
+    float minimumConfidence = 0.12F;
+    float maximumBestCost = 0.35F;
+
+    [[nodiscard]] bool isValid() const noexcept;
+};
+
+struct GlobalOffsetEstimate final {
+    domain::SourceId sourceId = 0;
+    std::int64_t bestOffset = 0;
+    float bestCost = 1.0F;
+    float runnerUpCost = 1.0F;
+    float confidence = 0.0F;
+    std::size_t evidenceCount = 0U;
+    bool autoApplicable = false;
+
+    [[nodiscard]] bool operator==(const GlobalOffsetEstimate&) const = default;
+};
+
+enum class SequenceAlignmentAnomalyKind {
+    TargetFrameMissing,
+    TargetFrameExtra,
+    TargetFrameDuplicate,
+};
+
+struct SequenceAlignmentEntry final {
+    domain::FrameId canonicalFrameId{0};
+    std::optional<domain::FrameId> sourceFrameId;
+    FrameMatchKind matchKind = FrameMatchKind::AutoAligned;
+    float confidence = 0.0F;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentEntry&) const = default;
+};
+
+struct SequenceAlignmentAnomaly final {
+    SequenceAlignmentAnomalyKind kind = SequenceAlignmentAnomalyKind::TargetFrameMissing;
+    std::optional<domain::FrameId> canonicalFrameId;
+    std::optional<domain::FrameId> sourceFrameId;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentAnomaly&) const = default;
+};
+
+struct SequenceAlignmentOptions final {
+    std::int64_t expectedOffset = 0;
+    std::size_t bandWidth = 8U;
+    float gapPenalty = 0.18F;
+    float duplicateDistance = 0.08F;
+    float minimumConfidence = 0.30F;
+    float maximumMeanMatchCost = 0.35F;
+
+    [[nodiscard]] bool isValid() const noexcept;
+};
+
+struct SequenceAlignmentResult final {
+    domain::SourceId sourceId = 0;
+    std::vector<SequenceAlignmentEntry> entries;
+    std::vector<SequenceAlignmentAnomaly> anomalies;
+    float totalCost = 0.0F;
+    float meanMatchCost = 1.0F;
+    float confidence = 0.0F;
+    bool autoApplicable = false;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentResult&) const = default;
+};
+
+struct ManualAlignmentAnchor final {
+    domain::FrameId canonicalFrameId{0};
+    domain::FrameId sourceFrameId{0};
+
+    [[nodiscard]] bool operator==(const ManualAlignmentAnchor&) const = default;
+};
+
+struct SourceAlignmentAnchors final {
+    domain::SourceId sourceId = 0;
+    std::vector<ManualAlignmentAnchor> anchors;
+
+    [[nodiscard]] bool isValid() const noexcept;
+    [[nodiscard]] bool operator==(const SourceAlignmentAnchors&) const = default;
+};
+
+[[nodiscard]] FrameLumaSignature
+makeFrameLumaSignature(domain::FrameId frameId,
+                       std::span<const std::uint8_t, kAlignmentSignaturePixels> luma) noexcept;
+
+// Returns no estimate for malformed inputs. Ambiguous but otherwise valid evidence returns a
+// result with autoApplicable=false so the UI can offer the best candidate without silently
+// changing the mapping.
+[[nodiscard]] std::optional<GlobalOffsetEstimate>
+estimateGlobalOffset(domain::SourceId targetSourceId,
+                     std::span<const FrameLumaSignature> reference,
+                     std::span<const FrameLumaSignature> target,
+                     const GlobalOffsetEstimationOptions& options = {}) noexcept;
+
+// Builds a monotone mapping inside a narrow band around expectedOffset. Storage and compute are
+// O(N*bandWidth); no unconstrained N-by-M matrix is allocated. Ambiguous evidence still returns
+// diagnostics, but autoApplicable remains false.
+[[nodiscard]] std::optional<SequenceAlignmentResult>
+alignFrameSequences(domain::SourceId targetSourceId,
+                    std::span<const FrameLumaSignature> reference,
+                    std::span<const FrameLumaSignature> target,
+                    const SequenceAlignmentOptions& options = {}) noexcept;
+
+// Outside the first/last anchor, the nearest anchor's offset is extended. Between anchors, the
+// source position is interpolated monotonically and rounded to the nearest frame.
+[[nodiscard]] std::optional<SourceFrameOffset>
+mapFrameWithAnchors(const SourceAlignmentAnchors& anchors,
+                    domain::FrameId canonicalFrame,
+                    std::int64_t sourceFrameCount) noexcept;
+
+} // namespace dvs::application

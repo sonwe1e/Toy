@@ -77,10 +77,12 @@ struct DifferenceDraw final {
 struct PreparedSetDraw final {
     FrameMailboxPublication publication;
     bool difference = false;
-    VideoDraw drawA;
-    VideoDraw drawB;
+    // Up to three slot draws (two-up, three-up, reference-focus layouts). Each draw carries its
+    // own constants and owns one constant-buffer set until the immediate-context draw is issued.
+    std::array<VideoDraw, 3U> videoDraws{};
+    std::size_t videoDrawCount = 0U;
     DifferenceDraw differenceDraw;
-    std::array<ComposeConstants, 8U> letterboxBars{};
+    std::array<ComposeConstants, 16U> letterboxBars{};
     std::size_t letterboxBarCount = 0U;
 };
 
@@ -90,7 +92,8 @@ struct PreparedSetDraw final {
 }
 
 [[nodiscard]] bool isValid(const SurfaceViewMode value) noexcept {
-    return value == SurfaceViewMode::SideBySide || value == SurfaceViewMode::Difference;
+    return value == SurfaceViewMode::SideBySide || value == SurfaceViewMode::ThreeUp ||
+           value == SurfaceViewMode::ReferenceFocus || value == SurfaceViewMode::Difference;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceMetric value) noexcept {
@@ -105,9 +108,10 @@ struct PreparedSetDraw final {
            value == SurfaceDifferenceGain::Gain16x;
 }
 
-[[nodiscard]] bool isValid(const SurfaceDifferenceReference value) noexcept {
-    return value == SurfaceDifferenceReference::SourceA ||
-           value == SurfaceDifferenceReference::SourceB;
+[[nodiscard]] bool isValid(const SurfaceDifferenceEdge value) noexcept {
+    return value == SurfaceDifferenceEdge::Between0And1 ||
+           value == SurfaceDifferenceEdge::Between0And2 ||
+           value == SurfaceDifferenceEdge::Between1And2;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceFilter value) noexcept {
@@ -305,7 +309,8 @@ bool SurfaceRenderState::isValid() const noexcept {
     }
     return (!scissorEnabled || scissor.isValid()) && dvs::platform::isValid(viewMode) &&
            dvs::platform::isValid(differenceMetric) && dvs::platform::isValid(differenceGain) &&
-           dvs::platform::isValid(differenceReference) && dvs::platform::isValid(differenceFilter);
+           dvs::platform::isValid(differenceEdge) && dvs::platform::isValid(differenceFilter) &&
+           referenceSlot < 3U;
 }
 
 SurfaceSplitLayout computeSurfaceSplit(const float logicalWidth,
@@ -332,6 +337,74 @@ SurfaceSplitLayout computeSurfaceSplit(const float logicalWidth,
                 .width = logicalWidth - split,
                 .height = logicalHeight,
             },
+    };
+}
+
+// Equal-width column regions for the two-up and three-up layouts. Region boundaries snap to
+// pixel columns so adjacent panels never overlap or drop a pixel column.
+struct SurfaceColumnLayout final {
+    std::array<SurfaceRect, 3U> columns{};
+    std::size_t count = 0U;
+};
+
+[[nodiscard]] SurfaceColumnLayout computeSurfaceColumns(const float logicalWidth,
+                                                        const float logicalHeight,
+                                                        const std::uint32_t pixelWidth,
+                                                        const std::uint32_t pixelHeight,
+                                                        const std::size_t count) noexcept {
+    SurfaceColumnLayout layout{};
+    if (!std::isfinite(logicalWidth) || !std::isfinite(logicalHeight) || logicalWidth <= 0.0F ||
+        logicalHeight <= 0.0F || pixelWidth == 0U || pixelHeight == 0U || count == 0U ||
+        count > layout.columns.size()) {
+        return layout;
+    }
+    for (std::size_t index = 0U; index < count; ++index) {
+        const std::uint32_t startPixels = static_cast<std::uint32_t>(pixelWidth * index / count);
+        const std::uint32_t endPixels =
+            static_cast<std::uint32_t>(pixelWidth * (index + 1U) / count);
+        const float x =
+            logicalWidth * static_cast<float>(startPixels) / static_cast<float>(pixelWidth);
+        const float width = logicalWidth * static_cast<float>(endPixels - startPixels) /
+                            static_cast<float>(pixelWidth);
+        layout.columns[index] =
+            SurfaceRect{.x = x, .y = 0.0F, .width = width, .height = logicalHeight};
+    }
+    layout.count = count;
+    return layout;
+}
+
+// Reference-focus layout (USERPLAN 6.3): the reference source (slot 0) takes the left two
+// thirds; the two predictions stack in the right third.
+struct SurfaceFocusLayout final {
+    SurfaceRect main;
+    SurfaceRect topRight;
+    SurfaceRect bottomRight;
+};
+
+[[nodiscard]] SurfaceFocusLayout
+computeReferenceFocusLayout(const float logicalWidth,
+                            const float logicalHeight,
+                            const std::uint32_t pixelWidth,
+                            const std::uint32_t pixelHeight) noexcept {
+    if (!std::isfinite(logicalWidth) || !std::isfinite(logicalHeight) || logicalWidth <= 0.0F ||
+        logicalHeight <= 0.0F || pixelWidth < 3U || pixelHeight < 2U) {
+        return {};
+    }
+    const std::uint32_t mainPixels = pixelWidth * 2U / 3U;
+    const float mainWidth =
+        logicalWidth * static_cast<float>(mainPixels) / static_cast<float>(pixelWidth);
+    const std::uint32_t topPixels = pixelHeight / 2U;
+    const float topHeight =
+        logicalHeight * static_cast<float>(topPixels) / static_cast<float>(pixelHeight);
+    return SurfaceFocusLayout{
+        .main = SurfaceRect{.x = 0.0F, .y = 0.0F, .width = mainWidth, .height = logicalHeight},
+        .topRight =
+            SurfaceRect{
+                .x = mainWidth, .y = 0.0F, .width = logicalWidth - mainWidth, .height = topHeight},
+        .bottomRight = SurfaceRect{.x = mainWidth,
+                                   .y = topHeight,
+                                   .width = logicalWidth - mainWidth,
+                                   .height = logicalHeight - topHeight},
     };
 }
 
@@ -554,9 +627,11 @@ public:
         // Drop the front publication before the device objects so its deferred-retirement
         // deleters can observe a still-valid broker/device generation during teardown.
         frontPublication_.reset();
+        colorBufferC_.Reset();
         colorBufferB_.Reset();
         colorBufferA_.Reset();
         differenceBuffer_.Reset();
+        composeBufferC_.Reset();
         composeBufferB_.Reset();
         composeBufferA_.Reset();
         for (ComPtr<ID3D11Buffer>& buffer : blackComposeBuffers_) {
@@ -630,9 +705,13 @@ private:
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ComposeConstants), composeBufferB_)) ||
             FAILED(result = createDynamicConstantBuffer(
+                       *device_.Get(), sizeof(ComposeConstants), composeBufferC_)) ||
+            FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ColorConstants), colorBufferA_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ColorConstants), colorBufferB_)) ||
+            FAILED(result = createDynamicConstantBuffer(
+                       *device_.Get(), sizeof(ColorConstants), colorBufferC_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(DifferenceConstants), differenceBuffer_))) {
             return failDevice(result, lease);
@@ -808,54 +887,105 @@ private:
             return false;
         }
         const GpuFrameSet& set = *publication.set;
-        const std::span<const GpuFrameSlot> slots = set.slots();
 
-        // Extract first two slots; missing slots result in black panels.
-        const GpuFrameSlot* const slotA = (slots.size() > 0U) ? &slots[0U] : nullptr;
-        const GpuFrameSlot* const slotB = (slots.size() > 1U) ? &slots[1U] : nullptr;
+        // Extract up to three slots; slots without a frame stay black (the render target is
+        // cleared to black before the set is drawn).
+        // GPU transfer omits Missing entries, so vector position is not the source slot. Resolve
+        // by the stable source IDs assigned at open time or a missing source would shift every
+        // later panel to the left and make the explicit black gap disappear.
+        const GpuFrameSlot* const slotA = set.find(0U);
+        const GpuFrameSlot* const slotB = set.find(1U);
+        const GpuFrameSlot* const slotC = set.find(2U);
         const std::shared_ptr<const GpuFrameResource> frameA = slotA ? slotA->frame : nullptr;
         const std::shared_ptr<const GpuFrameResource> frameB = slotB ? slotB->frame : nullptr;
+        const std::shared_ptr<const GpuFrameResource> frameC = slotC ? slotC->frame : nullptr;
         const D3d11GpuFrameBacking* const backingA = d3dBacking(frameA);
         const D3d11GpuFrameBacking* const backingB = d3dBacking(frameB);
+        const D3d11GpuFrameBacking* const backingC = d3dBacking(frameC);
 
         // At least one frame must be present for rendering.
-        if (!frameA && !frameB) {
+        if (!frameA && !frameB && !frameC) {
             return false;
         }
+
+        const auto backingUsable = [](const GpuFrameResource* const frame,
+                                      const D3d11GpuFrameBacking* const backing) {
+            return frame != nullptr && backing != nullptr && backing->yView() != nullptr &&
+                   backing->uvView() != nullptr;
+        };
+        // Appends one aspect-fit draw into the given bounds; returns false on a degenerate fit.
+        const auto appendRegionDraw = [&](const SurfaceRect& bounds,
+                                          const GpuFrameResource& frame,
+                                          const D3d11GpuFrameBacking& backing) {
+            const SurfaceRect destination =
+                aspectFitRect(bounds, frame.geometry().width, frame.geometry().height);
+            if (!destination.isValid() || prepared.videoDrawCount >= prepared.videoDraws.size()) {
+                return false;
+            }
+            prepared.videoDraws[prepared.videoDrawCount] =
+                makeVideoDraw(state, destination, frame, backing);
+            ++prepared.videoDrawCount;
+            appendLetterboxBars(state, bounds, destination, prepared);
+            return true;
+        };
+        const auto appendPlainDraw = [&](const GpuFrameResource& frame,
+                                         const D3d11GpuFrameBacking& backing) {
+            const SurfaceRect bounds{
+                .x = 0.0F,
+                .y = 0.0F,
+                .width = state.logicalWidth,
+                .height = state.logicalHeight,
+            };
+            return appendRegionDraw(bounds, frame, backing);
+        };
 
         ID3D11DeviceContext& context = *lease.immediateContext.Get();
         HRESULT result = S_OK;
         if (state.viewMode == SurfaceViewMode::Difference) {
-            // Difference view requires two frames. If fewer than two frames are present,
-            // show the first frame plain (or black if no frames).
-            if (!frameA || !frameB || backingA == nullptr || backingB == nullptr ||
-                backingA->yView() == nullptr || backingA->uvView() == nullptr ||
-                backingB->yView() == nullptr || backingB->uvView() == nullptr) {
-                // Fall back to showing the first frame plain, or black if no frames.
-                if (frameA && backingA && backingA->yView() && backingA->uvView()) {
-                    const SurfaceRect bounds{
-                        .x = 0.0F,
-                        .y = 0.0F,
-                        .width = state.logicalWidth,
-                        .height = state.logicalHeight,
-                    };
-                    const SurfaceRect destination =
-                        aspectFitRect(bounds, frameA->geometry().width, frameA->geometry().height);
-                    if (!destination.isValid()) {
-                        return false;
-                    }
-                    prepared = PreparedSetDraw{
-                        .publication = publication,
-                        .drawA = makeVideoDraw(state, destination, *frameA, *backingA),
-                    };
-                    appendLetterboxBars(state, bounds, destination, prepared);
-                    result = writeConstantBuffer(context, *composeBufferA_.Get(), prepared.drawA.compose);
-                    if (SUCCEEDED(result)) {
-                        result = writeConstantBuffer(context, *colorBufferA_.Get(), prepared.drawA.color);
-                    }
+            // USERPLAN 7: the difference view compares the two slots of the selected edge. The
+            // first slot of the edge is the reference side. When an edge slot has no frame, the
+            // other slot is shown plain; when neither has one, the first present slot of the
+            // whole set is shown plain, or the black background is left in place.
+            const GpuFrameResource* edgeFirst = frameA.get();
+            const D3d11GpuFrameBacking* edgeFirstBacking = backingA;
+            const GpuFrameResource* edgeSecond = frameB.get();
+            const D3d11GpuFrameBacking* edgeSecondBacking = backingB;
+            if (state.differenceEdge == SurfaceDifferenceEdge::Between0And2) {
+                edgeSecond = frameC.get();
+                edgeSecondBacking = backingC;
+            } else if (state.differenceEdge == SurfaceDifferenceEdge::Between1And2) {
+                edgeFirst = frameB.get();
+                edgeFirstBacking = backingB;
+                edgeSecond = frameC.get();
+                edgeSecondBacking = backingC;
+            }
+            const bool edgeFirstUsable = backingUsable(edgeFirst, edgeFirstBacking);
+            const bool edgeSecondUsable = backingUsable(edgeSecond, edgeSecondBacking);
+            if (!edgeFirstUsable || !edgeSecondUsable) {
+                prepared.publication = publication;
+                const GpuFrameResource* plainFrame = nullptr;
+                const D3d11GpuFrameBacking* plainBacking = nullptr;
+                if (edgeFirstUsable) {
+                    plainFrame = edgeFirst;
+                    plainBacking = edgeFirstBacking;
+                } else if (edgeSecondUsable) {
+                    plainFrame = edgeSecond;
+                    plainBacking = edgeSecondBacking;
                 } else {
-                    // No frames available; draw black.
-                    prepared = PreparedSetDraw{.publication = publication};
+                    const std::array<const GpuFrameResource*, 3U> candidates{
+                        frameA.get(), frameB.get(), frameC.get()};
+                    const std::array<const D3d11GpuFrameBacking*, 3U> candidateBackings{
+                        backingA, backingB, backingC};
+                    for (std::size_t index = 0U; index < candidates.size(); ++index) {
+                        if (backingUsable(candidates[index], candidateBackings[index])) {
+                            plainFrame = candidates[index];
+                            plainBacking = candidateBackings[index];
+                            break;
+                        }
+                    }
+                }
+                if (plainFrame != nullptr && !appendPlainDraw(*plainFrame, *plainBacking)) {
+                    return false;
                 }
             } else {
                 const SurfaceRect bounds{
@@ -864,20 +994,19 @@ private:
                     .width = state.logicalWidth,
                     .height = state.logicalHeight,
                 };
-                const GpuFrameResource& reference =
-                    state.differenceReference == SurfaceDifferenceReference::SourceA ? *frameA
-                                                                                     : *frameB;
-                const SurfaceRect destination =
-                    aspectFitRect(bounds, reference.geometry().width, reference.geometry().height);
+                const SurfaceRect destination = aspectFitRect(
+                    bounds, edgeFirst->geometry().width, edgeFirst->geometry().height);
                 if (!destination.isValid()) {
                     return false;
                 }
-                prepared = PreparedSetDraw{
-                    .publication = publication,
-                    .difference = true,
-                    .differenceDraw =
-                        makeDifferenceDraw(state, destination, *frameA, *backingA, *frameB, *backingB),
-                };
+                prepared.publication = publication;
+                prepared.difference = true;
+                prepared.differenceDraw = makeDifferenceDraw(state,
+                                                             destination,
+                                                             *edgeFirst,
+                                                             *edgeFirstBacking,
+                                                             *edgeSecond,
+                                                             *edgeSecondBacking);
                 appendLetterboxBars(state, bounds, destination, prepared);
                 result = writeConstantBuffer(
                     context, *composeBufferA_.Get(), prepared.differenceDraw.compose);
@@ -895,40 +1024,58 @@ private:
                 }
             }
         } else {
-            // Side-by-side view: draw first two slots left/right; missing slot → cleared/black panel.
-            const SurfaceSplitLayout split = computeSurfaceSplit(
-                state.logicalWidth, state.logicalHeight, state.pixelWidth, state.pixelHeight);
-
-            if (frameA && backingA && backingA->yView() && backingA->uvView()) {
-                const SurfaceRect destinationA =
-                    aspectFitRect(split.left, frameA->geometry().width, frameA->geometry().height);
-                if (!destinationA.isValid()) {
-                    return false;
+            // Slot views (USERPLAN 6.3): two-up (two columns), three-up (three columns), or
+            // reference focus (slot 0 large on the left, slots 1 and 2 stacked on the right).
+            // Slots without a frame stay black via the background clear.
+            std::array<SurfaceRect, 3U> regions{};
+            std::array<std::size_t, 3U> regionSlots{0U, 1U, 2U};
+            std::size_t regionCount = 0U;
+            if (state.viewMode == SurfaceViewMode::ThreeUp) {
+                const SurfaceColumnLayout columns = computeSurfaceColumns(state.logicalWidth,
+                                                                          state.logicalHeight,
+                                                                          state.pixelWidth,
+                                                                          state.pixelHeight,
+                                                                          3U);
+                regions = columns.columns;
+                regionCount = columns.count;
+            } else if (state.viewMode == SurfaceViewMode::ReferenceFocus) {
+                const SurfaceFocusLayout focus = computeReferenceFocusLayout(
+                    state.logicalWidth, state.logicalHeight, state.pixelWidth, state.pixelHeight);
+                if (focus.main.isValid() && focus.topRight.isValid() &&
+                    focus.bottomRight.isValid()) {
+                    regions = {focus.main, focus.topRight, focus.bottomRight};
+                    regionSlots[0U] = state.referenceSlot;
+                    std::size_t destination = 1U;
+                    for (std::size_t slot = 0U; slot < regionSlots.size(); ++slot) {
+                        if (slot != state.referenceSlot) {
+                            regionSlots[destination] = slot;
+                            ++destination;
+                        }
+                    }
+                    regionCount = 3U;
                 }
-                prepared.drawA = makeVideoDraw(state, destinationA, *frameA, *backingA);
-                appendLetterboxBars(state, split.left, destinationA, prepared);
-            }
-            if (frameB && backingB && backingB->yView() && backingB->uvView()) {
-                const SurfaceRect destinationB =
-                    aspectFitRect(split.right, frameB->geometry().width, frameB->geometry().height);
-                if (!destinationB.isValid()) {
-                    return false;
-                }
-                prepared.drawB = makeVideoDraw(state, destinationB, *frameB, *backingB);
-                appendLetterboxBars(state, split.right, destinationB, prepared);
+            } else {
+                const SurfaceColumnLayout columns = computeSurfaceColumns(state.logicalWidth,
+                                                                          state.logicalHeight,
+                                                                          state.pixelWidth,
+                                                                          state.pixelHeight,
+                                                                          2U);
+                regions = columns.columns;
+                regionCount = columns.count;
             }
 
             prepared.publication = publication;
-            if (frameA && backingA && backingA->yView() && backingA->uvView()) {
-                result = writeConstantBuffer(context, *composeBufferA_.Get(), prepared.drawA.compose);
-                if (SUCCEEDED(result)) {
-                    result = writeConstantBuffer(context, *colorBufferA_.Get(), prepared.drawA.color);
+            const std::array<const GpuFrameResource*, 3U> slotFrames{
+                frameA.get(), frameB.get(), frameC.get()};
+            const std::array<const D3d11GpuFrameBacking*, 3U> slotBackings{
+                backingA, backingB, backingC};
+            for (std::size_t region = 0U; region < regionCount; ++region) {
+                const std::size_t slot = regionSlots[region];
+                if (!backingUsable(slotFrames[slot], slotBackings[slot])) {
+                    continue;
                 }
-            }
-            if (SUCCEEDED(result) && frameB && backingB && backingB->yView() && backingB->uvView()) {
-                result = writeConstantBuffer(context, *composeBufferB_.Get(), prepared.drawB.compose);
-                if (SUCCEEDED(result)) {
-                    result = writeConstantBuffer(context, *colorBufferB_.Get(), prepared.drawB.color);
+                if (!appendRegionDraw(regions[region], *slotFrames[slot], *slotBackings[slot])) {
+                    return false;
                 }
             }
         }
@@ -952,38 +1099,40 @@ private:
         if (prepared.difference) {
             drawDifference(context, prepared.differenceDraw);
         } else {
-            drawVideoSlots(context, prepared.drawA, prepared.drawB);
+            drawVideoSlots(context, prepared);
         }
         const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
         context.PSSetShaderResources(0U, static_cast<UINT>(nullViews.size()), nullViews.data());
     }
 
     void drawVideoSlots(ID3D11DeviceContext& context,
-                        const VideoDraw& drawA,
-                        const VideoDraw& drawB) const noexcept {
+                        const PreparedSetDraw& prepared) const noexcept {
         context.PSSetShader(nv12PixelShader_.Get(), nullptr, 0U);
         ID3D11SamplerState* const sampler = linearSampler_.Get();
         context.PSSetSamplers(0U, 1U, &sampler);
 
-        // Draw slot A if present (yView is non-null).
-        if (drawA.yView != nullptr && drawA.uvView != nullptr) {
-            ID3D11Buffer* composeBuffer = composeBufferA_.Get();
-            ID3D11Buffer* colorBuffer = colorBufferA_.Get();
-            const std::array<ID3D11ShaderResourceView*, 2U> viewsA{drawA.yView, drawA.uvView};
+        for (std::size_t index = 0U; index < prepared.videoDrawCount; ++index) {
+            const VideoDraw& draw = prepared.videoDraws[index];
+            if (draw.yView == nullptr || draw.uvView == nullptr) {
+                continue;
+            }
+            // Each queued draw owns a distinct constant buffer. Reusing A for the third draw
+            // would overwrite draw zero before the GPU consumed it on deferred WARP/hardware
+            // execution, making two panels show the same source.
+            const std::array<ID3D11Buffer*, 3U> composeBuffers{
+                composeBufferA_.Get(), composeBufferB_.Get(), composeBufferC_.Get()};
+            const std::array<ID3D11Buffer*, 3U> colorBuffers{
+                colorBufferA_.Get(), colorBufferB_.Get(), colorBufferC_.Get()};
+            ID3D11Buffer* const composeBuffer = composeBuffers[index];
+            ID3D11Buffer* const colorBuffer = colorBuffers[index];
+            if (FAILED(writeConstantBuffer(context, *composeBuffer, draw.compose)) ||
+                FAILED(writeConstantBuffer(context, *colorBuffer, draw.color))) {
+                return;
+            }
+            const std::array<ID3D11ShaderResourceView*, 2U> views{draw.yView, draw.uvView};
             context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
             context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
-            context.PSSetShaderResources(0U, static_cast<UINT>(viewsA.size()), viewsA.data());
-            context.Draw(4U, 0U);
-        }
-
-        // Draw slot B if present (yView is non-null).
-        if (drawB.yView != nullptr && drawB.uvView != nullptr) {
-            ID3D11Buffer* composeBuffer = composeBufferB_.Get();
-            ID3D11Buffer* colorBuffer = colorBufferB_.Get();
-            const std::array<ID3D11ShaderResourceView*, 2U> viewsB{drawB.yView, drawB.uvView};
-            context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
-            context.PSSetConstantBuffers(1U, 1U, &colorBuffer);
-            context.PSSetShaderResources(0U, static_cast<UINT>(viewsB.size()), viewsB.data());
+            context.PSSetShaderResources(0U, static_cast<UINT>(views.size()), views.data());
             context.Draw(4U, 0U);
         }
     }
@@ -1037,7 +1186,7 @@ private:
     }
 
     [[nodiscard]] ComparisonRenderResult acknowledge(const FrameMailboxPublication& publication,
-                                                    const GpuFrameSet& set) noexcept {
+                                                     const GpuFrameSet& set) noexcept {
         if (acknowledgementClosed_) {
             return ComparisonRenderResult::Closed;
         }
@@ -1103,11 +1252,13 @@ private:
     ComPtr<ID3D11RasterizerState> scissorRasterizerState_;
     ComPtr<ID3D11SamplerState> nearestSampler_;
     ComPtr<ID3D11SamplerState> linearSampler_;
-    std::array<ComPtr<ID3D11Buffer>, 8U> blackComposeBuffers_;
+    std::array<ComPtr<ID3D11Buffer>, 16U> blackComposeBuffers_;
     ComPtr<ID3D11Buffer> composeBufferA_;
     ComPtr<ID3D11Buffer> composeBufferB_;
+    ComPtr<ID3D11Buffer> composeBufferC_;
     ComPtr<ID3D11Buffer> colorBufferA_;
     ComPtr<ID3D11Buffer> colorBufferB_;
+    ComPtr<ID3D11Buffer> colorBufferC_;
     ComPtr<ID3D11Buffer> differenceBuffer_;
 };
 

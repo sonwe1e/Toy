@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/application/Alignment.h"
 #include "dvs/application/Events.h"
 #include "dvs/domain/FrameTimeline.h"
 
@@ -49,6 +50,25 @@ struct FrameRequest final {
     FrameRequestContext context;
     domain::FrameId frameId;
     FrameRequestPriority priority;
+    std::vector<SourceFrameOffset> sourceOffsets;
+};
+
+// Runs bounded, decoder-backed evidence collection off the coordinator thread. The adapter
+// publishes one estimate for every non-canonical source; only the coordinator decides whether a
+// high-confidence estimate is applied to the active session.
+struct AlignmentEstimateRequest final {
+    PlaybackRequestContext context;
+    domain::SourceId canonicalSourceId = 0;
+    GlobalOffsetEstimationOptions options;
+    std::size_t candidateSampleCount = 5U;
+};
+
+struct SequenceAlignmentRequest final {
+    PlaybackRequestContext context;
+    domain::SourceId canonicalSourceId = 0;
+    std::vector<SourceFrameOffset> expectedOffsets;
+    SequenceAlignmentOptions options;
+    std::size_t maximumFrameCount = 50'000U;
 };
 
 struct FrameProviderCloseRequest final {
@@ -129,6 +149,12 @@ public:
            std::shared_ptr<IApplicationEventSink> events) = 0;
     [[nodiscard]] virtual PortSubmitResult
     submit(const FrameRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
+    [[nodiscard]] virtual PortSubmitResult
+    submit(const AlignmentEstimateRequest& request,
+           std::shared_ptr<IApplicationEventSink> events) = 0;
+    [[nodiscard]] virtual PortSubmitResult
+    submit(const SequenceAlignmentRequest& request,
+           std::shared_ptr<IApplicationEventSink> events) = 0;
     [[nodiscard]] virtual PortSubmitResult
     submit(const FrameProviderCloseRequest& request,
            std::shared_ptr<IApplicationEventSink> events) = 0;

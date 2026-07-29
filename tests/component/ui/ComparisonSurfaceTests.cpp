@@ -239,10 +239,13 @@ TEST(ComparisonSurfaceGeometryTests, RejectsUnknownPresentationOptions) {
     state.differenceGain = static_cast<platform::SurfaceDifferenceGain>(255U);
     EXPECT_FALSE(state.isValid());
     state.differenceGain = platform::SurfaceDifferenceGain::Gain1x;
-    state.differenceReference = static_cast<platform::SurfaceDifferenceReference>(255U);
+    state.differenceEdge = static_cast<platform::SurfaceDifferenceEdge>(255U);
     EXPECT_FALSE(state.isValid());
-    state.differenceReference = platform::SurfaceDifferenceReference::SourceA;
+    state.differenceEdge = platform::SurfaceDifferenceEdge::Between0And1;
     state.differenceFilter = static_cast<platform::SurfaceDifferenceFilter>(255U);
+    EXPECT_FALSE(state.isValid());
+    state.differenceFilter = platform::SurfaceDifferenceFilter::Bilinear;
+    state.referenceSlot = 3U;
     EXPECT_FALSE(state.isValid());
 }
 
@@ -299,50 +302,58 @@ TEST(ComparisonSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOn
     EXPECT_EQ(surface.viewMode(), ComparisonSurface::SideBySide);
     EXPECT_EQ(surface.differenceMetric(), ComparisonSurface::RgbAbsolute);
     EXPECT_EQ(surface.differenceGain(), ComparisonSurface::Gain1x);
-    EXPECT_EQ(surface.differenceReference(), ComparisonSurface::ReferenceA);
+    EXPECT_EQ(surface.differenceEdge(), ComparisonSurface::Edge0And1);
     EXPECT_EQ(surface.differenceFilter(), ComparisonSurface::Bilinear);
+    EXPECT_EQ(surface.referenceSlot(), 0);
 
     int viewModeChanges = 0;
     int metricChanges = 0;
     int gainChanges = 0;
-    int referenceChanges = 0;
+    int edgeChanges = 0;
     int filterChanges = 0;
+    int referenceSlotChanges = 0;
     QObject::connect(&surface, &ComparisonSurface::viewModeChanged, [&] { ++viewModeChanges; });
     QObject::connect(
         &surface, &ComparisonSurface::differenceMetricChanged, [&] { ++metricChanges; });
     QObject::connect(&surface, &ComparisonSurface::differenceGainChanged, [&] { ++gainChanges; });
-    QObject::connect(
-        &surface, &ComparisonSurface::differenceReferenceChanged, [&] { ++referenceChanges; });
+    QObject::connect(&surface, &ComparisonSurface::differenceEdgeChanged, [&] { ++edgeChanges; });
     QObject::connect(
         &surface, &ComparisonSurface::differenceFilterChanged, [&] { ++filterChanges; });
+    QObject::connect(
+        &surface, &ComparisonSurface::referenceSlotChanged, [&] { ++referenceSlotChanges; });
 
     surface.setViewMode(ComparisonSurface::Difference);
     surface.setDifferenceMetric(ComparisonSurface::Heatmap);
     surface.setDifferenceGain(ComparisonSurface::Gain16x);
-    surface.setDifferenceReference(ComparisonSurface::ReferenceB);
+    surface.setDifferenceEdge(ComparisonSurface::Edge1And2);
     surface.setDifferenceFilter(ComparisonSurface::Bicubic);
+    surface.setReferenceSlot(2);
 
     EXPECT_EQ(surface.viewMode(), ComparisonSurface::Difference);
     EXPECT_EQ(surface.differenceMetric(), ComparisonSurface::Heatmap);
     EXPECT_EQ(surface.differenceGain(), ComparisonSurface::Gain16x);
-    EXPECT_EQ(surface.differenceReference(), ComparisonSurface::ReferenceB);
+    EXPECT_EQ(surface.differenceEdge(), ComparisonSurface::Edge1And2);
     EXPECT_EQ(surface.differenceFilter(), ComparisonSurface::Bicubic);
+    EXPECT_EQ(surface.referenceSlot(), 2);
     EXPECT_EQ(viewModeChanges, 1);
     EXPECT_EQ(metricChanges, 1);
     EXPECT_EQ(gainChanges, 1);
-    EXPECT_EQ(referenceChanges, 1);
+    EXPECT_EQ(edgeChanges, 1);
     EXPECT_EQ(filterChanges, 1);
+    EXPECT_EQ(referenceSlotChanges, 1);
 
     surface.setViewMode(ComparisonSurface::Difference);
     surface.setDifferenceMetric(ComparisonSurface::Heatmap);
     surface.setDifferenceGain(ComparisonSurface::Gain16x);
-    surface.setDifferenceReference(ComparisonSurface::ReferenceB);
+    surface.setDifferenceEdge(ComparisonSurface::Edge1And2);
     surface.setDifferenceFilter(ComparisonSurface::Bicubic);
+    surface.setReferenceSlot(2);
     EXPECT_EQ(viewModeChanges, 1);
     EXPECT_EQ(metricChanges, 1);
     EXPECT_EQ(gainChanges, 1);
-    EXPECT_EQ(referenceChanges, 1);
+    EXPECT_EQ(edgeChanges, 1);
     EXPECT_EQ(filterChanges, 1);
+    EXPECT_EQ(referenceSlotChanges, 1);
 }
 
 class CountingActivitySink final : public platform::IRenderActivitySink {
@@ -511,27 +522,101 @@ makeSolidSetWithMetadata(platform::FrameBudget& budget,
 }
 
 [[nodiscard]] std::optional<application::FrameSet> makeSolidSet(platform::FrameBudget& budget,
-                                                                 const domain::FrameId frameId,
-                                                                 const std::uint8_t leftY,
-                                                                 const std::uint8_t rightY) {
+                                                                const domain::FrameId frameId,
+                                                                const std::uint8_t leftY,
+                                                                const std::uint8_t rightY) {
     return makeSolidSetWithMetadata(budget,
-                                     frameId,
-                                     leftY,
-                                     128U,
-                                     128U,
-                                     domain::ColorMetadata{
-                                         .matrix = domain::ColorMatrix::kBt601,
-                                         .range = domain::ColorRange::kLimited,
-                                         .matrixInferred = false,
-                                     },
-                                     rightY,
-                                     128U,
-                                     128U,
-                                     domain::ColorMetadata{
-                                         .matrix = domain::ColorMatrix::kBt709,
-                                         .range = domain::ColorRange::kFull,
-                                         .matrixInferred = false,
-                                     });
+                                    frameId,
+                                    leftY,
+                                    128U,
+                                    128U,
+                                    domain::ColorMetadata{
+                                        .matrix = domain::ColorMatrix::kBt601,
+                                        .range = domain::ColorRange::kLimited,
+                                        .matrixInferred = false,
+                                    },
+                                    rightY,
+                                    128U,
+                                    128U,
+                                    domain::ColorMetadata{
+                                        .matrix = domain::ColorMatrix::kBt709,
+                                        .range = domain::ColorRange::kFull,
+                                        .matrixInferred = false,
+                                    });
+}
+
+[[nodiscard]] std::optional<application::FrameSet>
+makeThreeSolidSet(platform::FrameBudget& budget,
+                  const domain::FrameId frameId,
+                  const std::array<std::uint8_t, 3U> lumaValues) {
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    platform::FrameResourceFactory factory{budget};
+    std::array<std::optional<application::FrameHandle>, 3U> frames;
+    for (std::size_t index = 0U; index < frames.size(); ++index) {
+        frames[index] = makeSolidFrame(factory, 16U, 9U, lumaValues[index], 128U, 128U, metadata);
+        if (!frames[index].has_value()) {
+            return std::nullopt;
+        }
+    }
+    std::vector<application::MappedSourceFrame> entries;
+    entries.reserve(frames.size());
+    for (std::size_t index = 0U; index < frames.size(); ++index) {
+        entries.push_back(application::MappedSourceFrame{
+            .sourceId = static_cast<domain::SourceId>(index),
+            .sourceFrameId = frameId,
+            .frame = *frames[index],
+            .presentationTime = domain::MediaTime{0},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+        });
+    }
+    return application::FrameSet::create(frameId, domain::MediaTime{0}, std::move(entries));
+}
+
+[[nodiscard]] std::optional<application::FrameSet>
+makeThreeSolidSetWithMissingMiddle(platform::FrameBudget& budget, const domain::FrameId frameId) {
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    platform::FrameResourceFactory factory{budget};
+    std::optional<application::FrameHandle> first =
+        makeSolidFrame(factory, 16U, 9U, 64U, 128U, 128U, metadata);
+    std::optional<application::FrameHandle> third =
+        makeSolidFrame(factory, 16U, 9U, 224U, 128U, 128U, metadata);
+    if (!first.has_value() || !third.has_value()) {
+        return std::nullopt;
+    }
+    return application::FrameSet::create(
+        frameId,
+        domain::MediaTime{0},
+        {
+            application::MappedSourceFrame{
+                .sourceId = 0U,
+                .sourceFrameId = frameId,
+                .frame = *first,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+            application::MappedSourceFrame{
+                .sourceId = 1U,
+                .sourceFrameId = std::nullopt,
+                .frame = std::nullopt,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::Missing,
+            },
+            application::MappedSourceFrame{
+                .sourceId = 2U,
+                .sourceFrameId = frameId,
+                .frame = *third,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+        });
 }
 
 template <typename Predicate>
@@ -813,15 +898,15 @@ TEST(ComparisonSurfaceWarpTests,
     auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
     platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
     std::optional<application::FrameSet> pair = makeSolidSetWithMetadata(*budget,
-                                                                           domain::FrameId{30},
-                                                                           sampleA[0U],
-                                                                           sampleA[1U],
-                                                                           sampleA[2U],
-                                                                           metadataA,
-                                                                           sampleB[0U],
-                                                                           sampleB[1U],
-                                                                           sampleB[2U],
-                                                                           metadataB);
+                                                                         domain::FrameId{30},
+                                                                         sampleA[0U],
+                                                                         sampleA[1U],
+                                                                         sampleA[2U],
+                                                                         metadataA,
+                                                                         sampleB[0U],
+                                                                         sampleB[1U],
+                                                                         sampleB[2U],
+                                                                         metadataB);
     ASSERT_TRUE(pair.has_value());
     ASSERT_EQ(actor.submit(makeContext(30U), std::move(*pair)),
               platform::GpuTransferSubmitResult::Accepted);
@@ -912,7 +997,7 @@ TEST(ComparisonSurfaceWarpTests,
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
-TEST(ComparisonSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents) {
+TEST(ComparisonSurfaceWarpTests, UsesTheFirstEdgeSourceAsCanvasForUnequalExtents) {
     SurfaceWarpHarness harness;
     harness.surface.setViewMode(ComparisonSurface::Difference);
     harness.surface.setDifferenceGain(ComparisonSurface::Gain4x);
@@ -935,16 +1020,78 @@ TEST(ComparisonSurfaceWarpTests, UsesTheSelectedReferenceCanvasForUnequalExtents
     EXPECT_GT(leftA.red() + leftA.green() + leftA.blue(), 20);
     ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
-    harness.surface.setDifferenceReference(ComparisonSurface::ReferenceB);
-    const QImage referenceB = harness.grab().convertToFormat(QImage::Format_RGBA8888);
-    ASSERT_FALSE(referenceB.isNull());
-    const QColor topB = referenceB.pixelColor(referenceB.width() / 2, 1);
-    const QColor leftB = referenceB.pixelColor(1, referenceB.height() / 2);
-    EXPECT_GT(topB.red() + topB.green() + topB.blue(), 20);
-    expectColorNear(leftB, QColor{0, 0, 0}, 2);
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedPairwiseDifferenceEdges) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::ThreeUp);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSet(*budget, domain::FrameId{40}, {32U, 64U, 224U});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(40U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage threeUp = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(threeUp.isNull());
+    const int middleY = threeUp.height() / 2;
+    const QColor first = threeUp.pixelColor(threeUp.width() / 6, middleY);
+    const QColor second = threeUp.pixelColor(threeUp.width() / 2, middleY);
+    const QColor third = threeUp.pixelColor(threeUp.width() * 5 / 6, middleY);
+    EXPECT_LT(first.red(), second.red())
+        << first.name().toStdString() << " vs " << second.name().toStdString();
+    EXPECT_LT(second.red(), third.red())
+        << second.name().toStdString() << " vs " << third.name().toStdString() << ", image width "
+        << threeUp.width();
+    ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And1);
+    const QImage smallDifference = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(smallDifference.isNull());
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And2);
+    const QImage largeDifference = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(largeDifference.isNull());
+    EXPECT_LT(
+        smallDifference.pixelColor(smallDifference.width() / 2, smallDifference.height() / 2).red(),
+        largeDifference.pixelColor(largeDifference.width() / 2, largeDifference.height() / 2)
+            .red());
     EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
-    EXPECT_EQ(harness.activitySink->acknowledgementNotifications.load(std::memory_order_relaxed),
-              1U);
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, LeavesMissingSourceSlotUndrawnWithoutShiftingLaterSources) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::ThreeUp);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSetWithMissingMiddle(*budget, domain::FrameId{41});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(41U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage threeUp = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(threeUp.isNull());
+    const int middleY = threeUp.height() / 2;
+    const QColor first = threeUp.pixelColor(threeUp.width() / 6, middleY);
+    const QColor missing = threeUp.pixelColor(threeUp.width() / 2, middleY);
+    const QColor third = threeUp.pixelColor(threeUp.width() * 5 / 6, middleY);
+    EXPECT_GT(first.red() + first.green() + first.blue(), 20);
+    expectColorNear(missing, QColor{255, 0, 255}, 2);
+    EXPECT_GT(third.red(), first.red());
+    EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));

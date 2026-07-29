@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/application/Alignment.h"
 #include "dvs/application/FrameHandle.h"
 #include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/Identifiers.h"
@@ -10,16 +11,6 @@
 #include <vector>
 
 namespace dvs::application {
-
-// How a source's frame was mapped to the canonical frame position. The UI presents this state so
-// auto-aligned views are never mistaken for strict same-frame comparisons.
-enum class FrameMatchKind {
-    ExactIndex,
-    GlobalOffset,
-    AutoAligned,
-    ManualAnchor,
-    Missing,
-};
 
 // One source's contribution to a canonical frame position. A missing entry carries neither a
 // frame nor a source frame id; it is never silently replaced by a neighbor frame.
@@ -41,9 +32,10 @@ struct MappedSourceFrame final {
 // Missing entries instead of being dropped or partially advanced.
 class FrameSet final {
 public:
-    [[nodiscard]] static std::optional<FrameSet> create(domain::FrameId canonicalFrameId,
-                                                        domain::MediaTime canonicalTime,
-                                                        std::vector<MappedSourceFrame> sources) noexcept;
+    [[nodiscard]] static std::optional<FrameSet>
+    create(domain::FrameId canonicalFrameId,
+           domain::MediaTime canonicalTime,
+           std::vector<MappedSourceFrame> sources) noexcept;
 
     [[nodiscard]] const domain::FrameId& canonicalFrameId() const noexcept;
     [[nodiscard]] const domain::MediaTime& canonicalTime() const noexcept;
@@ -121,10 +113,9 @@ inline const MappedSourceFrame* FrameSet::find(const domain::SourceId sourceId) 
 }
 
 inline bool FrameSet::isComplete() const noexcept {
-    return std::all_of(
-        sources_.begin(), sources_.end(), [](const MappedSourceFrame& entry) {
-            return entry.hasFrame();
-        });
+    return std::all_of(sources_.begin(), sources_.end(), [](const MappedSourceFrame& entry) {
+        return entry.hasFrame();
+    });
 }
 
 } // namespace dvs::application

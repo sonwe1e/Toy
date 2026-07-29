@@ -44,16 +44,25 @@ struct PresentationOptions final {
     platform::SurfaceDifferenceMetric differenceMetric =
         platform::SurfaceDifferenceMetric::RgbAbsolute;
     platform::SurfaceDifferenceGain differenceGain = platform::SurfaceDifferenceGain::Gain1x;
-    platform::SurfaceDifferenceReference differenceReference =
-        platform::SurfaceDifferenceReference::SourceA;
+    platform::SurfaceDifferenceEdge differenceEdge = platform::SurfaceDifferenceEdge::Between0And1;
     platform::SurfaceDifferenceFilter differenceFilter =
         platform::SurfaceDifferenceFilter::Bilinear;
+    std::uint8_t referenceSlot = 0U;
 };
 
 [[nodiscard]] platform::SurfaceViewMode
 nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
-    return value == ComparisonSurface::Difference ? platform::SurfaceViewMode::Difference
-                                                  : platform::SurfaceViewMode::SideBySide;
+    switch (value) {
+    case ComparisonSurface::Difference:
+        return platform::SurfaceViewMode::Difference;
+    case ComparisonSurface::ThreeUp:
+        return platform::SurfaceViewMode::ThreeUp;
+    case ComparisonSurface::ReferenceFocus:
+        return platform::SurfaceViewMode::ReferenceFocus;
+    case ComparisonSurface::SideBySide:
+        break;
+    }
+    return platform::SurfaceViewMode::SideBySide;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceMetric
@@ -88,10 +97,17 @@ nativeDifferenceGain(const ComparisonSurface::DifferenceGain value) noexcept {
     return platform::SurfaceDifferenceGain::Gain1x;
 }
 
-[[nodiscard]] platform::SurfaceDifferenceReference
-nativeDifferenceReference(const ComparisonSurface::DifferenceReference value) noexcept {
-    return value == ComparisonSurface::ReferenceB ? platform::SurfaceDifferenceReference::SourceB
-                                                  : platform::SurfaceDifferenceReference::SourceA;
+[[nodiscard]] platform::SurfaceDifferenceEdge
+nativeDifferenceEdge(const ComparisonSurface::DifferenceEdge value) noexcept {
+    switch (value) {
+    case ComparisonSurface::Edge0And2:
+        return platform::SurfaceDifferenceEdge::Between0And2;
+    case ComparisonSurface::Edge1And2:
+        return platform::SurfaceDifferenceEdge::Between1And2;
+    case ComparisonSurface::Edge0And1:
+        break;
+    }
+    return platform::SurfaceDifferenceEdge::Between0And1;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceFilter
@@ -112,8 +128,9 @@ nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept
         .viewMode = nativeViewMode(surface.viewMode()),
         .differenceMetric = nativeDifferenceMetric(surface.differenceMetric()),
         .differenceGain = nativeDifferenceGain(surface.differenceGain()),
-        .differenceReference = nativeDifferenceReference(surface.differenceReference()),
+        .differenceEdge = nativeDifferenceEdge(surface.differenceEdge()),
         .differenceFilter = nativeDifferenceFilter(surface.differenceFilter()),
+        .referenceSlot = static_cast<std::uint8_t>(surface.referenceSlot()),
     };
 }
 
@@ -154,8 +171,8 @@ public:
         presentationOptions_ = options;
     }
 
-    [[nodiscard]] bool
-    usesServices(const std::shared_ptr<const ComparisonSurface::Services>& services) const noexcept {
+    [[nodiscard]] bool usesServices(
+        const std::shared_ptr<const ComparisonSurface::Services>& services) const noexcept {
         return services_ == services;
     }
 
@@ -194,8 +211,9 @@ public:
             .viewMode = presentationOptions_.viewMode,
             .differenceMetric = presentationOptions_.differenceMetric,
             .differenceGain = presentationOptions_.differenceGain,
-            .differenceReference = presentationOptions_.differenceReference,
+            .differenceEdge = presentationOptions_.differenceEdge,
             .differenceFilter = presentationOptions_.differenceFilter,
+            .referenceSlot = presentationOptions_.referenceSlot,
         };
         static_cast<void>(renderer_.render(state));
     }
@@ -236,7 +254,9 @@ ComparisonSurface::ViewMode ComparisonSurface::viewMode() const noexcept {
 }
 
 void ComparisonSurface::setViewMode(const ViewMode value) {
-    if ((value != SideBySide && value != Difference) || viewMode_ == value) {
+    if ((value != SideBySide && value != ThreeUp && value != ReferenceFocus &&
+         value != Difference) ||
+        viewMode_ == value) {
         return;
     }
     viewMode_ = value;
@@ -273,16 +293,17 @@ void ComparisonSurface::setDifferenceGain(const DifferenceGain value) {
     update();
 }
 
-ComparisonSurface::DifferenceReference ComparisonSurface::differenceReference() const noexcept {
-    return differenceReference_;
+ComparisonSurface::DifferenceEdge ComparisonSurface::differenceEdge() const noexcept {
+    return differenceEdge_;
 }
 
-void ComparisonSurface::setDifferenceReference(const DifferenceReference value) {
-    if ((value != ReferenceA && value != ReferenceB) || differenceReference_ == value) {
+void ComparisonSurface::setDifferenceEdge(const DifferenceEdge value) {
+    if ((value != Edge0And1 && value != Edge0And2 && value != Edge1And2) ||
+        differenceEdge_ == value) {
         return;
     }
-    differenceReference_ = value;
-    emit differenceReferenceChanged();
+    differenceEdge_ = value;
+    emit differenceEdgeChanged();
     update();
 }
 
@@ -291,12 +312,24 @@ ComparisonSurface::DifferenceFilter ComparisonSurface::differenceFilter() const 
 }
 
 void ComparisonSurface::setDifferenceFilter(const DifferenceFilter value) {
-    if ((value != Nearest && value != Bilinear && value != Bicubic) ||
-        differenceFilter_ == value) {
+    if ((value != Nearest && value != Bilinear && value != Bicubic) || differenceFilter_ == value) {
         return;
     }
     differenceFilter_ = value;
     emit differenceFilterChanged();
+    update();
+}
+
+int ComparisonSurface::referenceSlot() const noexcept {
+    return referenceSlot_;
+}
+
+void ComparisonSurface::setReferenceSlot(const int value) {
+    if (value < 0 || value > 2 || referenceSlot_ == value) {
+        return;
+    }
+    referenceSlot_ = value;
+    emit referenceSlotChanged();
     update();
 }
 

@@ -31,7 +31,7 @@ constexpr std::string_view kLargeStepKey = "review.large-step-frames";
 constexpr std::string_view kViewModeKey = "review.view-mode";
 constexpr std::string_view kDifferenceMetricKey = "review.difference-metric";
 constexpr std::string_view kDifferenceGainKey = "review.difference-gain";
-constexpr std::string_view kDifferenceReferenceKey = "review.difference-reference";
+constexpr std::string_view kDifferenceEdgeKey = "review.difference-edge";
 constexpr std::string_view kDifferenceFilterKey = "review.difference-filter";
 
 class SettingsEventQueue final : public application::IApplicationEventSink {
@@ -149,8 +149,8 @@ public:
         return differenceGain_;
     }
 
-    [[nodiscard]] DifferenceReference differenceReference() const noexcept {
-        return differenceReference_;
+    [[nodiscard]] DifferenceEdge differenceEdge() const noexcept {
+        return differenceEdge_;
     }
 
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept {
@@ -187,11 +187,8 @@ public:
         changed();
     }
 
-    void setDifferenceReference(const DifferenceReference value) {
-        setEnum(differenceReference_,
-                value,
-                DifferenceReference::ReferenceA,
-                DifferenceReference::ReferenceB);
+    void setDifferenceEdge(const DifferenceEdge value) {
+        setEnum(differenceEdge_, value, DifferenceEdge::Edge0And1, DifferenceEdge::Edge1And2);
     }
 
     void setDifferenceFilter(const DifferenceFilter value) {
@@ -371,11 +368,14 @@ private:
             iterator != values.end() && iterator->second == "5") {
             nextLargeStep = 5;
         }
-        const ViewMode nextViewMode = parseEnum<ViewMode>(values,
-                                                          kViewModeKey,
-                                                          {{"side-by-side", ViewMode::SideBySide},
-                                                           {"difference", ViewMode::Difference}})
-                                          .value_or(ViewMode::SideBySide);
+        const ViewMode nextViewMode =
+            parseEnum<ViewMode>(values,
+                                kViewModeKey,
+                                {{"side-by-side", ViewMode::SideBySide},
+                                 {"three-up", ViewMode::ThreeUp},
+                                 {"reference-focus", ViewMode::ReferenceFocus},
+                                 {"difference", ViewMode::Difference}})
+                .value_or(ViewMode::SideBySide);
         const DifferenceMetric nextMetric =
             parseEnum<DifferenceMetric>(values,
                                         kDifferenceMetricKey,
@@ -393,12 +393,13 @@ private:
                                        {"8x", DifferenceGain::Gain8x},
                                        {"16x", DifferenceGain::Gain16x}})
                 .value_or(DifferenceGain::Gain1x);
-        const DifferenceReference nextReference =
-            parseEnum<DifferenceReference>(
-                values,
-                kDifferenceReferenceKey,
-                {{"a", DifferenceReference::ReferenceA}, {"b", DifferenceReference::ReferenceB}})
-                .value_or(DifferenceReference::ReferenceA);
+        const DifferenceEdge nextReference =
+            parseEnum<DifferenceEdge>(values,
+                                      kDifferenceEdgeKey,
+                                      {{"0-1", DifferenceEdge::Edge0And1},
+                                       {"0-2", DifferenceEdge::Edge0And2},
+                                       {"1-2", DifferenceEdge::Edge1And2}})
+                .value_or(DifferenceEdge::Edge0And1);
         const DifferenceFilter nextFilter =
             parseEnum<DifferenceFilter>(values,
                                         kDifferenceFilterKey,
@@ -409,13 +410,12 @@ private:
 
         const bool changed = largeStepFrames_ != nextLargeStep || viewMode_ != nextViewMode ||
                              differenceMetric_ != nextMetric || differenceGain_ != nextGain ||
-                             differenceReference_ != nextReference ||
-                             differenceFilter_ != nextFilter;
+                             differenceEdge_ != nextReference || differenceFilter_ != nextFilter;
         largeStepFrames_ = nextLargeStep;
         viewMode_ = nextViewMode;
         differenceMetric_ = nextMetric;
         differenceGain_ = nextGain;
-        differenceReference_ = nextReference;
+        differenceEdge_ = nextReference;
         differenceFilter_ = nextFilter;
         if (changed) {
             Q_EMIT owner_.preferencesChanged();
@@ -424,8 +424,21 @@ private:
 
     void writeKnownValues(std::map<std::string, std::string, std::less<>>& values) const {
         values.insert_or_assign(std::string{kLargeStepKey}, largeStepFrames_ == 5 ? "5" : "10");
-        values.insert_or_assign(std::string{kViewModeKey},
-                                viewMode_ == ViewMode::Difference ? "difference" : "side-by-side");
+        const char* viewModeName = "side-by-side";
+        switch (viewMode_) {
+        case ViewMode::ThreeUp:
+            viewModeName = "three-up";
+            break;
+        case ViewMode::ReferenceFocus:
+            viewModeName = "reference-focus";
+            break;
+        case ViewMode::Difference:
+            viewModeName = "difference";
+            break;
+        case ViewMode::SideBySide:
+            break;
+        }
+        values.insert_or_assign(std::string{kViewModeKey}, std::string{viewModeName});
         static constexpr std::string_view metrics[] = {"rgb-absolute", "luma", "chroma", "heatmap"};
         static constexpr std::string_view gains[] = {"1x", "2x", "4x", "8x", "16x"};
         static constexpr std::string_view filters[] = {"nearest", "bilinear", "bicubic"};
@@ -433,9 +446,18 @@ private:
                                 std::string{metrics[static_cast<std::size_t>(differenceMetric_)]});
         values.insert_or_assign(std::string{kDifferenceGainKey},
                                 std::string{gains[static_cast<std::size_t>(differenceGain_)]});
-        values.insert_or_assign(std::string{kDifferenceReferenceKey},
-                                differenceReference_ == DifferenceReference::ReferenceB ? "b"
-                                                                                        : "a");
+        const char* edgeName = "0-1";
+        switch (differenceEdge_) {
+        case DifferenceEdge::Edge0And2:
+            edgeName = "0-2";
+            break;
+        case DifferenceEdge::Edge1And2:
+            edgeName = "1-2";
+            break;
+        case DifferenceEdge::Edge0And1:
+            break;
+        }
+        values.insert_or_assign(std::string{kDifferenceEdgeKey}, std::string{edgeName});
         values.insert_or_assign(std::string{kDifferenceFilterKey},
                                 std::string{filters[static_cast<std::size_t>(differenceFilter_)]});
     }
@@ -454,7 +476,7 @@ private:
     ViewMode viewMode_ = ViewMode::SideBySide;
     DifferenceMetric differenceMetric_ = DifferenceMetric::RgbAbsolute;
     DifferenceGain differenceGain_ = DifferenceGain::Gain1x;
-    DifferenceReference differenceReference_ = DifferenceReference::ReferenceA;
+    DifferenceEdge differenceEdge_ = DifferenceEdge::Edge0And1;
     DifferenceFilter differenceFilter_ = DifferenceFilter::Bilinear;
     bool loadFinished_ = false;
     bool localChanges_ = false;
@@ -487,9 +509,9 @@ ReviewPreferencesController::differenceGain() const noexcept {
     return impl_->differenceGain();
 }
 
-ReviewPreferencesController::DifferenceReference
-ReviewPreferencesController::differenceReference() const noexcept {
-    return impl_->differenceReference();
+ReviewPreferencesController::DifferenceEdge
+ReviewPreferencesController::differenceEdge() const noexcept {
+    return impl_->differenceEdge();
 }
 
 ReviewPreferencesController::DifferenceFilter
@@ -513,8 +535,8 @@ void ReviewPreferencesController::setDifferenceGain(const DifferenceGain value) 
     impl_->setDifferenceGain(value);
 }
 
-void ReviewPreferencesController::setDifferenceReference(const DifferenceReference value) {
-    impl_->setDifferenceReference(value);
+void ReviewPreferencesController::setDifferenceEdge(const DifferenceEdge value) {
+    impl_->setDifferenceEdge(value);
 }
 
 void ReviewPreferencesController::setDifferenceFilter(const DifferenceFilter value) {

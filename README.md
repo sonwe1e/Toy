@@ -14,9 +14,9 @@ in phases on the `refactor/unified-comparator` branch:
 | 0 | Repository root promotion, legacy archive, docs, CI split | done |
 | 1 | Prune export/clip/proxy scope | done |
 | 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | done |
-| 3 | Parallel per-source decode, three-up layouts, selectable difference edges | pending |
-| 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | planned |
-| 5 | Extended difference and analysis layouts | planned |
+| 3 | Parallel per-source decode, three-up/reference-focus layouts, selectable difference edges | done |
+| 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | done |
+| 5 | Extended difference and analysis layouts | in progress: pair selection and RGB/luma/chroma/heatmap differences done |
 | 6 | 10-bit/P010, D3D11VA hardware decode, performance hardening | planned |
 
 `legacy/` contains the retired `DualVideoTool` and the `video-compare` fork as
@@ -51,11 +51,31 @@ Launch the development build after it succeeds:
 .\out\build\dev\bin\DualVideoStudio.exe
 ```
 
-During the Phase-2 transition the UI still opens an A/B pair: the two selectors stage
-paths and **Open Pair** validates and opens both sources atomically. Navigation uses
-**First**, **Previous**, **Next**, **Last** or the Home, Left, Right, and End keys.
+The UI opens two required sources and one optional third source as one atomic comparison
+set. Choose which source is the Reference, then use side-by-side, three-up,
+reference-focus, or Difference view; Difference can compare A/B, A/C, or B/C. Navigation
+uses **First**, **Previous**, **Next**, **Last** or the Home, Left, Right, and End keys.
 The UI stays disabled until the D3D11 scene graph is ready and reports source-specific
 validation or decode errors without replacing a previously presented frame.
+
+Strict index is the default: canonical frame `i` maps to frame `i` in every source.
+The alignment bar can apply a signed global frame offset to non-reference sources without
+reopening the media, or run **Auto align**. Automatic estimation samples low-resolution
+luma evidence, searches a bounded offset window, and combines structural, edge, and
+perceptual-hash distances. A clear winner is applied and re-presented atomically; an
+ambiguous winner is shown only as a confidence-scored suggestion. Out-of-range mappings
+become an explicit `Missing` source slot and are never clamped or silently replaced by a
+neighboring frame. Frame-rate, duration, resolution, and color differences remain visible
+as non-blocking compatibility warnings.
+
+**Find drops** performs a bounded-band, full-sequence alignment to identify missing,
+extra, and duplicated target frames. Confident mappings are applied atomically; ambiguous
+results remain suggestions. The operation accepts at most 50,000 frames by default and has
+a hard safety cap of 100,000 frames per source. **Anchors...** adds or replaces manual
+canonical-to-source frame pairs; anchors override automatic mappings and interpolate
+monotonically between points. The timeline marks missing frames in red, duplicates in
+orange, extra frames in purple, manual anchors in cyan, and the start of each low-confidence
+region in yellow. Strict reset clears offsets and anchors.
 
 For a deterministic headless GUI check using the software D3D11 device:
 
@@ -63,6 +83,15 @@ For a deterministic headless GUI check using the software D3D11 device:
 .\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
   .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
   .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4
+```
+
+Pass a third path to exercise the complete three-source path:
+
+```powershell
+.\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
+  .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
+  .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4 `
+  .\tests\fixtures\media\h265_a_320x180_30fps_12.mp4
 ```
 
 Developer diagnostics use the console-subsystem executable, so output and exit codes

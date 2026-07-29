@@ -51,10 +51,8 @@ enum class CommandOutcome {
 
 // A terminal retains the most-specific scope supplied by the originating port. The coordinator
 // must compare all members of that scope before accepting an asynchronous result.
-using EventContext = std::variant<RequestContext,
-                                  PlaybackRequestContext,
-                                  FrameRequestContext,
-                                  SaveRequestContext>;
+using EventContext =
+    std::variant<RequestContext, PlaybackRequestContext, FrameRequestContext, SaveRequestContext>;
 
 // Graphics device notifications deliberately have no session identity: a device can become
 // available before a session starts, and a later loss must invalidate every session using it.
@@ -103,6 +101,16 @@ struct FrameSetReady final {
 struct FrameSetPresented final {
     FrameRequestContext context;
     domain::FrameId frameId;
+};
+
+struct AlignmentEstimated final {
+    PlaybackRequestContext context;
+    std::vector<GlobalOffsetEstimate> estimates;
+};
+
+struct SequenceAlignmentAnalyzed final {
+    PlaybackRequestContext context;
+    std::vector<SequenceAlignmentResult> results;
 };
 
 struct GraphicsDeviceReady final {
@@ -168,6 +176,8 @@ using ApplicationEvent = std::variant<RequestTerminal,
                                       ProbeCompleted,
                                       FrameSetReady,
                                       FrameSetPresented,
+                                      AlignmentEstimated,
+                                      SequenceAlignmentAnalyzed,
                                       GraphicsDeviceReady,
                                       GraphicsDeviceUnavailable,
                                       GraphicsDeviceLost,
