@@ -87,12 +87,28 @@ namespace {
                                  static_cast<float>(edgeCount * static_cast<std::size_t>(510U));
 }
 
+template <std::size_t Size>
+[[nodiscard]] float
+normalizedFeatureDifference(const std::array<std::uint8_t, Size>& left,
+                            const std::array<std::uint8_t, Size>& right) noexcept {
+    std::uint64_t total = 0U;
+    for (std::size_t index = 0U; index < Size; ++index) {
+        total += static_cast<std::uint64_t>(
+            std::abs(static_cast<int>(left[index]) - static_cast<int>(right[index])));
+    }
+    return static_cast<float>(total) / static_cast<float>(Size * 255U);
+}
+
 [[nodiscard]] float signatureDistance(const FrameLumaSignature& left,
                                       const FrameLumaSignature& right) noexcept {
     const float hashDistance =
         static_cast<float>(std::popcount(left.perceptualHash ^ right.perceptualHash)) / 64.0F;
-    return (0.50F * structuralDistance(left, right)) + (0.35F * gradientDistance(left, right)) +
-           (0.10F * hashDistance) + (0.05F * normalizedLumaDifference(left, right));
+    const float varianceDistance = std::abs(left.normalizedVariance - right.normalizedVariance);
+    return (0.30F * structuralDistance(left, right)) + (0.15F * gradientDistance(left, right)) +
+           (0.08F * hashDistance) + (0.07F * normalizedLumaDifference(left, right)) +
+           (0.20F * normalizedFeatureDifference(left.detailBlocks, right.detailBlocks)) +
+           (0.15F * normalizedFeatureDifference(left.sobelBlocks, right.sobelBlocks)) +
+           (0.05F * varianceDistance);
 }
 
 [[nodiscard]] const FrameLumaSignature*
@@ -158,7 +174,9 @@ selectEvidence(const std::span<const FrameLumaSignature> reference,
 } // namespace
 
 bool FrameLumaSignature::isValid() const noexcept {
-    return frameId.isValid();
+    return frameId.isValid() && (!displayTime.has_value() || displayTime->microseconds() >= 0) &&
+           std::isfinite(normalizedVariance) && normalizedVariance >= 0.0F &&
+           normalizedVariance <= 1.0F;
 }
 
 bool GlobalOffsetEstimationOptions::isValid() const noexcept {
@@ -172,26 +190,108 @@ bool GlobalOffsetEstimationOptions::isValid() const noexcept {
 FrameLumaSignature makeFrameLumaSignature(
     const domain::FrameId frameId,
     const std::span<const std::uint8_t, kAlignmentSignaturePixels> luma) noexcept {
+    std::array<std::uint8_t, kAlignmentDetailPixels> detail{};
+    for (std::size_t y = 0U; y < kAlignmentDetailHeight; ++y) {
+        const std::size_t sourceY = y * kAlignmentSignatureHeight / kAlignmentDetailHeight;
+        for (std::size_t x = 0U; x < kAlignmentDetailWidth; ++x) {
+            const std::size_t sourceX = x * kAlignmentSignatureWidth / kAlignmentDetailWidth;
+            detail[(y * kAlignmentDetailWidth) + x] =
+                luma[(sourceY * kAlignmentSignatureWidth) + sourceX];
+        }
+    }
+    return makeMultiScaleFrameLumaSignature(frameId, detail);
+}
+
+FrameLumaSignature makeMultiScaleFrameLumaSignature(
+    const domain::FrameId frameId,
+    const std::span<const std::uint8_t, kAlignmentDetailPixels> detailLuma,
+    const std::optional<domain::MediaTime> displayTime) noexcept {
     FrameLumaSignature signature{
         .frameId = frameId,
+        .displayTime = displayTime,
     };
-    std::copy(luma.begin(), luma.end(), signature.luma.begin());
+    for (std::size_t targetY = 0U; targetY < kAlignmentSignatureHeight; ++targetY) {
+        const std::size_t sourceY0 = targetY * kAlignmentDetailHeight / kAlignmentSignatureHeight;
+        const std::size_t sourceY1 =
+            (targetY + 1U) * kAlignmentDetailHeight / kAlignmentSignatureHeight;
+        for (std::size_t targetX = 0U; targetX < kAlignmentSignatureWidth; ++targetX) {
+            const std::size_t sourceX0 = targetX * kAlignmentDetailWidth / kAlignmentSignatureWidth;
+            const std::size_t sourceX1 =
+                (targetX + 1U) * kAlignmentDetailWidth / kAlignmentSignatureWidth;
+            std::uint64_t sum = 0U;
+            std::size_t count = 0U;
+            for (std::size_t y = sourceY0; y < sourceY1; ++y) {
+                for (std::size_t x = sourceX0; x < sourceX1; ++x) {
+                    sum += detailLuma[(y * kAlignmentDetailWidth) + x];
+                    ++count;
+                }
+            }
+            signature.luma[(targetY * kAlignmentSignatureWidth) + targetX] =
+                static_cast<std::uint8_t>(sum / count);
+        }
+    }
 
-    std::uint64_t sum = 0U;
+    double sum = 0.0;
+    double squaredSum = 0.0;
+    for (const std::uint8_t value : detailLuma) {
+        const double sample = static_cast<double>(value);
+        sum += sample;
+        squaredSum += sample * sample;
+    }
+    const double count = static_cast<double>(detailLuma.size());
+    const double mean = sum / count;
+    const double variance = std::max(0.0, (squaredSum / count) - (mean * mean));
+    signature.normalizedVariance =
+        static_cast<float>(std::clamp(variance / (255.0 * 255.0), 0.0, 1.0));
+
+    for (std::size_t blockY = 0U; blockY < kAlignmentFeatureGridHeight; ++blockY) {
+        const std::size_t y0 = blockY * kAlignmentDetailHeight / kAlignmentFeatureGridHeight;
+        const std::size_t y1 = (blockY + 1U) * kAlignmentDetailHeight / kAlignmentFeatureGridHeight;
+        for (std::size_t blockX = 0U; blockX < kAlignmentFeatureGridWidth; ++blockX) {
+            const std::size_t x0 = blockX * kAlignmentDetailWidth / kAlignmentFeatureGridWidth;
+            const std::size_t x1 =
+                (blockX + 1U) * kAlignmentDetailWidth / kAlignmentFeatureGridWidth;
+            std::uint64_t blockSum = 0U;
+            std::uint64_t sobelSum = 0U;
+            std::size_t blockCount = 0U;
+            for (std::size_t y = y0; y < y1; ++y) {
+                for (std::size_t x = x0; x < x1; ++x) {
+                    const std::size_t index = (y * kAlignmentDetailWidth) + x;
+                    blockSum += detailLuma[index];
+                    if (x > 0U && x + 1U < kAlignmentDetailWidth && y > 0U &&
+                        y + 1U < kAlignmentDetailHeight) {
+                        const int horizontal = static_cast<int>(detailLuma[index + 1U]) -
+                                               static_cast<int>(detailLuma[index - 1U]);
+                        const int vertical =
+                            static_cast<int>(detailLuma[index + kAlignmentDetailWidth]) -
+                            static_cast<int>(detailLuma[index - kAlignmentDetailWidth]);
+                        sobelSum += static_cast<std::uint64_t>(
+                            std::min(255, std::abs(horizontal) + std::abs(vertical)));
+                    }
+                    ++blockCount;
+                }
+            }
+            const std::size_t block = (blockY * kAlignmentFeatureGridWidth) + blockX;
+            signature.detailBlocks[block] = static_cast<std::uint8_t>(blockSum / blockCount);
+            signature.sobelBlocks[block] = static_cast<std::uint8_t>(sobelSum / blockCount);
+        }
+    }
+
+    std::uint64_t hashSum = 0U;
     for (std::size_t y = 0U; y < 8U; ++y) {
         for (std::size_t x = 0U; x < 8U; ++x) {
             const std::size_t sourceX = (x * kAlignmentSignatureWidth) / 8U;
             const std::size_t sourceY = (y * kAlignmentSignatureHeight) / 8U;
-            sum += signature.luma[(sourceY * kAlignmentSignatureWidth) + sourceX];
+            hashSum += signature.luma[(sourceY * kAlignmentSignatureWidth) + sourceX];
         }
     }
-    const std::uint8_t mean = static_cast<std::uint8_t>(sum / 64U);
+    const std::uint8_t hashMean = static_cast<std::uint8_t>(hashSum / 64U);
     for (std::size_t y = 0U; y < 8U; ++y) {
         for (std::size_t x = 0U; x < 8U; ++x) {
             const std::size_t sourceX = (x * kAlignmentSignatureWidth) / 8U;
             const std::size_t sourceY = (y * kAlignmentSignatureHeight) / 8U;
             const std::size_t bit = (y * 8U) + x;
-            if (signature.luma[(sourceY * kAlignmentSignatureWidth) + sourceX] >= mean) {
+            if (signature.luma[(sourceY * kAlignmentSignatureWidth) + sourceX] >= hashMean) {
                 signature.perceptualHash |= std::uint64_t{1} << bit;
             }
         }
@@ -294,14 +394,21 @@ bool SequenceAlignmentOptions::isValid() const noexcept {
            duplicateDistance >= 0.0F && duplicateDistance <= 1.0F &&
            std::isfinite(minimumConfidence) && minimumConfidence >= 0.0F &&
            minimumConfidence <= 1.0F && std::isfinite(maximumMeanMatchCost) &&
-           maximumMeanMatchCost >= 0.0F && maximumMeanMatchCost <= 1.0F;
+           maximumMeanMatchCost >= 0.0F && maximumMeanMatchCost <= 1.0F &&
+           std::isfinite(sceneCutDistance) && sceneCutDistance >= 0.0F &&
+           sceneCutDistance <= 1.0F && segmentLength > 0U && segmentLength <= 10'000U &&
+           maximumLowConfidenceRun > 0U && maximumLowConfidenceRun <= segmentLength &&
+           std::isfinite(minimumSegmentP10Confidence) && minimumSegmentP10Confidence >= 0.0F &&
+           minimumSegmentP10Confidence <= 1.0F && std::isfinite(maximumSegmentAnomalyDensity) &&
+           maximumSegmentAnomalyDensity >= 0.0F && maximumSegmentAnomalyDensity <= 1.0F;
 }
 
 std::optional<SequenceAlignmentResult>
 alignFrameSequences(const domain::SourceId targetSourceId,
                     const std::span<const FrameLumaSignature> reference,
                     const std::span<const FrameLumaSignature> target,
-                    const SequenceAlignmentOptions& options) noexcept {
+                    const SequenceAlignmentOptions& options,
+                    const std::span<const ManualAlignmentAnchor> anchors) noexcept {
     try {
         if (!options.isValid() || reference.empty() || target.empty() ||
             reference.size() >
@@ -320,6 +427,46 @@ alignFrameSequences(const domain::SourceId targetSourceId,
         };
         if (!isContiguous(reference) || !isContiguous(target)) {
             return std::nullopt;
+        }
+        const auto hasCompleteTimeline = [](const std::span<const FrameLumaSignature> sequence) {
+            const bool any = std::any_of(sequence.begin(), sequence.end(), [](const auto& value) {
+                return value.displayTime.has_value();
+            });
+            if (!any) {
+                return false;
+            }
+            for (std::size_t index = 0U; index < sequence.size(); ++index) {
+                if (!sequence[index].displayTime.has_value() ||
+                    (index > 0U &&
+                     sequence[index - 1U].displayTime >= sequence[index].displayTime)) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const bool referenceHasTimeline = hasCompleteTimeline(reference);
+        const bool targetHasTimeline = hasCompleteTimeline(target);
+        const bool anyTimeline =
+            std::any_of(reference.begin(),
+                        reference.end(),
+                        [](const auto& value) { return value.displayTime.has_value(); }) ||
+            std::any_of(target.begin(), target.end(), [](const auto& value) {
+                return value.displayTime.has_value();
+            });
+        if (anyTimeline && (!referenceHasTimeline || !targetHasTimeline)) {
+            return std::nullopt;
+        }
+        for (std::size_t index = 0U; index < anchors.size(); ++index) {
+            if (!anchors[index].canonicalFrameId.isValid() ||
+                !anchors[index].sourceFrameId.isValid() ||
+                anchors[index].canonicalFrameId.value() >=
+                    static_cast<std::int64_t>(reference.size()) ||
+                anchors[index].sourceFrameId.value() >= static_cast<std::int64_t>(target.size()) ||
+                (index > 0U &&
+                 (anchors[index - 1U].canonicalFrameId >= anchors[index].canonicalFrameId ||
+                  anchors[index - 1U].sourceFrameId >= anchors[index].sourceFrameId))) {
+                return std::nullopt;
+            }
         }
 
         enum class Step : std::uint8_t {
@@ -349,9 +496,85 @@ alignFrameSequences(const domain::SourceId targetSourceId,
         };
 
         const std::int64_t targetCount = static_cast<std::int64_t>(target.size());
+        const auto boundaryTime = [](const std::span<const FrameLumaSignature> sequence,
+                                     const std::size_t prefix) {
+            if (prefix < sequence.size()) {
+                return sequence[prefix].displayTime->microseconds();
+            }
+            if (sequence.size() == 1U) {
+                return sequence.front().displayTime->microseconds() + 1;
+            }
+            const std::int64_t last = sequence.back().displayTime->microseconds();
+            const std::int64_t previous =
+                sequence[sequence.size() - 2U].displayTime->microseconds();
+            return last + std::max<std::int64_t>(1, last - previous);
+        };
+        std::int64_t expectedTimeOffset = 0;
+        if (referenceHasTimeline && options.expectedOffset > 0) {
+            const std::size_t frame =
+                std::min(static_cast<std::size_t>(options.expectedOffset), target.size() - 1U);
+            expectedTimeOffset = target[frame].displayTime->microseconds();
+        } else if (referenceHasTimeline && options.expectedOffset < 0) {
+            const std::size_t frame =
+                std::min(static_cast<std::size_t>(-options.expectedOffset), reference.size() - 1U);
+            expectedTimeOffset = -reference[frame].displayTime->microseconds();
+        }
+        const auto baseCenterFor = [&](const std::size_t referencePrefix) {
+            if (!referenceHasTimeline) {
+                return std::clamp<std::int64_t>(static_cast<std::int64_t>(referencePrefix) +
+                                                    options.expectedOffset,
+                                                0,
+                                                targetCount);
+            }
+            const std::int64_t guidedTime =
+                boundaryTime(reference, referencePrefix) + expectedTimeOffset;
+            const auto targetBoundary =
+                std::lower_bound(target.begin(),
+                                 target.end(),
+                                 guidedTime,
+                                 [](const FrameLumaSignature& signature, const std::int64_t time) {
+                                     return signature.displayTime->microseconds() < time;
+                                 });
+            return static_cast<std::int64_t>(targetBoundary - target.begin());
+        };
+        std::vector<std::pair<std::size_t, std::int64_t>> constraints;
+        constraints.reserve(anchors.size() + 2U);
+        constraints.emplace_back(0U, 0);
+        for (const ManualAlignmentAnchor& anchor : anchors) {
+            constraints.emplace_back(static_cast<std::size_t>(anchor.canonicalFrameId.value()) + 1U,
+                                     anchor.sourceFrameId.value() + 1);
+        }
+        constraints.emplace_back(reference.size(), targetCount);
+        const auto centerFor = [&](const std::size_t referencePrefix) {
+            const std::int64_t base = baseCenterFor(referencePrefix);
+            const auto right =
+                std::lower_bound(constraints.begin(),
+                                 constraints.end(),
+                                 referencePrefix,
+                                 [](const auto& constraint, const std::size_t prefix) {
+                                     return constraint.first < prefix;
+                                 });
+            if (right == constraints.begin()) {
+                return right->second;
+            }
+            if (right == constraints.end()) {
+                return constraints.back().second;
+            }
+            const auto& left = *(right - 1);
+            if (right->first == referencePrefix) {
+                return right->second;
+            }
+            const std::int64_t leftCorrection = left.second - baseCenterFor(left.first);
+            const std::int64_t rightCorrection = right->second - baseCenterFor(right->first);
+            const long double ratio = static_cast<long double>(referencePrefix - left.first) /
+                                      static_cast<long double>(right->first - left.first);
+            const auto correction = static_cast<std::int64_t>(
+                std::llround(static_cast<long double>(leftCorrection) +
+                             (static_cast<long double>(rightCorrection - leftCorrection) * ratio)));
+            return std::clamp<std::int64_t>(base + correction, 0, targetCount);
+        };
         const auto boundsFor = [&](const std::size_t referencePrefix) {
-            const std::int64_t center =
-                static_cast<std::int64_t>(referencePrefix) + options.expectedOffset;
+            const std::int64_t center = centerFor(referencePrefix);
             const std::int64_t first =
                 std::max<std::int64_t>(0, center - static_cast<std::int64_t>(options.bandWidth));
             const std::int64_t last = std::min<std::int64_t>(
@@ -376,6 +599,37 @@ alignFrameSequences(const domain::SourceId targetSourceId,
         }
         start->cost = 0.0F;
 
+        const auto crossesAnchor = [&](const std::size_t referencePrefix,
+                                       const std::size_t targetPrefix) {
+            return std::any_of(anchors.begin(), anchors.end(), [&](const auto& anchor) {
+                const std::size_t requiredReference =
+                    static_cast<std::size_t>(anchor.canonicalFrameId.value()) + 1U;
+                const std::size_t requiredTarget =
+                    static_cast<std::size_t>(anchor.sourceFrameId.value()) + 1U;
+                return (referencePrefix < requiredReference && targetPrefix >= requiredTarget) ||
+                       (referencePrefix >= requiredReference && targetPrefix < requiredTarget);
+            });
+        };
+        const auto isAnchorCell = [&](const std::size_t referencePrefix,
+                                      const std::size_t targetPrefix) {
+            return std::any_of(anchors.begin(), anchors.end(), [&](const auto& anchor) {
+                return referencePrefix ==
+                           static_cast<std::size_t>(anchor.canonicalFrameId.value()) + 1U &&
+                       targetPrefix == static_cast<std::size_t>(anchor.sourceFrameId.value()) + 1U;
+            });
+        };
+        const auto matchDistance = [&](const std::size_t referenceIndex,
+                                       const std::size_t targetIndex) {
+            const float spatial = signatureDistance(reference[referenceIndex], target[targetIndex]);
+            if (referenceIndex == 0U || targetIndex == 0U) {
+                return spatial;
+            }
+            const float referenceMotion =
+                normalizedLumaDifference(reference[referenceIndex - 1U], reference[referenceIndex]);
+            const float targetMotion =
+                normalizedLumaDifference(target[targetIndex - 1U], target[targetIndex]);
+            return (0.85F * spatial) + (0.15F * std::abs(referenceMotion - targetMotion));
+        };
         for (std::size_t i = 0U; i < rows.size(); ++i) {
             Row& row = rows[i];
             for (std::size_t local = 0U; local < row.cells.size(); ++local) {
@@ -383,14 +637,19 @@ alignFrameSequences(const domain::SourceId targetSourceId,
                 if (i == 0U && j == 0U) {
                     continue;
                 }
+                if (crossesAnchor(i, j)) {
+                    continue;
+                }
                 Cell& cell = row.cells[local];
                 if (i > 0U && j > 0U) {
                     if (const Cell* const diagonal = rows[i - 1U].find(j - 1U);
                         diagonal != nullptr && std::isfinite(diagonal->cost)) {
-                        cell.cost =
-                            diagonal->cost + signatureDistance(reference[i - 1U], target[j - 1U]);
+                        cell.cost = diagonal->cost + matchDistance(i - 1U, j - 1U);
                         cell.step = Step::Match;
                     }
+                }
+                if (isAnchorCell(i, j)) {
+                    continue;
                 }
                 if (i > 0U) {
                     if (const Cell* const above = rows[i - 1U].find(j);
@@ -497,10 +756,10 @@ alignFrameSequences(const domain::SourceId targetSourceId,
             }
 
             const std::size_t targetIndex = *mapping[referenceIndex];
-            const float cost = signatureDistance(reference[referenceIndex], target[targetIndex]);
+            const float cost = matchDistance(referenceIndex, targetIndex);
             float runnerUp = 1.0F;
             const std::int64_t center =
-                static_cast<std::int64_t>(referenceIndex) + options.expectedOffset;
+                std::max<std::int64_t>(0, centerFor(referenceIndex + 1U) - 1);
             const std::int64_t first =
                 std::max<std::int64_t>(0, center - static_cast<std::int64_t>(options.bandWidth));
             const std::int64_t last = std::min<std::int64_t>(
@@ -509,9 +768,8 @@ alignFrameSequences(const domain::SourceId targetSourceId,
                 if (static_cast<std::size_t>(candidate) == targetIndex) {
                     continue;
                 }
-                runnerUp = std::min(runnerUp,
-                                    signatureDistance(reference[referenceIndex],
-                                                      target[static_cast<std::size_t>(candidate)]));
+                runnerUp = std::min(
+                    runnerUp, matchDistance(referenceIndex, static_cast<std::size_t>(candidate)));
             }
             const float margin =
                 runnerUp <= cost
@@ -533,8 +791,114 @@ alignFrameSequences(const domain::SourceId targetSourceId,
         }
         result.meanMatchCost = totalMatchCost / static_cast<float>(matchCount);
         result.confidence = totalConfidence / static_cast<float>(matchCount);
-        result.autoApplicable = result.meanMatchCost <= options.maximumMeanMatchCost &&
-                                result.confidence >= options.minimumConfidence;
+        std::vector<bool> sceneCuts(reference.size(), false);
+        for (std::size_t frame = 1U; frame < reference.size(); ++frame) {
+            bool sceneCut = signatureDistance(reference[frame - 1U], reference[frame]) >=
+                            options.sceneCutDistance;
+            if (!sceneCut && mapping[frame - 1U].has_value() && mapping[frame].has_value()) {
+                const std::size_t previousTarget = *mapping[frame - 1U];
+                const std::size_t currentTarget = *mapping[frame];
+                if (currentTarget > previousTarget) {
+                    sceneCut = signatureDistance(target[previousTarget], target[currentTarget]) >=
+                               options.sceneCutDistance;
+                }
+            }
+            sceneCuts[frame] = sceneCut;
+        }
+
+        std::vector<std::size_t> segmentBoundaries{0U};
+        for (std::size_t frame = 1U; frame < reference.size(); ++frame) {
+            if (sceneCuts[frame] || frame - segmentBoundaries.back() >= options.segmentLength) {
+                segmentBoundaries.push_back(frame);
+            }
+        }
+        segmentBoundaries.push_back(reference.size());
+
+        bool hasAcceptedSegment = false;
+        result.segments.reserve(segmentBoundaries.size() - 1U);
+        for (std::size_t boundary = 1U; boundary < segmentBoundaries.size(); ++boundary) {
+            const std::size_t first = segmentBoundaries[boundary - 1U];
+            const std::size_t segmentEnd = segmentBoundaries[boundary];
+            std::vector<float> confidences;
+            confidences.reserve(segmentEnd - first);
+            float confidenceTotal = 0.0F;
+            std::size_t lowRun = 0U;
+            std::size_t maximumLowRun = 0U;
+            std::optional<std::size_t> firstMapped;
+            std::optional<std::size_t> lastMapped;
+            std::size_t mappedCount = 0U;
+            for (std::size_t frame = first; frame < segmentEnd; ++frame) {
+                const SequenceAlignmentEntry& entry = result.entries[frame];
+                confidences.push_back(entry.confidence);
+                confidenceTotal += entry.confidence;
+                if (!entry.sourceFrameId.has_value() ||
+                    entry.confidence < options.minimumConfidence) {
+                    ++lowRun;
+                    maximumLowRun = std::max(maximumLowRun, lowRun);
+                } else {
+                    lowRun = 0U;
+                }
+                if (entry.sourceFrameId.has_value()) {
+                    const std::size_t mapped =
+                        static_cast<std::size_t>(entry.sourceFrameId->value());
+                    firstMapped = firstMapped.value_or(mapped);
+                    lastMapped = mapped;
+                    ++mappedCount;
+                }
+            }
+            std::sort(confidences.begin(), confidences.end());
+            const std::size_t p10Index = static_cast<std::size_t>(
+                std::floor(static_cast<double>(confidences.size() - 1U) * 0.10));
+            const float meanConfidence = confidenceTotal / static_cast<float>(confidences.size());
+            const float p10Confidence = confidences[p10Index];
+            const std::size_t anomalyCount = static_cast<std::size_t>(std::count_if(
+                result.anomalies.begin(),
+                result.anomalies.end(),
+                [&](const SequenceAlignmentAnomaly& anomaly) {
+                    return anomaly.canonicalFrameId.has_value() &&
+                           anomaly.canonicalFrameId->value() >= static_cast<std::int64_t>(first) &&
+                           anomaly.canonicalFrameId->value() <
+                               static_cast<std::int64_t>(segmentEnd);
+                }));
+            const float anomalyDensity =
+                static_cast<float>(anomalyCount) / static_cast<float>(segmentEnd - first);
+            float mappingSlope = 1.0F;
+            if (firstMapped.has_value() && lastMapped.has_value() && segmentEnd - first > 1U) {
+                mappingSlope = static_cast<float>(*lastMapped - *firstMapped) /
+                               static_cast<float>((segmentEnd - first) - 1U);
+            }
+            const bool sceneCutProximity =
+                std::any_of(sceneCuts.begin() + static_cast<std::ptrdiff_t>(first),
+                            sceneCuts.begin() + static_cast<std::ptrdiff_t>(segmentEnd),
+                            [](const bool value) { return value; });
+
+            AlignmentSegmentState state = AlignmentSegmentState::Accepted;
+            if (mappedCount == 0U ||
+                anomalyDensity > std::min(1.0F, options.maximumSegmentAnomalyDensity * 2.0F) ||
+                mappingSlope <= 0.0F || mappingSlope > 4.0F) {
+                state = AlignmentSegmentState::Rejected;
+            } else if (p10Confidence < options.minimumSegmentP10Confidence ||
+                       maximumLowRun > options.maximumLowConfidenceRun ||
+                       anomalyDensity > options.maximumSegmentAnomalyDensity ||
+                       (sceneCutProximity && meanConfidence < options.minimumConfidence)) {
+                state = AlignmentSegmentState::ReviewRequired;
+            } else {
+                hasAcceptedSegment = true;
+            }
+            result.segments.push_back(SequenceAlignmentSegment{
+                .firstCanonicalFrame = domain::FrameId{static_cast<std::int64_t>(first)},
+                .lastCanonicalFrame = domain::FrameId{static_cast<std::int64_t>(segmentEnd - 1U)},
+                .state = state,
+                .meanConfidence = meanConfidence,
+                .p10Confidence = p10Confidence,
+                .maximumLowConfidenceRun = maximumLowRun,
+                .anomalyDensity = anomalyDensity,
+                .sceneCutProximity = sceneCutProximity,
+                .mappingSlope = mappingSlope,
+            });
+        }
+        result.autoApplicable =
+            result.meanMatchCost <= options.maximumMeanMatchCost && hasAcceptedSegment;
         return result;
     } catch (...) {
         return std::nullopt;

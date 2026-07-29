@@ -1,4 +1,5 @@
 #include "dvs/ui/ReviewController.h"
+#include "dvs/ui/SourceListModel.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -66,6 +67,18 @@ template <typename Predicate>
     snapshot.playbackState = domain::PlaybackState::kPaused;
     snapshot.displayedFrame = domain::FrameId{frame};
     snapshot.canonicalFrameCount = frameCount;
+    snapshot.sources = {
+        application::SessionSourceView{
+            .sourceId = 0U,
+            .role = domain::ComparisonRole::kReference,
+            .displayName = "A",
+        },
+        application::SessionSourceView{
+            .sourceId = 1U,
+            .role = domain::ComparisonRole::kPrediction,
+            .displayName = "B",
+        },
+    };
     return snapshot;
 }
 
@@ -336,6 +349,11 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     }));
 
     backend->currentSnapshot = readySnapshot(2, 5U);
+    backend->currentSnapshot.sources.push_back(application::SessionSourceView{
+        .sourceId = 2U,
+        .role = domain::ComparisonRole::kPrediction,
+        .displayName = "C",
+    });
     backend->currentSnapshot.presentedSources = {
         application::PresentedSourceState{
             .sourceId = 0U,
@@ -355,8 +373,13 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
             .missingReason = application::MissingReason::AfterSourceEnd,
         },
     };
-    backend->currentSnapshot.compatibilityWarnings = {
-        domain::MediaErrorCode::kSourceFrameCountMismatch};
+    backend->currentSnapshot.compatibilityFindings = {
+        application::CompatibilityFindingView{
+            .severity = domain::CompatibilitySeverity::kAlignmentRequired,
+            .code = domain::MediaErrorCode::kSourceFrameCountMismatch,
+            .sources = {0U, 2U},
+        },
+    };
     backend->currentSnapshot.alignmentEstimates = {
         application::GlobalOffsetEstimate{
             .sourceId = 1U,
@@ -469,8 +492,29 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
               QStringLiteral("low-confidence"));
     EXPECT_EQ(timelineMarkers[4].toMap().value(QStringLiteral("frame")).toULongLong(), 0U);
     EXPECT_EQ(timelineMarkers[5].toMap().value(QStringLiteral("frame")).toULongLong(), 4U);
-    EXPECT_EQ(controller.compatibilityWarningKeys(),
-              QStringList{QStringLiteral("source-frame-count-mismatch")});
+    const QVariantList compatibilityFindings = controller.compatibilityFindings();
+    ASSERT_EQ(compatibilityFindings.size(), 1);
+    EXPECT_EQ(compatibilityFindings.front().toMap().value(QStringLiteral("code")).toString(),
+              QStringLiteral("source-frame-count-mismatch"));
+    EXPECT_EQ(compatibilityFindings.front().toMap().value(QStringLiteral("severity")).toInt(),
+              static_cast<int>(domain::CompatibilitySeverity::kAlignmentRequired));
+    EXPECT_EQ(
+        compatibilityFindings.front().toMap().value(QStringLiteral("sources")).toList(),
+        QVariantList({QVariant::fromValue<qulonglong>(0U), QVariant::fromValue<qulonglong>(2U)}));
+    QAbstractItemModel* const sources = controller.sources();
+    ASSERT_NE(sources, nullptr);
+    ASSERT_EQ(sources->rowCount(), 3);
+    EXPECT_EQ(sources->data(sources->index(0, 0), SourceListModel::FilenameRole).toString(),
+              QStringLiteral("A"));
+    EXPECT_EQ(
+        sources->data(sources->index(1, 0), SourceListModel::CurrentSourceFrameRole).toLongLong(),
+        3);
+    EXPECT_EQ(sources->data(sources->index(2, 0), SourceListModel::MissingRole).toBool(), true);
+    const QVariantList differenceEdges = controller.differenceEdges();
+    ASSERT_EQ(differenceEdges.size(), 3);
+    EXPECT_EQ(differenceEdges[1].toMap().value(QStringLiteral("label")).toString(),
+              QStringLiteral("A ↔ C"));
+    EXPECT_EQ(differenceEdges[1].toMap().value(QStringLiteral("preferenceValue")).toInt(), 1);
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("media-probe-failed"));
     EXPECT_TRUE(controller.sourceBErrorKey().isEmpty());
     EXPECT_TRUE(controller.pairErrorKey().isEmpty());
@@ -683,6 +727,54 @@ TEST_F(ReviewControllerTests, DispatchesExplicitAlignmentOffsetsAsOneAtomicComma
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests, DispatchesDynamicSourceOffsetsAndRejectsMalformedRows) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    const QVariantList offsets{
+        QVariantMap{
+            {QStringLiteral("sourceId"), 0U},
+            {QStringLiteral("frames"), 0},
+        },
+        QVariantMap{
+            {QStringLiteral("sourceId"), 1U},
+            {QStringLiteral("frames"), -3},
+        },
+    };
+    ASSERT_TRUE(controller.applySourceOffsets(offsets));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* const command =
+        std::get_if<application::SetAlignmentOffsetsCommand>(&backend->submitted.back());
+    ASSERT_NE(command, nullptr);
+    EXPECT_EQ(command->sourceOffsets,
+              (std::vector<application::SourceFrameOffset>{
+                  application::SourceFrameOffset{.sourceId = 0U, .frames = 0},
+                  application::SourceFrameOffset{.sourceId = 1U, .frames = -3},
+              }));
+
+    completeLastCommand(backend);
+    ASSERT_TRUE(waitUntil([&controller] { return !controller.busy(); }));
+    EXPECT_FALSE(controller.applySourceOffsets(QVariantList{
+        QVariantMap{
+            {QStringLiteral("sourceId"), 1U},
+            {QStringLiteral("frames"), 2},
+        },
+        QVariantMap{
+            {QStringLiteral("sourceId"), 1U},
+            {QStringLiteral("frames"), 3},
+        },
+    }));
+    EXPECT_FALSE(controller.applySourceOffsets(QVariantList{
+        QVariantMap{
+            {QStringLiteral("sourceId"), QStringLiteral("bad")},
+            {QStringLiteral("frames"), 2},
+        },
+    }));
+    EXPECT_EQ(backend->submitted.size(), 1U);
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentWithoutBlockingNavigation) {
     auto backend = std::make_shared<FakeBackend>();
     backend->currentSnapshot = readySnapshot(5, 10U);
@@ -718,8 +810,11 @@ TEST_F(ReviewControllerTests, ProjectsAnalysisProgressAndDispatchesCancellation)
     backend->currentSnapshot = readySnapshot(5, 10U);
     backend->currentSnapshot.alignmentAnalysisJobId = application::AlignmentAnalysisJobId{7U};
     backend->currentSnapshot.alignmentAnalysisKind = application::AlignmentAnalysisKind::Sequence;
-    backend->currentSnapshot.alignmentAnalysisCompletedFrames = 25U;
-    backend->currentSnapshot.alignmentAnalysisTotalFrames = 100U;
+    backend->currentSnapshot.alignmentAnalysisPhase =
+        application::AlignmentAnalysisPhase::ComputingAlignment;
+    backend->currentSnapshot.alignmentAnalysisCompletedUnits = 25U;
+    backend->currentSnapshot.alignmentAnalysisWork =
+        application::AlignmentWorkEstimate{.totalUnits = 100U, .unitName = "work units"};
     ReviewController controller{dependenciesFor(backend)};
 
     EXPECT_TRUE(controller.alignmentAnalysisRunning());
@@ -730,6 +825,38 @@ TEST_F(ReviewControllerTests, ProjectsAnalysisProgressAndDispatchesCancellation)
     EXPECT_NE(std::get_if<application::CancelAlignmentAnalysisCommand>(&backend->submitted.back()),
               nullptr);
     EXPECT_FALSE(controller.busy());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ProjectsAndDispatchesAutomaticAlignmentConfirmationAndUndo) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    backend->currentSnapshot.alignmentRequired = true;
+    backend->currentSnapshot.automaticAlignmentPending = true;
+    backend->currentSnapshot.canConfirmAutomaticAlignment = true;
+    ReviewController controller{dependenciesFor(backend)};
+
+    EXPECT_TRUE(controller.alignmentRequired());
+    EXPECT_TRUE(controller.automaticAlignmentPending());
+    EXPECT_TRUE(controller.canConfirmAutomaticAlignment());
+    EXPECT_FALSE(controller.canUndoAutomaticAlignment());
+    ASSERT_TRUE(controller.confirmAutomaticAlignment());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_NE(
+        std::get_if<application::ConfirmAutomaticAlignmentCommand>(&backend->submitted.back()),
+        nullptr);
+
+    completeLastCommand(backend);
+    backend->currentSnapshot.alignmentRequired = false;
+    backend->currentSnapshot.automaticAlignmentPending = false;
+    backend->currentSnapshot.canConfirmAutomaticAlignment = false;
+    backend->currentSnapshot.canUndoAutomaticAlignment = true;
+    ASSERT_TRUE(waitUntil(
+        [&controller] { return !controller.busy() && controller.canUndoAutomaticAlignment(); }));
+    ASSERT_TRUE(controller.undoAutomaticAlignment());
+    ASSERT_EQ(backend->submitted.size(), 2U);
+    EXPECT_NE(std::get_if<application::UndoAutomaticAlignmentCommand>(&backend->submitted.back()),
+              nullptr);
     controller.stop();
 }
 

@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <vector>
@@ -23,19 +24,22 @@ struct TimelineCancellation final {
     }
 };
 
-struct TimestampIndexRequest final {
-    std::filesystem::path sourcePath;
-    domain::SourceId sourceId = 0;
-    domain::MediaOperation operation = domain::MediaOperation::kMediaProbe;
-    std::optional<std::int64_t> expectedFrameCount;
-    TimelineCancellation cancellation;
-};
-
 struct TimelineRational final {
     int numerator = 0;
     int denominator = 0;
 
     [[nodiscard]] constexpr bool operator==(const TimelineRational&) const noexcept = default;
+};
+
+struct TimestampIndexRequest final {
+    std::filesystem::path sourcePath;
+    domain::SourceId sourceId = 0;
+    domain::MediaOperation operation = domain::MediaOperation::kMediaProbe;
+    std::optional<std::int64_t> expectedFrameCount;
+    std::optional<domain::SourceFileIdentity> sourceIdentity;
+    std::optional<int> streamIndex;
+    std::optional<TimelineRational> timeBase;
+    TimelineCancellation cancellation;
 };
 
 struct FrameRateCandidate final {
@@ -66,7 +70,7 @@ validatePresentationTimestamps(std::vector<std::int64_t> packetTimestamps,
                                domain::SourceId sourceId,
                                domain::MediaOperation operation);
 
-[[nodiscard]] domain::Result<std::vector<std::int64_t>>
+[[nodiscard]] domain::Result<std::shared_ptr<const std::vector<std::int64_t>>>
 buildPresentationTimestampIndex(const TimestampIndexRequest& request);
 
 // Verifies a disputed rate declaration against display-order PTS. Frame zero anchors the

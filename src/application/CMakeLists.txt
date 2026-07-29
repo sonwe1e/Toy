@@ -2,9 +2,14 @@ add_library(
     dvs_application
     STATIC
         src/Alignment.cpp
+        src/AlignmentCacheIdentity.cpp
+        src/AlignmentWorkEstimator.cpp
+        src/ComparisonExactness.cpp
         src/Module.cpp
         src/PlaybackCoordinator.cpp
+        src/PrefetchScheduler.cpp
         src/SessionSnapshot.cpp
+        src/WorkspaceCoordinator.cpp
 )
 add_library(dvs::application ALIAS dvs_application)
 

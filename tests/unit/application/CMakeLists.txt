@@ -3,8 +3,12 @@ include(GoogleTest)
 add_executable(
     dvs_application_unit_tests
     AlignmentTests.cpp
+    AlignmentWorkEstimatorTests.cpp
     ContractCompileTests.cpp
+    ComparisonExactnessTests.cpp
     PlaybackCoordinatorTests.cpp
+    PrefetchSchedulerTests.cpp
+    WorkspaceCoordinatorTests.cpp
 )
 target_link_libraries(
     dvs_application_unit_tests

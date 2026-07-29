@@ -190,7 +190,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     }));
 
     controller.setLargeStepFrames(5);
-    controller.setViewMode(ReviewPreferencesController::ViewMode::Difference);
+    controller.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
     controller.setDifferenceMetric(ReviewPreferencesController::DifferenceMetric::Chroma);
     controller.setDifferenceGain(ReviewPreferencesController::DifferenceGain::Gain16x);
     controller.setDifferenceEdge(ReviewPreferencesController::DifferenceEdge::Edge0And2);
@@ -201,7 +201,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     const auto& values = repository->saveRequests.front().settings.values;
     EXPECT_EQ(values.at("future.setting"), "keep-me");
     EXPECT_EQ(values.at("review.large-step-frames"), "5");
-    EXPECT_EQ(values.at("review.view-mode"), "difference");
+    EXPECT_EQ(values.at("review.view-mode"), "analysis-grid");
     EXPECT_EQ(values.at("review.difference-metric"), "chroma");
     EXPECT_EQ(values.at("review.difference-gain"), "16x");
     EXPECT_EQ(values.at("review.difference-edge"), "0-2");

@@ -19,7 +19,8 @@ namespace {
 
 using Json = nlohmann::json;
 
-constexpr std::int64_t kSchemaVersion = 2;
+constexpr std::int64_t kSchemaVersion = 3;
+constexpr std::int64_t kMigratableSchemaVersion = 2;
 
 [[nodiscard]] domain::MediaError persistenceError(const domain::MediaErrorCode code,
                                                   std::optional<domain::SourceId> sourceId,
@@ -372,6 +373,32 @@ colorRangeFromId(const std::string_view identifier) noexcept {
     return "unknown";
 }
 
+[[nodiscard]] std::optional<domain::ColorTransfer>
+colorTransferFromId(const std::string_view identifier) noexcept {
+    if (identifier == "bt709") {
+        return domain::ColorTransfer::kBt709;
+    }
+    if (identifier == "srgb") {
+        return domain::ColorTransfer::kSrgb;
+    }
+    if (identifier == "linear") {
+        return domain::ColorTransfer::kLinear;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string_view colorTransferId(const domain::ColorTransfer transfer) noexcept {
+    switch (transfer) {
+    case domain::ColorTransfer::kBt709:
+        return "bt709";
+    case domain::ColorTransfer::kSrgb:
+        return "srgb";
+    case domain::ColorTransfer::kLinear:
+        return "linear";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] std::optional<domain::MediaErrorCode>
 mediaErrorCodeFromId(const std::string_view identifier) noexcept {
     using Code = domain::MediaErrorCode;
@@ -547,11 +574,19 @@ decodeRate(const Json& document, std::optional<domain::SourceId> sourceId) {
         {"codecId", descriptor.codecId},
         {"pixelFormatId", descriptor.pixelFormatId},
         {"bitDepth", static_cast<std::uint32_t>(descriptor.bitDepth)},
+        {"rotationDegrees", descriptor.rotationDegrees},
+        {"sampleAspectRatio",
+         Json{
+             {"numerator", descriptor.sampleAspectRatio.numerator},
+             {"denominator", descriptor.sampleAspectRatio.denominator},
+         }},
         {"color",
          Json{
              {"matrix", std::string{colorMatrixId(descriptor.colorMetadata.matrix)}},
              {"range", std::string{colorRangeId(descriptor.colorMetadata.range)}},
+             {"transfer", std::string{colorTransferId(descriptor.colorMetadata.transfer)}},
              {"matrixInferred", descriptor.colorMetadata.matrixInferred},
+             {"transferInferred", descriptor.colorMetadata.transferInferred},
          }},
         {"decodeCapabilities",
          Json{
@@ -673,6 +708,31 @@ decodeSource(const Json& document,
     if (!bitDepth) {
         return domain::Result<domain::MediaDescriptor>::failure(bitDepth.error());
     }
+    std::uint16_t rotationDegrees = 0U;
+    if (descriptor.contains("rotationDegrees")) {
+        auto rotation = uint32Member(descriptor, "rotationDegrees", sourceId);
+        if (!rotation || rotation.value() > 270U) {
+            return invalidSchema<domain::MediaDescriptor>(sourceId, "Source rotation is invalid.");
+        }
+        rotationDegrees = static_cast<std::uint16_t>(rotation.value());
+    }
+    domain::SampleAspectRatio sampleAspectRatio;
+    if (descriptor.contains("sampleAspectRatio")) {
+        auto ratioDocument = objectMember(descriptor, "sampleAspectRatio", sourceId);
+        if (!ratioDocument) {
+            return domain::Result<domain::MediaDescriptor>::failure(ratioDocument.error());
+        }
+        auto numerator = uint32Member(*ratioDocument.value(), "numerator", sourceId);
+        auto denominator = uint32Member(*ratioDocument.value(), "denominator", sourceId);
+        if (!numerator || !denominator) {
+            return invalidSchema<domain::MediaDescriptor>(sourceId,
+                                                          "Sample aspect ratio is invalid.");
+        }
+        sampleAspectRatio = domain::SampleAspectRatio{
+            .numerator = numerator.value(),
+            .denominator = denominator.value(),
+        };
+    }
 
     domain::ColorMetadata colorMetadata{
         .matrix =
@@ -705,10 +765,35 @@ decodeSource(const Json& document,
         if (!matrixInferred) {
             return domain::Result<domain::MediaDescriptor>::failure(matrixInferred.error());
         }
+        domain::ColorTransfer transfer = domain::ColorTransfer::kBt709;
+        bool transferInferred = true;
+        if (const auto transferIterator = colorIterator->find("transfer");
+            transferIterator != colorIterator->end()) {
+            if (!transferIterator->is_string()) {
+                return invalidSchema<domain::MediaDescriptor>(sourceId,
+                                                              "Color transfer must be a string.");
+            }
+            const auto parsedTransfer = colorTransferFromId(transferIterator->get<std::string>());
+            if (!parsedTransfer.has_value()) {
+                return invalidSchema<domain::MediaDescriptor>(sourceId,
+                                                              "Color transfer is unknown.");
+            }
+            transfer = *parsedTransfer;
+        }
+        if (const auto inferredIterator = colorIterator->find("transferInferred");
+            inferredIterator != colorIterator->end()) {
+            if (!inferredIterator->is_boolean()) {
+                return invalidSchema<domain::MediaDescriptor>(
+                    sourceId, "transferInferred must be a boolean.");
+            }
+            transferInferred = inferredIterator->get<bool>();
+        }
         colorMetadata = domain::ColorMetadata{
             .matrix = *matrix,
             .range = *range,
+            .transfer = transfer,
             .matrixInferred = matrixInferred.value(),
+            .transferInferred = transferInferred,
         };
     }
 
@@ -747,6 +832,8 @@ decodeSource(const Json& document,
         .codecId = std::move(codecId).value(),
         .pixelFormatId = std::move(pixelFormatId).value(),
         .bitDepth = bitDepth.value(),
+        .rotationDegrees = rotationDegrees,
+        .sampleAspectRatio = sampleAspectRatio,
         .colorMetadata = colorMetadata,
         .decodeCapabilities =
             domain::DecodeCapabilities{
@@ -841,6 +928,287 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
     return domain::Result<Json>::success(std::move(document));
 }
 
+[[nodiscard]] std::string_view alignmentModeId(const domain::ProjectAlignmentMode mode) {
+    switch (mode) {
+    case domain::ProjectAlignmentMode::kStrictIndex:
+        return "strict-index";
+    case domain::ProjectAlignmentMode::kGlobalOffsets:
+        return "global-offsets";
+    case domain::ProjectAlignmentMode::kManualAnchors:
+        return "manual-anchors";
+    case domain::ProjectAlignmentMode::kAutomaticSequence:
+        return "automatic-sequence";
+    }
+    return {};
+}
+
+[[nodiscard]] std::optional<domain::ProjectAlignmentMode>
+alignmentModeFromId(const std::string_view value) {
+    if (value == "strict-index") {
+        return domain::ProjectAlignmentMode::kStrictIndex;
+    }
+    if (value == "global-offsets") {
+        return domain::ProjectAlignmentMode::kGlobalOffsets;
+    }
+    if (value == "manual-anchors") {
+        return domain::ProjectAlignmentMode::kManualAnchors;
+    }
+    if (value == "automatic-sequence") {
+        return domain::ProjectAlignmentMode::kAutomaticSequence;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string_view viewLayoutId(const domain::ProjectViewLayout layout) {
+    switch (layout) {
+    case domain::ProjectViewLayout::kSideBySide:
+        return "side-by-side";
+    case domain::ProjectViewLayout::kThreeUp:
+        return "three-up";
+    case domain::ProjectViewLayout::kReferenceFocus:
+        return "reference-focus";
+    case domain::ProjectViewLayout::kDifference:
+        return "difference";
+    }
+    return {};
+}
+
+[[nodiscard]] std::optional<domain::ProjectViewLayout>
+viewLayoutFromId(const std::string_view value) {
+    if (value == "side-by-side") {
+        return domain::ProjectViewLayout::kSideBySide;
+    }
+    if (value == "three-up") {
+        return domain::ProjectViewLayout::kThreeUp;
+    }
+    if (value == "reference-focus") {
+        return domain::ProjectViewLayout::kReferenceFocus;
+    }
+    if (value == "difference") {
+        return domain::ProjectViewLayout::kDifference;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string_view differenceMetricId(const domain::ProjectDifferenceMetric metric) {
+    switch (metric) {
+    case domain::ProjectDifferenceMetric::kRgbAbsolute:
+        return "rgb-absolute";
+    case domain::ProjectDifferenceMetric::kLuma:
+        return "luma";
+    case domain::ProjectDifferenceMetric::kChroma:
+        return "chroma";
+    case domain::ProjectDifferenceMetric::kHeatmap:
+        return "heatmap";
+    case domain::ProjectDifferenceMetric::kExactPlanes:
+        return "exact-planes";
+    }
+    return {};
+}
+
+[[nodiscard]] std::optional<domain::ProjectDifferenceMetric>
+differenceMetricFromId(const std::string_view value) {
+    if (value == "rgb-absolute") {
+        return domain::ProjectDifferenceMetric::kRgbAbsolute;
+    }
+    if (value == "luma") {
+        return domain::ProjectDifferenceMetric::kLuma;
+    }
+    if (value == "chroma") {
+        return domain::ProjectDifferenceMetric::kChroma;
+    }
+    if (value == "heatmap") {
+        return domain::ProjectDifferenceMetric::kHeatmap;
+    }
+    if (value == "exact-planes") {
+        return domain::ProjectDifferenceMetric::kExactPlanes;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] domain::Result<Json> encodeAlignment(const domain::ProjectAlignmentState& alignment) {
+    const std::string_view mode = alignmentModeId(alignment.mode);
+    if (mode.empty()) {
+        return invalidSchema<Json>(std::nullopt, "Alignment mode is unknown.");
+    }
+
+    Json offsets = Json::array();
+    for (const domain::PersistedAlignmentOffset& offset : alignment.offsets) {
+        offsets.push_back(Json{
+            {"sourceId", offset.sourceId},
+            {"frames", offset.frames},
+        });
+    }
+    Json anchors = Json::array();
+    for (const domain::PersistedAlignmentAnchor& anchor : alignment.anchors) {
+        anchors.push_back(Json{
+            {"sourceId", anchor.sourceId},
+            {"canonicalFrame", anchor.canonicalFrame.value()},
+            {"sourceFrame", anchor.sourceFrame.value()},
+        });
+    }
+    Json analysisCacheKey = nullptr;
+    if (alignment.analysisCacheKey.has_value()) {
+        analysisCacheKey = *alignment.analysisCacheKey;
+    }
+    return domain::Result<Json>::success(Json{
+        {"mode", mode},
+        {"offsets", std::move(offsets)},
+        {"anchors", std::move(anchors)},
+        {"analysisCacheKey", std::move(analysisCacheKey)},
+    });
+}
+
+[[nodiscard]] domain::Result<domain::ProjectAlignmentState> decodeAlignment(const Json& document) {
+    auto modeId = stringMember(document, "mode", std::nullopt);
+    if (!modeId) {
+        return domain::Result<domain::ProjectAlignmentState>::failure(modeId.error());
+    }
+    const auto mode = alignmentModeFromId(modeId.value());
+    if (!mode.has_value()) {
+        return invalidSchema<domain::ProjectAlignmentState>(std::nullopt,
+                                                            "Alignment mode is unknown.");
+    }
+    auto offsetsDocument = arrayMember(document, "offsets", std::nullopt);
+    if (!offsetsDocument) {
+        return domain::Result<domain::ProjectAlignmentState>::failure(offsetsDocument.error());
+    }
+    if (offsetsDocument.value()->size() > 3U) {
+        return invalidSchema<domain::ProjectAlignmentState>(
+            std::nullopt, "Alignment offsets exceed the three-source bound.");
+    }
+    std::vector<domain::PersistedAlignmentOffset> offsets;
+    offsets.reserve(offsetsDocument.value()->size());
+    for (const Json& item : *offsetsDocument.value()) {
+        auto sourceId = uint32Member(item, "sourceId", std::nullopt);
+        auto frames = int64Member(item, "frames", std::nullopt);
+        if (!sourceId) {
+            return domain::Result<domain::ProjectAlignmentState>::failure(sourceId.error());
+        }
+        if (!frames) {
+            return domain::Result<domain::ProjectAlignmentState>::failure(frames.error());
+        }
+        offsets.push_back(domain::PersistedAlignmentOffset{
+            .sourceId = sourceId.value(),
+            .frames = frames.value(),
+        });
+    }
+
+    auto anchorsDocument = arrayMember(document, "anchors", std::nullopt);
+    if (!anchorsDocument) {
+        return domain::Result<domain::ProjectAlignmentState>::failure(anchorsDocument.error());
+    }
+    if (anchorsDocument.value()->size() > 4'096U) {
+        return invalidSchema<domain::ProjectAlignmentState>(
+            std::nullopt, "Alignment anchors exceed the persisted bound.");
+    }
+    std::vector<domain::PersistedAlignmentAnchor> anchors;
+    anchors.reserve(anchorsDocument.value()->size());
+    for (const Json& item : *anchorsDocument.value()) {
+        auto sourceId = uint32Member(item, "sourceId", std::nullopt);
+        auto canonicalFrame = int64Member(item, "canonicalFrame", std::nullopt);
+        auto sourceFrame = int64Member(item, "sourceFrame", std::nullopt);
+        if (!sourceId) {
+            return domain::Result<domain::ProjectAlignmentState>::failure(sourceId.error());
+        }
+        if (!canonicalFrame) {
+            return domain::Result<domain::ProjectAlignmentState>::failure(canonicalFrame.error());
+        }
+        if (!sourceFrame) {
+            return domain::Result<domain::ProjectAlignmentState>::failure(sourceFrame.error());
+        }
+        anchors.push_back(domain::PersistedAlignmentAnchor{
+            .sourceId = sourceId.value(),
+            .canonicalFrame = domain::FrameId{canonicalFrame.value()},
+            .sourceFrame = domain::FrameId{sourceFrame.value()},
+        });
+    }
+
+    auto cacheKeyDocument = requiredMember(document, "analysisCacheKey", std::nullopt);
+    if (!cacheKeyDocument) {
+        return domain::Result<domain::ProjectAlignmentState>::failure(cacheKeyDocument.error());
+    }
+    std::optional<std::string> analysisCacheKey;
+    if (!cacheKeyDocument.value()->is_null()) {
+        if (!cacheKeyDocument.value()->is_string()) {
+            return invalidSchema<domain::ProjectAlignmentState>(
+                std::nullopt, "Alignment analysisCacheKey must be a string or null.");
+        }
+        analysisCacheKey = cacheKeyDocument.value()->get<std::string>();
+    }
+    return domain::Result<domain::ProjectAlignmentState>::success(domain::ProjectAlignmentState{
+        .mode = *mode,
+        .offsets = std::move(offsets),
+        .anchors = std::move(anchors),
+        .analysisCacheKey = std::move(analysisCacheKey),
+    });
+}
+
+[[nodiscard]] domain::Result<Json> encodeView(const domain::ProjectViewState& view) {
+    const std::string_view layout = viewLayoutId(view.layout);
+    const std::string_view metric = differenceMetricId(view.differenceMetric);
+    if (layout.empty() || metric.empty()) {
+        return invalidSchema<Json>(std::nullopt, "Project view enum is unknown.");
+    }
+    return domain::Result<Json>::success(Json{
+        {"layout", layout},
+        {"differenceEdge", Json::array({view.differenceEdge[0], view.differenceEdge[1]})},
+        {"differenceMetric", metric},
+        {"gain", view.gain},
+    });
+}
+
+[[nodiscard]] domain::Result<domain::ProjectViewState> decodeView(const Json& document) {
+    auto layoutId = stringMember(document, "layout", std::nullopt);
+    if (!layoutId) {
+        return domain::Result<domain::ProjectViewState>::failure(layoutId.error());
+    }
+    const auto layout = viewLayoutFromId(layoutId.value());
+    if (!layout.has_value()) {
+        return invalidSchema<domain::ProjectViewState>(std::nullopt,
+                                                       "Project view layout is unknown.");
+    }
+    auto edgeDocument = arrayMember(document, "differenceEdge", std::nullopt);
+    if (!edgeDocument) {
+        return domain::Result<domain::ProjectViewState>::failure(edgeDocument.error());
+    }
+    if (edgeDocument.value()->size() != 2U) {
+        return invalidSchema<domain::ProjectViewState>(
+            std::nullopt, "Project differenceEdge must contain exactly two source IDs.");
+    }
+    std::array<domain::SourceId, 2U> edge{};
+    for (std::size_t index = 0U; index < edge.size(); ++index) {
+        auto sourceId = uint64Value((*edgeDocument.value())[index], std::nullopt, "differenceEdge");
+        if (!sourceId) {
+            return domain::Result<domain::ProjectViewState>::failure(sourceId.error());
+        }
+        if (sourceId.value() > std::numeric_limits<domain::SourceId>::max()) {
+            return invalidSchema<domain::ProjectViewState>(
+                std::nullopt, "Project differenceEdge source ID exceeds uint32 range.");
+        }
+        edge[index] = static_cast<domain::SourceId>(sourceId.value());
+    }
+    auto metricId = stringMember(document, "differenceMetric", std::nullopt);
+    if (!metricId) {
+        return domain::Result<domain::ProjectViewState>::failure(metricId.error());
+    }
+    const auto metric = differenceMetricFromId(metricId.value());
+    if (!metric.has_value()) {
+        return invalidSchema<domain::ProjectViewState>(std::nullopt,
+                                                       "Project difference metric is unknown.");
+    }
+    auto gain = uint8Member(document, "gain", std::nullopt);
+    if (!gain) {
+        return domain::Result<domain::ProjectViewState>::failure(gain.error());
+    }
+    return domain::Result<domain::ProjectViewState>::success(domain::ProjectViewState{
+        .layout = *layout,
+        .differenceEdge = edge,
+        .differenceMetric = *metric,
+        .gain = gain.value(),
+    });
+}
+
 [[nodiscard]] domain::Result<Json> encodeDocument(const domain::Project& project,
                                                   const std::filesystem::path& projectPath) {
     auto projectDirectory = projectDirectoryFor(projectPath);
@@ -860,6 +1228,14 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
     auto workspace = encodeWorkspace(project.workspaceState());
     if (!workspace) {
         return domain::Result<Json>::failure(workspace.error());
+    }
+    auto alignment = encodeAlignment(project.alignmentState());
+    if (!alignment) {
+        return domain::Result<Json>::failure(alignment.error());
+    }
+    auto view = encodeView(project.viewState());
+    if (!view) {
+        return domain::Result<Json>::failure(view.error());
     }
 
     Json inMark = nullptr;
@@ -892,6 +1268,8 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
          }},
         {"lastDisplayedFrame", project.lastDisplayedFrame().value()},
         {"workspace", std::move(workspace).value()},
+        {"alignment", std::move(alignment).value()},
+        {"view", std::move(view).value()},
     });
 }
 
@@ -911,11 +1289,12 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
                              std::nullopt,
                              "Legacy A/B schema-1 documents are not migrated."));
     }
-    if (schemaVersion.value() != kSchemaVersion) {
+    if (schemaVersion.value() != kMigratableSchemaVersion &&
+        schemaVersion.value() != kSchemaVersion) {
         return domain::Result<domain::Project>::failure(
             persistenceError(domain::MediaErrorCode::kUnsupportedProjectSchema,
                              std::nullopt,
-                             "Only project schema version 2 is supported."));
+                             "Only project schema versions 2 and 3 are supported."));
     }
 
     auto projectDirectory = projectDirectoryFor(projectPath);
@@ -1018,6 +1397,7 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     if (!validated) {
         return domain::Result<domain::Project>::failure(validated.error());
     }
+    domain::ComparisonValidation validation = std::move(validated).value();
 
     auto marksDocument = objectMember(document, "marks", std::nullopt);
     if (!marksDocument) {
@@ -1050,14 +1430,42 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
         return domain::Result<domain::Project>::failure(workspace.error());
     }
 
+    domain::ProjectAlignmentState alignmentState;
+    domain::ProjectViewState viewState;
+    const auto persistedSources = validation.set.sources();
+    viewState.differenceEdge = {persistedSources[0].id, persistedSources[1].id};
+    if (schemaVersion.value() == kSchemaVersion) {
+        auto alignmentDocument = objectMember(document, "alignment", std::nullopt);
+        if (!alignmentDocument) {
+            return domain::Result<domain::Project>::failure(alignmentDocument.error());
+        }
+        auto alignment = decodeAlignment(*alignmentDocument.value());
+        if (!alignment) {
+            return domain::Result<domain::Project>::failure(alignment.error());
+        }
+        alignmentState = std::move(alignment).value();
+
+        auto viewDocument = objectMember(document, "view", std::nullopt);
+        if (!viewDocument) {
+            return domain::Result<domain::Project>::failure(viewDocument.error());
+        }
+        auto view = decodeView(*viewDocument.value());
+        if (!view) {
+            return domain::Result<domain::Project>::failure(view.error());
+        }
+        viewState = std::move(view).value();
+    }
+
     domain::ProjectState state{
         .id = domain::ProjectId{std::move(id).value()},
         .displayName = std::move(displayName).value(),
-        .sources = std::move(validated).value().set,
+        .sources = std::move(validation.set),
         .inMark = std::move(inMark).value(),
         .outMark = std::move(outMark).value(),
         .lastDisplayedFrame = lastFrame,
         .workspaceState = std::move(workspace).value(),
+        .alignmentState = std::move(alignmentState),
+        .viewState = viewState,
     };
     return domain::Project::restorePersisted(std::move(state));
 }

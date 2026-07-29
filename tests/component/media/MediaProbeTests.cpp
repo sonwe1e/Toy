@@ -2,6 +2,7 @@
 
 #include "MediaProbeTestHooks.h"
 
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -246,10 +248,41 @@ TEST(MediaProbeTests, ClassifiesEndPtsGapAsValidVfrAndPreservesFrameCount) {
     EXPECT_EQ(descriptor.frameCount.origin, domain::FrameCountOrigin::kIndexed);
 }
 
-TEST(MediaProbeTests, RejectsUnsupportedTenBitPixelFormats) {
+TEST(MediaProbeTests, AcceptsTenBitYuv420AndPreservesItsStorageContract) {
     const auto tenBit = MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U);
-    ASSERT_FALSE(tenBit);
-    EXPECT_EQ(tenBit.error().code, domain::MediaErrorCode::kUnsupportedPixelFormat);
+    ASSERT_TRUE(tenBit);
+    EXPECT_EQ(tenBit.value().bitDepth, 10U);
+    EXPECT_EQ(tenBit.value().pixelFormatId, "yuv420p10le");
+    EXPECT_TRUE(tenBit.value().decodeCapabilities.softwareDecode);
+}
+
+TEST(MediaProbeTests, AcceptsYuv422Yuv444AndRgbInputsForVisualNormalization) {
+    const std::array<std::pair<const char*, const char*>, 3U> cases{{
+        {"h264_yuv422p_64x48_30fps_12.mkv", "yuv422p"},
+        {"h264_yuv444p_64x48_30fps_12.mkv", "yuv444p"},
+        {"h264_gbrp_64x48_30fps_12.mkv", "gbrp"},
+    }};
+    for (const auto& [filename, expectedPixelFormat] : cases) {
+        const auto result = MediaProbe::inspect(fixture(filename), 1U);
+        ASSERT_TRUE(result) << filename;
+        EXPECT_EQ(result.value().pixelFormatId, expectedPixelFormat);
+        EXPECT_EQ(result.value().bitDepth, 8U);
+    }
+}
+
+TEST(MediaProbeTests, PreservesRightAngleRotationAndSampleAspectRatio) {
+    const auto rotated =
+        MediaProbe::inspect(fixture("h264_rot90_320x180_30fps_12.mp4"), domain::SourceId{0U});
+    ASSERT_TRUE(rotated);
+    EXPECT_EQ(rotated.value().rotationDegrees, 90U);
+    EXPECT_EQ(rotated.value().sampleAspectRatio, domain::SampleAspectRatio{});
+
+    const auto anamorphic =
+        MediaProbe::inspect(fixture("h264_sar4x3_64x48_30fps_12.mkv"), domain::SourceId{1U});
+    ASSERT_TRUE(anamorphic);
+    EXPECT_EQ(anamorphic.value().rotationDegrees, 0U);
+    EXPECT_EQ(anamorphic.value().sampleAspectRatio,
+              (domain::SampleAspectRatio{.numerator = 4U, .denominator = 3U}));
 }
 
 TEST(MediaProbeTests, RejectsCorruptMediaBeforeItCanProduceADescriptor) {

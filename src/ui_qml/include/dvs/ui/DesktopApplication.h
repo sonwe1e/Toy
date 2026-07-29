@@ -13,6 +13,7 @@ namespace dvs::ui {
 class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
+class WorkspaceController;
 
 struct DesktopApplicationOptions final {
     bool smokeMode = false;
@@ -37,6 +38,7 @@ public:
 
     [[nodiscard]] bool load(ReviewController& controller,
                             ReviewPreferencesController& preferences,
+                            WorkspaceController& workspace,
                             SurfaceBinder bindSurface);
     [[nodiscard]] int exec();
     void exit(int exitCode) noexcept;

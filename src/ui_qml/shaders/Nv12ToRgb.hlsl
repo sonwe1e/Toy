@@ -21,7 +21,27 @@ cbuffer DifferenceConstants : register(b3) {
     float differenceGain : packoffset(c4.y);
     uint differenceFilter : packoffset(c4.z);
     float differencePadding : packoffset(c4.w);
+    uint thresholdEnabled : packoffset(c5.x);
+    float differenceThreshold : packoffset(c5.y);
+    uint thresholdPolicy : packoffset(c5.z);
+    float thresholdPadding : packoffset(c5.w);
+    uint sourceRotationA : packoffset(c6.x);
+    uint sourceRotationB : packoffset(c6.y);
+    float2 rotationPadding : packoffset(c6.z);
 };
+
+float2 rotateDisplayUv(float2 uv, uint rotation) {
+    if (rotation == 1U) {
+        return float2(1.0f - uv.y, uv.x);
+    }
+    if (rotation == 2U) {
+        return 1.0f - uv;
+    }
+    if (rotation == 3U) {
+        return float2(uv.y, 1.0f - uv.x);
+    }
+    return uv;
+}
 
 float4 cubicWeights(float value) {
     const float valueSquared = value * value;
@@ -78,7 +98,8 @@ float2 sampleBicubicUv(
     return result;
 }
 
-float3 sampleRgbA(float2 uv) {
+float3 sampleYuvA(float2 uv) {
+    uv = rotateDisplayUv(uv, sourceRotationA);
     float y;
     float2 chroma;
     if (differenceFilter == 2U) {
@@ -89,10 +110,11 @@ float3 sampleRgbA(float2 uv) {
         y = yTexture.SampleLevel(clampSampler, textureUv, 0.0f);
         chroma = uvTexture.SampleLevel(clampSampler, textureUv, 0.0f);
     }
-    return mul(yuvToRgb, float4(y, chroma.x, chroma.y, 1.0f));
+    return float3(y, chroma);
 }
 
-float3 sampleRgbB(float2 uv) {
+float3 sampleYuvB(float2 uv) {
+    uv = rotateDisplayUv(uv, sourceRotationB);
     float y;
     float2 chroma;
     if (differenceFilter == 2U) {
@@ -103,7 +125,15 @@ float3 sampleRgbB(float2 uv) {
         y = yTextureB.SampleLevel(clampSampler, textureUv, 0.0f);
         chroma = uvTextureB.SampleLevel(clampSampler, textureUv, 0.0f);
     }
-    return mul(yuvToRgbB, float4(y, chroma.x, chroma.y, 1.0f));
+    return float3(y, chroma);
+}
+
+float3 sampleRgbA(float3 yuv) {
+    return mul(yuvToRgb, float4(yuv, 1.0f));
+}
+
+float3 sampleRgbB(float3 yuv) {
+    return mul(yuvToRgbB, float4(yuv, 1.0f));
 }
 
 float commonBt709Luma(float3 rgb) {
@@ -140,10 +170,35 @@ float4 DifferencePixelShader(
     float4 position : SV_POSITION,
     nointerpolation float opacity : TEXCOORD0,
     float2 uv : TEXCOORD1) : SV_TARGET {
-    const float3 rgbA = sampleRgbA(uv);
-    const float3 rgbB = sampleRgbB(uv);
+    const float3 yuvA = sampleYuvA(uv);
+    const float3 yuvB = sampleYuvB(uv);
+    const float3 rgbA = sampleRgbA(yuvA);
+    const float3 rgbB = sampleRgbB(yuvB);
+    const float3 channelDifference = abs(rgbA - rgbB);
+    if (thresholdEnabled != 0U) {
+        const float3 thresholdDifference =
+            differenceMetric == 4U ? abs(yuvA - yuvB) : channelDifference;
+        float thresholdSample;
+        if (thresholdPolicy == 0U) {
+            thresholdSample = differenceMetric == 4U
+                                  ? thresholdDifference.x
+                                  : abs(commonBt709Luma(rgbA) - commonBt709Luma(rgbB));
+        } else if (thresholdPolicy == 2U) {
+            thresholdSample = min(
+                thresholdDifference.r, min(thresholdDifference.g, thresholdDifference.b));
+        } else {
+            thresholdSample = max(
+                thresholdDifference.r, max(thresholdDifference.g, thresholdDifference.b));
+        }
+        if (thresholdSample < differenceThreshold) {
+            const float alpha = saturate(opacity);
+            return float4(0.0f, 0.0f, 0.0f, alpha);
+        }
+    }
     float3 result;
-    if (differenceMetric == 1U) {
+    if (differenceMetric == 4U) {
+        result = differenceGain * abs(yuvA - yuvB);
+    } else if (differenceMetric == 1U) {
         const float difference =
             differenceGain * abs(commonBt709Luma(rgbA) - commonBt709Luma(rgbB));
         result = difference.xxx;
@@ -152,10 +207,10 @@ float4 DifferencePixelShader(
             differenceGain * abs(commonBt709Chroma(rgbA) - commonBt709Chroma(rgbB));
         result = float3(difference.y, 0.0f, difference.x);
     } else if (differenceMetric == 3U) {
-        const float3 difference = differenceGain * abs(rgbA - rgbB);
+        const float3 difference = differenceGain * channelDifference;
         result = heatmap(max(difference.r, max(difference.g, difference.b)));
     } else {
-        result = differenceGain * abs(rgbA - rgbB);
+        result = differenceGain * channelDifference;
     }
     const float alpha = saturate(opacity);
     return float4(saturate(result) * alpha, alpha);

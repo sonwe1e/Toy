@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dvs/application/FrameHandle.h"
+#include "dvs/application/NormalizedFrameFormat.h"
 #include "dvs/application/RequestContext.h"
 #include "dvs/domain/Identifiers.h"
 #include "dvs/domain/MediaDescriptor.h"
@@ -60,6 +61,9 @@ class GpuFrameAllocation final {
 public:
     GpuFrameAllocation(FrameBudget::Reservation reservation,
                        std::unique_ptr<const IGpuFrameBacking> backing) noexcept;
+    GpuFrameAllocation(std::size_t accountedBytes,
+                       std::shared_ptr<const void> accountingAnchor,
+                       std::unique_ptr<const IGpuFrameBacking> backing) noexcept;
     ~GpuFrameAllocation() = default;
 
     GpuFrameAllocation(const GpuFrameAllocation&) = delete;
@@ -75,6 +79,8 @@ private:
     [[nodiscard]] const IGpuFrameBacking& backing() const noexcept;
 
     FrameBudget::Reservation reservation_;
+    std::size_t accountedBytes_ = 0U;
+    std::shared_ptr<const void> accountingAnchor_;
     std::unique_ptr<const IGpuFrameBacking> backing_;
 };
 
@@ -92,7 +98,9 @@ public:
     create(GpuFrameIdentity identity,
            application::FrameGeometry geometry,
            domain::ColorMetadata colorMetadata,
-           GpuFrameAllocation allocation) noexcept;
+           GpuFrameAllocation allocation,
+           application::NormalizedFrameFormat format =
+               application::NormalizedFrameFormat::Nv12_8) noexcept;
 
     // Used only by the D3D11 transfer actor. The domain must outlive every returned control block;
     // the shared deleter captures it without the resource retaining a reference back to it.
@@ -101,7 +109,9 @@ public:
                    application::FrameGeometry geometry,
                    domain::ColorMetadata colorMetadata,
                    GpuFrameAllocation allocation,
-                   std::shared_ptr<GpuFrameRetirementDomain> retirementDomain) noexcept;
+                   std::shared_ptr<GpuFrameRetirementDomain> retirementDomain,
+                   application::NormalizedFrameFormat format =
+                       application::NormalizedFrameFormat::Nv12_8) noexcept;
 
     ~GpuFrameResource() override = default;
 
@@ -111,6 +121,7 @@ public:
     [[nodiscard]] domain::SourceId sourceId() const noexcept;
     [[nodiscard]] const application::FrameGeometry& geometry() const noexcept;
     [[nodiscard]] const domain::ColorMetadata& colorMetadata() const noexcept;
+    [[nodiscard]] application::NormalizedFrameFormat format() const noexcept;
     [[nodiscard]] domain::DeviceGeneration deviceGeneration() const noexcept;
     [[nodiscard]] const IGpuFrameBacking& backing() const noexcept;
     [[nodiscard]] std::size_t accountedBytes() const noexcept;
@@ -121,12 +132,14 @@ private:
     GpuFrameResource(GpuFrameIdentity identity,
                      application::FrameGeometry geometry,
                      domain::ColorMetadata colorMetadata,
-                     GpuFrameAllocation&& allocation) noexcept;
+                     GpuFrameAllocation&& allocation,
+                     application::NormalizedFrameFormat format) noexcept;
 
     GpuFrameIdentity identity_;
     application::FrameGeometry geometry_;
     domain::ColorMetadata colorMetadata_;
     GpuFrameAllocation allocation_;
+    application::NormalizedFrameFormat format_ = application::NormalizedFrameFormat::Nv12_8;
     mutable std::atomic<GpuFrameResource*> retirementNext_{nullptr};
 };
 

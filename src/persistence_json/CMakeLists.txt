@@ -2,6 +2,7 @@ add_library(
     dvs_persistence_json
     STATIC
         src/Module.cpp
+        src/DerivedAlignmentCache.cpp
         src/FingerprintService.cpp
         src/ProjectJson.cpp
         src/ProjectRelinkService.cpp

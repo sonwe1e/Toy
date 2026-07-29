@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <d3d11.h>
+#include <memory>
 #include <wrl/client.h>
 
 namespace dvs::platform {
@@ -24,7 +25,8 @@ public:
                          D3d11PlaneDimensions yDimensions,
                          Microsoft::WRL::ComPtr<ID3D11Texture2D> uvTexture,
                          Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvView,
-                         D3d11PlaneDimensions uvDimensions) noexcept;
+                         D3d11PlaneDimensions uvDimensions,
+                         std::shared_ptr<const void> lifetimeAnchor = {}) noexcept;
     ~D3d11GpuFrameBacking() override = default;
 
     [[nodiscard]] ID3D11Texture2D* yTexture() const noexcept;
@@ -41,6 +43,7 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> uvTexture_;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvView_;
     D3d11PlaneDimensions uvDimensions_;
+    std::shared_ptr<const void> lifetimeAnchor_;
 };
 
 } // namespace dvs::platform

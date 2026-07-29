@@ -67,6 +67,58 @@ private:
     std::vector<application::ApplicationEvent> events_;
 };
 
+class AnalysisEventSink final : public application::IApplicationEventSink {
+public:
+    [[nodiscard]] application::EventPostResult
+    postCritical(application::ApplicationEvent event) noexcept override {
+        record(std::move(event));
+        return application::EventPostResult::Accepted;
+    }
+
+    [[nodiscard]] application::EventPostResult
+    postRealtime(application::ApplicationEvent event) noexcept override {
+        record(std::move(event));
+        return application::EventPostResult::Accepted;
+    }
+
+    void closeRealtimeIngress() noexcept override {}
+    void closeCriticalIngress() noexcept override {}
+
+    [[nodiscard]] bool waitForCompletion(const application::AlignmentAnalysisJobId jobId) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(lock, std::chrono::seconds{5}, [this, jobId] {
+            return std::any_of(events_.begin(), events_.end(), [jobId](const auto& event) {
+                const auto* const completed =
+                    std::get_if<application::AlignmentAnalysisCompleted>(&event);
+                return completed != nullptr && completed->jobId == jobId;
+            });
+        });
+    }
+
+    [[nodiscard]] std::vector<application::ApplicationEvent> events() const {
+        std::scoped_lock lock(mutex_);
+        return events_;
+    }
+
+    void clear() {
+        std::scoped_lock lock(mutex_);
+        events_.clear();
+    }
+
+private:
+    void record(application::ApplicationEvent event) {
+        {
+            std::scoped_lock lock(mutex_);
+            events_.push_back(std::move(event));
+        }
+        condition_.notify_all();
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::vector<application::ApplicationEvent> events_;
+};
+
 [[nodiscard]] std::filesystem::path fixture(const std::string_view name) {
     return std::filesystem::path{DVS_MEDIA_FIXTURE_DIR} / std::string{name};
 }
@@ -244,9 +296,8 @@ TEST(MultiSourceFrameProviderTests, OpensDirectSourcesAndPublishesOnlyACompleteE
 }
 
 TEST(AlignmentAnalysisServiceTests, CompletesSequenceJobOnIndependentDecodeProvider) {
-    platform::FrameBudget budget{16U * 1024U * 1024U};
-    AlignmentAnalysisService service{budget};
-    const auto events = std::make_shared<RecordingEventSink>();
+    AlignmentAnalysisService service;
+    const auto events = std::make_shared<AnalysisEventSink>();
     const application::FrameProviderOpenRequest open = makeOpenRequest(799U);
     const application::SequenceAlignmentRequest request{
         .context = makePlaybackContext(800U),
@@ -258,10 +309,33 @@ TEST(AlignmentAnalysisServiceTests, CompletesSequenceJobOnIndependentDecodeProvi
     };
 
     ASSERT_EQ(service.submit(request, events), application::PortSubmitResult::Accepted);
-    ASSERT_TRUE(events->waitForEventCount(2U));
+    ASSERT_TRUE(events->waitForCompletion(request.jobId));
     const std::vector<application::ApplicationEvent> recorded = events->events();
     ASSERT_GE(recorded.size(), 2U);
-    EXPECT_NE(std::get_if<application::AlignmentAnalysisStarted>(&recorded.front()), nullptr);
+    const auto* const started =
+        std::get_if<application::AlignmentAnalysisStarted>(&recorded.front());
+    ASSERT_NE(started, nullptr);
+    EXPECT_GT(started->work.totalUnits, 24U);
+    EXPECT_EQ(started->work.unitName, "work units");
+    std::uint64_t previousUnits = 0U;
+    bool collected = false;
+    bool computed = false;
+    for (const application::ApplicationEvent& event : recorded) {
+        const auto* const progress = std::get_if<application::AlignmentAnalysisProgress>(&event);
+        if (progress == nullptr) {
+            continue;
+        }
+        EXPECT_EQ(progress->work, started->work);
+        EXPECT_GE(progress->completedUnits, previousUnits);
+        previousUnits = progress->completedUnits;
+        collected = collected ||
+                    progress->phase == application::AlignmentAnalysisPhase::CollectingSignatures;
+        computed =
+            computed || progress->phase == application::AlignmentAnalysisPhase::ComputingAlignment;
+    }
+    EXPECT_TRUE(collected);
+    EXPECT_TRUE(computed);
+    EXPECT_EQ(previousUnits, started->work.totalUnits);
     const auto completed = std::find_if(recorded.begin(), recorded.end(), [](const auto& event) {
         return std::holds_alternative<application::AlignmentAnalysisCompleted>(event);
     });
@@ -271,6 +345,16 @@ TEST(AlignmentAnalysisServiceTests, CompletesSequenceJobOnIndependentDecodeProvi
     EXPECT_EQ(result.kind, application::AlignmentAnalysisKind::Sequence);
     ASSERT_EQ(result.sequenceResults.size(), 1U);
     EXPECT_EQ(result.sequenceResults.front().sourceId, 1U);
+    EXPECT_EQ(service.openSessionCountForTesting(), 0U);
+
+    const std::uint64_t decodedBeforeCacheHit = service.decodedSignatureCountForTesting();
+    events->clear();
+    application::SequenceAlignmentRequest repeated = request;
+    repeated.jobId = application::AlignmentAnalysisJobId{2U};
+    ASSERT_EQ(service.submit(repeated, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForCompletion(repeated.jobId));
+    EXPECT_EQ(service.decodedSignatureCountForTesting(), decodedBeforeCacheHit);
+    EXPECT_EQ(service.openSessionCountForTesting(), 0U);
 }
 
 TEST(MultiSourceFrameProviderTests, KeepsOneStableDecodeWorkerPerSourceAcrossExactSeeks) {
@@ -305,6 +389,107 @@ TEST(MultiSourceFrameProviderTests, KeepsOneStableDecodeWorkerPerSourceAcrossExa
         EXPECT_EQ(ready->set.sources().size(), open.sources.size());
         EXPECT_EQ(provider.decodeWorkerIdsForTesting(), initialWorkers);
     }
+}
+
+TEST(MultiSourceFrameProviderTests, FrameSetCacheIgnoresRequestIdentityButHonorsAlignmentRevision) {
+    platform::FrameBudget budget{8U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(730U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    const application::FrameRequest first{
+        .context = makeFrameContext(731U, 9U),
+        .frameId = domain::FrameId{4},
+        .priority = application::FrameRequestPriority::Exact,
+        .alignmentRevision = 3U,
+    };
+    ASSERT_EQ(provider.submit(first, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(3U));
+    const std::vector<std::uint64_t> decoded = provider.decodeCountsForTesting();
+    ASSERT_EQ(decoded.size(), open.sources.size());
+
+    events->clear();
+    application::FrameRequest differentRequest = first;
+    differentRequest.context = makeFrameContext(732U, 10U);
+    ASSERT_EQ(provider.submit(differentRequest, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+    EXPECT_TRUE(findFrameSetReady(events, differentRequest.context).has_value());
+    EXPECT_EQ(provider.decodeCountsForTesting(), decoded);
+    EXPECT_EQ(provider.frameSetCacheHitCountForTesting(), 1U);
+
+    events->clear();
+    application::FrameRequest revisedAlignment = differentRequest;
+    revisedAlignment.context = makeFrameContext(733U, 11U);
+    revisedAlignment.alignmentRevision = 4U;
+    ASSERT_EQ(provider.submit(revisedAlignment, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+    EXPECT_TRUE(findFrameSetReady(events, revisedAlignment.context).has_value());
+    EXPECT_EQ(provider.frameSetCacheHitCountForTesting(), 1U);
+}
+
+TEST(MultiSourceFrameProviderTests, FrameSetCacheEvictsBySharedBudgetBytes) {
+    platform::FrameBudget budget{256U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(734U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    const auto decodeExact = [&](const std::uint64_t requestId, const std::int64_t frame) {
+        events->clear();
+        const application::FrameRequest request{
+            .context = makeFrameContext(requestId, requestId),
+            .frameId = domain::FrameId{frame},
+            .priority = application::FrameRequestPriority::Exact,
+        };
+        EXPECT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+        EXPECT_TRUE(events->waitForEventCount(2U));
+        EXPECT_TRUE(findFrameSetReady(events, request.context).has_value());
+    };
+
+    decodeExact(735U, 0);
+    decodeExact(736U, 1);
+    const std::vector<std::uint64_t> beforeRevisit = provider.decodeCountsForTesting();
+    decodeExact(737U, 0);
+
+    const std::vector<std::uint64_t> afterRevisit = provider.decodeCountsForTesting();
+    ASSERT_EQ(afterRevisit.size(), beforeRevisit.size());
+    EXPECT_GT(afterRevisit[0U], beforeRevisit[0U]);
+    EXPECT_EQ(provider.frameSetCacheHitCountForTesting(), 0U);
+}
+
+TEST(MultiSourceFrameProviderTests, PrefetchPopulatesSourceCachesWithoutPublishingAFrameSet) {
+    platform::FrameBudget budget{8U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(740U);
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    events->clear();
+    const application::FrameRequest prefetch{
+        .context = makeFrameContext(741U, 9U),
+        .frameId = domain::FrameId{5},
+        .priority = application::FrameRequestPriority::Prefetch,
+        .alignmentRevision = 2U,
+    };
+    ASSERT_EQ(provider.submit(prefetch, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+    EXPECT_FALSE(findFrameSetReady(events, prefetch.context).has_value());
+    const std::vector<std::uint64_t> decoded = provider.decodeCountsForTesting();
+    ASSERT_EQ(decoded.size(), open.sources.size());
+    EXPECT_GT(budget.reservedBytes(), 0U);
+
+    events->clear();
+    application::FrameRequest exact = prefetch;
+    exact.context = makeFrameContext(742U, 10U);
+    exact.priority = application::FrameRequestPriority::Exact;
+    ASSERT_EQ(provider.submit(exact, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(2U));
+    EXPECT_TRUE(findFrameSetReady(events, exact.context).has_value());
+    EXPECT_EQ(provider.decodeCountsForTesting(), decoded);
 }
 
 TEST(MultiSourceFrameProviderTests, FailsTheWholeRequestWhenFrameBudgetIsExhausted) {
@@ -965,66 +1150,74 @@ TEST(MultiSourceFrameProviderTests, AppliesGlobalOffsetsAndPublishesBoundaryMiss
     EXPECT_EQ(ready->set.find(1U)->matchKind, application::FrameMatchKind::ExactIndex);
 }
 
-TEST(MultiSourceFrameProviderTests, CollectsBoundedLumaEvidenceAndPublishesAnEstimate) {
-    platform::FrameBudget budget{4U * 1024U * 1024U};
-    MultiSourceFrameProvider provider{budget};
+TEST(AlignmentAnalysisServiceTests, CollectsBoundedLumaSamplesAndPublishesGlobalResult) {
+    AlignmentAnalysisService service;
     const auto events = std::make_shared<RecordingEventSink>();
     const application::FrameProviderOpenRequest open = makeOpenRequest(920U);
-    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
-    ASSERT_TRUE(events->waitForEventCount(1U));
-
-    events->clear();
     const application::AlignmentEstimateRequest request{
         .context = makePlaybackContext(921U),
         .canonicalSourceId = 0U,
+        .jobId = application::AlignmentAnalysisJobId{3U},
+        .sources = open.sources,
+        .timeline = open.timeline,
     };
-    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+
+    ASSERT_EQ(service.submit(request, events), application::PortSubmitResult::Accepted);
     ASSERT_TRUE(events->waitForEventCount(2U));
-
     const auto recorded = events->events();
-    ASSERT_EQ(recorded.size(), 2U);
-    const auto* const estimated = std::get_if<application::AlignmentEstimated>(&recorded[0]);
-    ASSERT_NE(estimated, nullptr);
-    EXPECT_EQ(estimated->context, request.context);
-    ASSERT_EQ(estimated->estimates.size(), 1U);
-    EXPECT_EQ(estimated->estimates.front().sourceId, 1U);
-    EXPECT_GE(estimated->estimates.front().bestOffset, -4);
-    EXPECT_LE(estimated->estimates.front().bestOffset, 4);
-    EXPECT_GE(estimated->estimates.front().evidenceCount, 3U);
-
-    const auto* const terminal = std::get_if<application::RequestTerminal>(&recorded[1]);
-    ASSERT_NE(terminal, nullptr);
-    EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*terminal));
+    const auto completed = std::find_if(recorded.begin(), recorded.end(), [](const auto& event) {
+        return std::holds_alternative<application::AlignmentAnalysisCompleted>(event);
+    });
+    ASSERT_NE(completed, recorded.end());
+    const auto& result = std::get<application::AlignmentAnalysisCompleted>(*completed);
+    ASSERT_EQ(result.estimates.size(), 1U);
+    EXPECT_EQ(result.estimates.front().sourceId, 1U);
+    EXPECT_GE(result.estimates.front().evidenceCount, 3U);
+    EXPECT_GT(service.decodedSignatureCountForTesting(), 0U);
+    EXPECT_EQ(service.openSessionCountForTesting(), 0U);
 }
 
-TEST(MultiSourceFrameProviderTests, DecodesFullSequencesAndPublishesABandedMap) {
-    platform::FrameBudget budget{4U * 1024U * 1024U};
-    MultiSourceFrameProvider provider{budget};
-    const auto events = std::make_shared<RecordingEventSink>();
-    const application::FrameProviderOpenRequest open = makeOpenRequest(930U);
-    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
-    ASSERT_TRUE(events->waitForEventCount(1U));
+TEST(AlignmentAnalysisServiceTests, NormalizesTenBitFramesForGlobalAnalysis) {
+    const auto first = MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 0U);
+    const auto second = MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
 
-    events->clear();
-    const application::SequenceAlignmentRequest request{
-        .context = makePlaybackContext(931U),
+    AlignmentAnalysisService service;
+    const auto events = std::make_shared<AnalysisEventSink>();
+    const application::AlignmentEstimateRequest request{
+        .context = makePlaybackContext(930U),
         .canonicalSourceId = 0U,
+        .jobId = application::AlignmentAnalysisJobId{4U},
+        .sources =
+            {
+                domain::ComparisonSource{
+                    .id = 0U,
+                    .role = domain::ComparisonRole::kReference,
+                    .descriptor = first.value(),
+                    .displayName = "Reference",
+                },
+                domain::ComparisonSource{
+                    .id = 1U,
+                    .role = domain::ComparisonRole::kPrediction,
+                    .descriptor = second.value(),
+                    .displayName = "Prediction",
+                },
+            },
+        .timeline = domain::CanonicalTimeline{first.value().frameRate.value()},
     };
-    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
-    ASSERT_TRUE(events->waitForEventCount(2U));
 
-    const auto recorded = events->events();
-    ASSERT_EQ(recorded.size(), 2U);
-    const auto* const analyzed = std::get_if<application::SequenceAlignmentAnalyzed>(&recorded[0]);
-    ASSERT_NE(analyzed, nullptr);
-    EXPECT_EQ(analyzed->context, request.context);
-    ASSERT_EQ(analyzed->results.size(), 1U);
-    EXPECT_EQ(analyzed->results.front().sourceId, 1U);
-    EXPECT_EQ(analyzed->results.front().entries.size(), 12U);
-
-    const auto* const terminal = std::get_if<application::RequestTerminal>(&recorded[1]);
-    ASSERT_NE(terminal, nullptr);
-    EXPECT_TRUE(std::holds_alternative<application::RequestSucceeded>(*terminal));
+    ASSERT_EQ(service.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForCompletion(request.jobId));
+    const std::vector<application::ApplicationEvent> recorded = events->events();
+    const auto completed = std::find_if(recorded.begin(), recorded.end(), [](const auto& event) {
+        return std::holds_alternative<application::AlignmentAnalysisCompleted>(event);
+    });
+    ASSERT_NE(completed, recorded.end());
+    const auto& result = std::get<application::AlignmentAnalysisCompleted>(*completed);
+    ASSERT_EQ(result.estimates.size(), 1U);
+    EXPECT_GT(result.estimates.front().evidenceCount, 0U);
+    EXPECT_GT(service.decodedSignatureCountForTesting(), 0U);
 }
 
 } // namespace

@@ -1,5 +1,6 @@
 #include "dvs/persistence/ProjectRepository.h"
 
+#include "dvs/persistence/DerivedAlignmentCache.h"
 #include "dvs/persistence/FingerprintService.h"
 #include "dvs/persistence/ProjectJson.h"
 #include "dvs/persistence/ProjectRelinkService.h"
@@ -73,6 +74,9 @@ readProjectText(const std::filesystem::path& projectPath) {
 struct LoadedProject final {
     domain::Project project;
     application::SourceRevalidationDiagnostics sourceDiagnostics;
+    std::shared_ptr<const std::vector<application::SequenceAlignmentResult>>
+        derivedAlignmentResults;
+    std::optional<domain::MediaError> alignmentCacheError;
 };
 
 [[nodiscard]] bool isRecoverableRevalidationError(const domain::MediaError& error) noexcept {
@@ -102,10 +106,10 @@ struct LoadedProject final {
 
     for (const auto& source : sources) {
         if (!source.descriptor.sourceIdentity.has_value()) {
-            return domain::Result<LoadedProject>::failure(internal::persistenceError(
-                domain::MediaErrorCode::kInvalidProjectSchema,
-                source.id,
-                "Schema-2 project sources require persisted file identities."));
+            return domain::Result<LoadedProject>::failure(
+                internal::persistenceError(domain::MediaErrorCode::kInvalidProjectSchema,
+                                           source.id,
+                                           "Project sources require persisted file identities."));
         }
 
         const auto status = FingerprintService::verify(
@@ -130,6 +134,18 @@ struct LoadedProject final {
         .project = std::move(project).value(),
         .sourceDiagnostics = std::move(sourceDiagnostics),
     });
+}
+
+[[nodiscard]] std::filesystem::path
+defaultAlignmentCacheDirectory(const std::filesystem::path& requested) {
+    if (!requested.empty()) {
+        return requested;
+    }
+    const auto paths = platform::WindowsPaths::applicationDataPaths();
+    if (!paths) {
+        return {};
+    }
+    return paths.value().proxyCacheDirectory / L"Alignment";
 }
 
 [[nodiscard]] bool isOwnerTokenCharacter(const unsigned char character) noexcept {
@@ -264,7 +280,9 @@ mapSubmitResult(const internal::IoSubmitResult result) noexcept {
 
 class ProjectRepository::Impl final {
 public:
-    explicit Impl(const std::size_t queueCapacity) : actor(queueCapacity) {}
+    Impl(const std::size_t queueCapacity, std::filesystem::path alignmentCacheDirectory)
+        : alignmentCache(defaultAlignmentCacheDirectory(std::move(alignmentCacheDirectory))),
+          actor(queueCapacity) {}
 
     ~Impl() {
         operations.cancelAll();
@@ -355,10 +373,39 @@ private:
                                                                        request.context);
                         }
                     }
+                    const bool sourceRevalidationFailed = std::any_of(
+                        payload.sourceDiagnostics.begin(),
+                        payload.sourceDiagnostics.end(),
+                        [](const application::SourceRevalidationDiagnostic& diagnostic) {
+                            return diagnostic.error.has_value();
+                        });
+                    const domain::ProjectAlignmentState& alignment =
+                        payload.project.alignmentState();
+                    if (alignment.mode == domain::ProjectAlignmentMode::kAutomaticSequence) {
+                        if (sourceRevalidationFailed || !alignment.analysisCacheKey.has_value()) {
+                            payload.alignmentCacheError = internal::persistenceError(
+                                domain::MediaErrorCode::kInvalidProjectSchema,
+                                std::nullopt,
+                                "Derived alignment cache cannot be reused until all sources "
+                                "pass fingerprint revalidation.");
+                        } else {
+                            auto cached = alignmentCache.load(*alignment.analysisCacheKey,
+                                                              payload.project.sources());
+                            if (cached) {
+                                payload.derivedAlignmentResults = std::make_shared<
+                                    const std::vector<application::SequenceAlignmentResult>>(
+                                    std::move(cached).value());
+                            } else {
+                                payload.alignmentCacheError = cached.error();
+                            }
+                        }
+                    }
                     application::ApplicationEvent loaded{application::ProjectLoaded{
                         .context = request.context,
                         .project = std::move(payload.project),
                         .sourceDiagnostics = std::move(payload.sourceDiagnostics),
+                        .derivedAlignmentResults = std::move(payload.derivedAlignmentResults),
+                        .alignmentCacheError = std::move(payload.alignmentCacheError),
                     }};
                     if (operation->isCanceled()) {
                         internal::completeCanceled(operation, events, request.context);
@@ -443,7 +490,30 @@ private:
             if (operation->isCanceled()) {
                 internal::completeCanceled(operation, events, request.context);
             } else {
-                const auto status = writeProject(request, *operation);
+                domain::Status status = domain::Status::success();
+                const domain::ProjectAlignmentState& alignment = request.project.alignmentState();
+                if (alignment.mode == domain::ProjectAlignmentMode::kAutomaticSequence) {
+                    if (!alignment.analysisCacheKey.has_value() ||
+                        !request.derivedAlignmentResults) {
+                        status = domain::Status::failure(internal::persistenceError(
+                            domain::MediaErrorCode::kInvalidProjectSchema,
+                            std::nullopt,
+                            "Automatic alignment save requires a derived cache payload."));
+                    } else {
+                        status = alignmentCache.store(*alignment.analysisCacheKey,
+                                                      request.project.sources(),
+                                                      *request.derivedAlignmentResults,
+                                                      request.context.projectRevision.value());
+                    }
+                }
+                if (status && operation->isCanceled()) {
+                    internal::completeCanceled(operation, events, request.context);
+                    operations.remove(operation);
+                    return;
+                }
+                if (status) {
+                    status = writeProject(request, *operation);
+                }
                 if (!status) {
                     internal::completeFailed(operation, events, request.context, status.error());
                 } else {
@@ -477,12 +547,14 @@ private:
         operations.remove(operation);
     }
 
+    DerivedAlignmentCache alignmentCache;
     internal::SerialIoActor actor;
     internal::OperationRegistry operations;
 };
 
-ProjectRepository::ProjectRepository(const std::size_t queueCapacity)
-    : impl_(std::make_unique<Impl>(queueCapacity)) {}
+ProjectRepository::ProjectRepository(const std::size_t queueCapacity,
+                                     std::filesystem::path alignmentCacheDirectory)
+    : impl_(std::make_unique<Impl>(queueCapacity, std::move(alignmentCacheDirectory))) {}
 
 ProjectRepository::~ProjectRepository() = default;
 

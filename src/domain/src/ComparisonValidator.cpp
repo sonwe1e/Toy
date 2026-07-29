@@ -102,7 +102,7 @@ void comparePair(const ComparisonSource& first,
 
     if (a.frameCount.value != b.frameCount.value) {
         report.add(CompatibilityFinding{
-            .severity = CompatibilitySeverity::kWarning,
+            .severity = CompatibilitySeverity::kAlignmentRequired,
             .code = MediaErrorCode::kSourceFrameCountMismatch,
             .sources = pair,
             .technicalDetail = "Effective source frame counts differ.",
@@ -110,7 +110,7 @@ void comparePair(const ComparisonSource& first,
     }
     if (a.frameRate.has_value() && b.frameRate.has_value() && *a.frameRate != *b.frameRate) {
         report.add(CompatibilityFinding{
-            .severity = CompatibilitySeverity::kWarning,
+            .severity = CompatibilitySeverity::kAlignmentRequired,
             .code = MediaErrorCode::kSourceFrameRateMismatch,
             .sources = pair,
             .technicalDetail = "Declared source frame rates differ.",
@@ -118,7 +118,7 @@ void comparePair(const ComparisonSource& first,
     }
     if (a.duration != b.duration) {
         report.add(CompatibilityFinding{
-            .severity = CompatibilitySeverity::kWarning,
+            .severity = CompatibilitySeverity::kAlignmentRequired,
             .code = MediaErrorCode::kSourceDurationMismatch,
             .sources = pair,
             .technicalDetail = "Effective source durations differ.",
@@ -132,13 +132,24 @@ void comparePair(const ComparisonSource& first,
             .technicalDetail = "Source resolutions differ; comparison is resampled.",
         });
     }
+    if (a.rotationDegrees != b.rotationDegrees || a.sampleAspectRatio != b.sampleAspectRatio) {
+        report.add(CompatibilityFinding{
+            .severity = CompatibilitySeverity::kWarning,
+            .code = MediaErrorCode::kSourceResolutionMismatch,
+            .sources = pair,
+            .technicalDetail =
+                "Source rotation or sample aspect ratio differs; comparison is resampled.",
+        });
+    }
     if (a.colorMetadata.matrix != b.colorMetadata.matrix ||
-        a.colorMetadata.range != b.colorMetadata.range) {
+        a.colorMetadata.range != b.colorMetadata.range ||
+        a.colorMetadata.transfer != b.colorMetadata.transfer) {
         report.add(CompatibilityFinding{
             .severity = CompatibilitySeverity::kWarning,
             .code = MediaErrorCode::kSourceColorMetadataMismatch,
             .sources = pair,
-            .technicalDetail = "Source color matrix or range differs; comparison is converted.",
+            .technicalDetail =
+                "Source color matrix, range, or transfer differs; comparison is converted.",
         });
     }
 }

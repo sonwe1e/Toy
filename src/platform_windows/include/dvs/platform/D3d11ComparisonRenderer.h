@@ -65,6 +65,7 @@ enum class SurfaceViewMode : std::uint8_t {
     ThreeUp,
     ReferenceFocus,
     Difference,
+    AnalysisGrid,
 };
 
 enum class SurfaceDifferenceMetric : std::uint8_t {
@@ -72,6 +73,7 @@ enum class SurfaceDifferenceMetric : std::uint8_t {
     Luma,
     Chroma,
     Heatmap,
+    ExactPlanes,
 };
 
 enum class SurfaceDifferenceGain : std::uint8_t {
@@ -96,6 +98,34 @@ enum class SurfaceDifferenceFilter : std::uint8_t {
     Bicubic,
 };
 
+enum class SurfaceThresholdPolicy : std::uint8_t {
+    LumaOnly,
+    AnyChannel,
+    AllChannels,
+};
+
+struct SurfaceViewTransform final {
+    float centerX = 0.5F;
+    float centerY = 0.5F;
+    float scale = 1.0F;
+
+    [[nodiscard]] bool isValid() const noexcept;
+};
+
+struct SurfaceNormalizedRect final {
+    float left = 0.0F;
+    float top = 0.0F;
+    float right = 1.0F;
+    float bottom = 1.0F;
+
+    [[nodiscard]] bool isValid() const noexcept;
+};
+
+[[nodiscard]] SurfaceNormalizedRect
+effectiveSurfaceSampleRect(const SurfaceViewTransform& transform,
+                           bool roiEnabled,
+                           const SurfaceNormalizedRect& roi) noexcept;
+
 // Qt-facing code snapshots its public scene-graph state into this native-type-free value. The
 // matrix is row-major and maps item-local logical coordinates directly to clip space.
 struct SurfaceRenderState final {
@@ -114,6 +144,13 @@ struct SurfaceRenderState final {
     SurfaceDifferenceGain differenceGain = SurfaceDifferenceGain::Gain1x;
     SurfaceDifferenceEdge differenceEdge = SurfaceDifferenceEdge::Between0And1;
     SurfaceDifferenceFilter differenceFilter = SurfaceDifferenceFilter::Bilinear;
+    bool exactPlaneAvailable = false;
+    bool thresholdEnabled = false;
+    float threshold = 0.0F;
+    SurfaceThresholdPolicy thresholdPolicy = SurfaceThresholdPolicy::AnyChannel;
+    SurfaceViewTransform viewTransform;
+    bool roiEnabled = false;
+    SurfaceNormalizedRect roi;
     std::uint8_t referenceSlot = 0U;
 
     [[nodiscard]] bool isValid() const noexcept;
@@ -149,7 +186,8 @@ d3dScissorFromBottomLeft(const SurfaceScissorRect& scissor,
                          const SurfaceViewport& viewport,
                          std::uint32_t renderTargetHeight) noexcept;
 
-[[nodiscard]] Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata) noexcept;
+[[nodiscard]] Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata,
+                                                    std::uint8_t bitDepth = 8U) noexcept;
 
 enum class ComparisonRenderResult {
     Presented,

@@ -9,19 +9,25 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/display.h>
 #include <libavutil/error.h>
 #include <libavutil/pixdesc.h>
 }
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -162,7 +168,37 @@ normalizeColorMetadata(const AVCodecParameters& parameters,
     }
 
     domain::ColorMetadata color;
+    switch (parameters.color_trc) {
+    case AVCOL_TRC_BT709:
+    case AVCOL_TRC_SMPTE170M:
+    case AVCOL_TRC_BT2020_10:
+    case AVCOL_TRC_BT2020_12:
+        color.transfer = domain::ColorTransfer::kBt709;
+        color.transferInferred = false;
+        break;
+    case AVCOL_TRC_IEC61966_2_1:
+        color.transfer = domain::ColorTransfer::kSrgb;
+        color.transferInferred = false;
+        break;
+    case AVCOL_TRC_LINEAR:
+        color.transfer = domain::ColorTransfer::kLinear;
+        color.transferInferred = false;
+        break;
+    case AVCOL_TRC_UNSPECIFIED:
+        color.transfer = domain::ColorTransfer::kBt709;
+        color.transferInferred = true;
+        break;
+    default:
+        return domain::Result<domain::ColorMetadata>::failure(
+            probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
+                       sourceId,
+                       "The source transfer characteristic cannot be normalized safely."));
+    }
     switch (parameters.color_space) {
+    case AVCOL_SPC_RGB:
+        color.matrix = height >= 720U ? domain::ColorMatrix::kBt709 : domain::ColorMatrix::kBt601;
+        color.matrixInferred = true;
+        break;
     case AVCOL_SPC_BT709:
         color.matrix = domain::ColorMatrix::kBt709;
         color.matrixInferred = false;
@@ -183,22 +219,90 @@ normalizeColorMetadata(const AVCodecParameters& parameters,
                        "Only BT.601 and BT.709 colour matrices are supported by the v1 renderer."));
     }
 
-    color.range = parameters.color_range == AVCOL_RANGE_JPEG ? domain::ColorRange::kFull
-                                                             : domain::ColorRange::kLimited;
+    const AVPixFmtDescriptor* const pixelDescriptor =
+        av_pix_fmt_desc_get(static_cast<AVPixelFormat>(parameters.format));
+    const bool rgb =
+        pixelDescriptor != nullptr && (pixelDescriptor->flags & AV_PIX_FMT_FLAG_RGB) != 0;
+    color.range = !rgb && parameters.color_range == AVCOL_RANGE_JPEG ? domain::ColorRange::kFull
+                                                                     : domain::ColorRange::kLimited;
     return domain::Result<domain::ColorMetadata>::success(color);
 }
 
-[[nodiscard]] bool isSupportedPixelFormat(const AVPixFmtDescriptor& descriptor) noexcept {
-    if (descriptor.nb_components != 3 || descriptor.log2_chroma_w != 1 ||
-        descriptor.log2_chroma_h != 1) {
-        return false;
+[[nodiscard]] std::optional<std::uint8_t>
+supportedPixelBitDepth(const AVPixFmtDescriptor& descriptor) noexcept {
+    const int bitDepth = descriptor.comp[0].depth;
+    const bool rgb = (descriptor.flags & AV_PIX_FMT_FLAG_RGB) != 0;
+    if ((rgb && (descriptor.nb_components < 3 || descriptor.nb_components > 4 || bitDepth != 8)) ||
+        (!rgb && (descriptor.nb_components < 3 || descriptor.nb_components > 4 ||
+                  descriptor.log2_chroma_w < 0 || descriptor.log2_chroma_w > 1 ||
+                  descriptor.log2_chroma_h < 0 || descriptor.log2_chroma_h > 1 ||
+                  (bitDepth != 8 && bitDepth != 10)))) {
+        return std::nullopt;
     }
-    for (int component = 0; component < descriptor.nb_components; ++component) {
-        if (descriptor.comp[component].depth != 8) {
-            return false;
+    for (int component = 1; component < descriptor.nb_components; ++component) {
+        if (descriptor.comp[component].depth != bitDepth) {
+            return std::nullopt;
         }
     }
-    return true;
+    return static_cast<std::uint8_t>(bitDepth);
+}
+
+[[nodiscard]] domain::Result<std::uint16_t> normalizedRotation(const AVCodecParameters& parameters,
+                                                               const domain::SourceId sourceId) {
+    const AVPacketSideData* const display = av_packet_side_data_get(
+        parameters.coded_side_data, parameters.nb_coded_side_data, AV_PKT_DATA_DISPLAYMATRIX);
+    if (display == nullptr) {
+        return domain::Result<std::uint16_t>::success(0U);
+    }
+    if (display->size < sizeof(std::int32_t) * 9U) {
+        return domain::Result<std::uint16_t>::failure(
+            probeError(domain::MediaErrorCode::kInvalidMediaDescriptor,
+                       sourceId,
+                       "The source display matrix is truncated."));
+    }
+    std::array<std::int32_t, 9U> matrix{};
+    std::memcpy(matrix.data(), display->data, sizeof(matrix));
+    const double counterClockwise = av_display_rotation_get(matrix.data());
+    if (!std::isfinite(counterClockwise)) {
+        return domain::Result<std::uint16_t>::failure(
+            probeError(domain::MediaErrorCode::kInvalidMediaDescriptor,
+                       sourceId,
+                       "The source display matrix has no finite rotation."));
+    }
+    int degrees = static_cast<int>(std::lround(counterClockwise));
+    degrees %= 360;
+    if (degrees < 0) {
+        degrees += 360;
+    }
+    if (degrees != 0 && degrees != 90 && degrees != 180 && degrees != 270) {
+        return domain::Result<std::uint16_t>::failure(
+            probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
+                       sourceId,
+                       "Only right-angle source rotation can be normalized."));
+    }
+    return domain::Result<std::uint16_t>::success(static_cast<std::uint16_t>(degrees));
+}
+
+[[nodiscard]] domain::SampleAspectRatio
+normalizedSampleAspectRatio(const AVStream& stream, const AVCodecParameters& parameters) noexcept {
+    AVRational ratio = stream.sample_aspect_ratio;
+    if (ratio.num <= 0 || ratio.den <= 0) {
+        ratio = parameters.sample_aspect_ratio;
+    }
+    if (ratio.num <= 0 || ratio.den <= 0) {
+        return {};
+    }
+    const std::uint64_t numerator = static_cast<std::uint64_t>(ratio.num);
+    const std::uint64_t denominator = static_cast<std::uint64_t>(ratio.den);
+    const std::uint64_t divisor = std::gcd(numerator, denominator);
+    if ((numerator / divisor) > (std::numeric_limits<std::uint32_t>::max)() ||
+        (denominator / divisor) > (std::numeric_limits<std::uint32_t>::max)()) {
+        return {};
+    }
+    return domain::SampleAspectRatio{
+        .numerator = static_cast<std::uint32_t>(numerator / divisor),
+        .denominator = static_cast<std::uint32_t>(denominator / divisor),
+    };
 }
 
 [[nodiscard]] bool
@@ -298,30 +402,45 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
                        "Only H.264, H.265/HEVC, and MPEG-4 Part 2 source video is supported in v1.",
                        true));
     }
-    if (avcodec_find_decoder(parameters.codec_id) == nullptr) {
+    const AVCodec* const decoder = avcodec_find_decoder(parameters.codec_id);
+    if (decoder == nullptr) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedCodec,
                        sourceId,
                        "FFmpeg has no decoder for this supported source codec.",
                        true));
     }
+    bool d3d11VaDecode = false;
+    for (int configurationIndex = 0;; ++configurationIndex) {
+        const AVCodecHWConfig* const configuration =
+            avcodec_get_hw_config(decoder, configurationIndex);
+        if (configuration == nullptr) {
+            break;
+        }
+        if (configuration->device_type == AV_HWDEVICE_TYPE_D3D11VA &&
+            (configuration->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
+            d3d11VaDecode = true;
+            break;
+        }
+    }
 
     const AVPixelFormat pixelFormat = static_cast<AVPixelFormat>(parameters.format);
     const AVPixFmtDescriptor* const pixelDescriptor = av_pix_fmt_desc_get(pixelFormat);
     const char* const pixelFormatName = av_get_pix_fmt_name(pixelFormat);
-    if (pixelDescriptor == nullptr || pixelFormatName == nullptr ||
-        !isSupportedPixelFormat(*pixelDescriptor)) {
+    const std::optional<std::uint8_t> bitDepth =
+        pixelDescriptor == nullptr ? std::nullopt : supportedPixelBitDepth(*pixelDescriptor);
+    if (pixelDescriptor == nullptr || pixelFormatName == nullptr || !bitDepth.has_value()) {
         return domain::Result<domain::MediaDescriptor>::failure(
             probeError(domain::MediaErrorCode::kUnsupportedPixelFormat,
                        sourceId,
-                       "Only 8-bit 4:2:0 source pixel formats are supported in v1.",
+                       "Only 8/10-bit YUV and 8-bit RGB source pixel formats are supported.",
                        true));
     }
 
     const AVRational averageRate = stream->avg_frame_rate;
     const AVRational realRate = stream->r_frame_rate;
     std::optional<domain::RationalRate> frameRate;
-    std::optional<std::vector<std::int64_t>> timestampIndex;
+    std::shared_ptr<const std::vector<std::int64_t>> timestampIndex;
     domain::TimingConfidence timingConfidence = domain::TimingConfidence::kDeclaredCfr;
     {
         auto indexedTimestamps =
@@ -332,6 +451,13 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
                 .expectedFrameCount = stream->nb_frames > 0
                                           ? std::optional<std::int64_t>{stream->nb_frames}
                                           : std::nullopt,
+                .sourceIdentity = identityBefore.value(),
+                .streamIndex = streamIndex,
+                .timeBase =
+                    internal::TimelineRational{
+                        .numerator = stream->time_base.num,
+                        .denominator = stream->time_base.den,
+                    },
                 .cancellation =
                     internal::TimelineCancellation{
                         .isRequested = probeCancellationRequested,
@@ -474,6 +600,10 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
     if (!colorMetadata) {
         return domain::Result<domain::MediaDescriptor>::failure(colorMetadata.error());
     }
+    auto rotation = normalizedRotation(parameters, sourceId);
+    if (!rotation) {
+        return domain::Result<domain::MediaDescriptor>::failure(rotation.error());
+    }
 
     AVRational durationTimeBase = stream->time_base;
     std::int64_t durationTicks = stream->duration;
@@ -530,12 +660,14 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         .duration = domain::MediaTime{durationMicroseconds},
         .codecId = avcodec_get_name(parameters.codec_id),
         .pixelFormatId = pixelFormatName,
-        .bitDepth = 8U,
+        .bitDepth = *bitDepth,
+        .rotationDegrees = rotation.value(),
+        .sampleAspectRatio = normalizedSampleAspectRatio(*stream, parameters),
         .colorMetadata = colorMetadata.value(),
         .decodeCapabilities =
             domain::DecodeCapabilities{
                 .softwareDecode = true,
-                .d3d11VaDecode = false,
+                .d3d11VaDecode = d3d11VaDecode,
             },
         .timingConfidence = timingConfidence,
         .sourceIdentity = std::move(identityAfter).value(),
@@ -678,7 +810,29 @@ public:
         }
     }
 
+    [[nodiscard]] MediaProbeStatistics statistics() const noexcept {
+        return MediaProbeStatistics{
+            .completedProbes = completedProbes_.load(std::memory_order_acquire),
+            .totalProbeIndexMicroseconds =
+                totalProbeIndexMicroseconds_.load(std::memory_order_acquire),
+            .maximumProbeIndexMicroseconds =
+                maximumProbeIndexMicroseconds_.load(std::memory_order_acquire),
+        };
+    }
+
 private:
+    void recordSuccessfulProbe(const std::uint64_t elapsedMicroseconds) noexcept {
+        completedProbes_.fetch_add(1U, std::memory_order_release);
+        totalProbeIndexMicroseconds_.fetch_add(elapsedMicroseconds, std::memory_order_release);
+        std::uint64_t maximum = maximumProbeIndexMicroseconds_.load(std::memory_order_acquire);
+        while (maximum < elapsedMicroseconds &&
+               !maximumProbeIndexMicroseconds_.compare_exchange_weak(maximum,
+                                                                     elapsedMicroseconds,
+                                                                     std::memory_order_release,
+                                                                     std::memory_order_acquire)) {
+        }
+    }
+
     void close() noexcept {
         {
             std::scoped_lock lock(mutex_);
@@ -705,6 +859,7 @@ private:
     }
 
     void execute(const std::shared_ptr<ProbeOperation>& operation) noexcept {
+        const auto started = std::chrono::steady_clock::now();
         try {
             invokeWorkerAdmissionHook();
             if (operation->isCanceled()) {
@@ -720,6 +875,11 @@ private:
                 } else if (!descriptor) {
                     postFailed(operation, descriptor.error());
                 } else {
+                    const auto elapsed = static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - started)
+                            .count());
+                    recordSuccessfulProbe(elapsed);
                     postSucceeded(operation, descriptor.value(), std::move(timeline));
                 }
             }
@@ -764,6 +924,9 @@ private:
     std::vector<std::shared_ptr<ProbeOperation>> operations_;
     bool closed_ = false;
     std::vector<std::thread> workers_;
+    std::atomic<std::uint64_t> completedProbes_ = 0U;
+    std::atomic<std::uint64_t> totalProbeIndexMicroseconds_ = 0U;
+    std::atomic<std::uint64_t> maximumProbeIndexMicroseconds_ = 0U;
 };
 
 MediaProbe::MediaProbe(const std::size_t queueCapacity)
@@ -796,6 +959,10 @@ MediaProbe::submit(const application::MediaProbeRequest& request,
 
 void MediaProbe::cancel(const application::RequestContext& context) noexcept {
     impl_->cancel(context);
+}
+
+MediaProbeStatistics MediaProbe::statistics() const noexcept {
+    return impl_->statistics();
 }
 
 } // namespace dvs::media

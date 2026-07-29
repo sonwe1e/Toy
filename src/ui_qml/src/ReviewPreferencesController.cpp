@@ -166,11 +166,11 @@ public:
     }
 
     void setViewMode(const ViewMode value) {
-        setEnum(viewMode_, value, ViewMode::SideBySide, ViewMode::Difference);
+        setEnum(viewMode_, value, ViewMode::SideBySide, ViewMode::AnalysisGrid);
     }
 
     void setDifferenceMetric(const DifferenceMetric value) {
-        if (value < DifferenceMetric::RgbAbsolute || value > DifferenceMetric::Heatmap ||
+        if (value < DifferenceMetric::RgbAbsolute || value > DifferenceMetric::ExactPlanes ||
             value == differenceMetric_) {
             return;
         }
@@ -374,7 +374,8 @@ private:
                                 {{"side-by-side", ViewMode::SideBySide},
                                  {"three-up", ViewMode::ThreeUp},
                                  {"reference-focus", ViewMode::ReferenceFocus},
-                                 {"difference", ViewMode::Difference}})
+                                 {"difference", ViewMode::Difference},
+                                 {"analysis-grid", ViewMode::AnalysisGrid}})
                 .value_or(ViewMode::SideBySide);
         const DifferenceMetric nextMetric =
             parseEnum<DifferenceMetric>(values,
@@ -382,7 +383,8 @@ private:
                                         {{"rgb-absolute", DifferenceMetric::RgbAbsolute},
                                          {"luma", DifferenceMetric::Luma},
                                          {"chroma", DifferenceMetric::Chroma},
-                                         {"heatmap", DifferenceMetric::Heatmap}})
+                                         {"heatmap", DifferenceMetric::Heatmap},
+                                         {"exact-planes", DifferenceMetric::ExactPlanes}})
                 .value_or(DifferenceMetric::RgbAbsolute);
         const DifferenceGain nextGain =
             parseEnum<DifferenceGain>(values,
@@ -435,11 +437,15 @@ private:
         case ViewMode::Difference:
             viewModeName = "difference";
             break;
+        case ViewMode::AnalysisGrid:
+            viewModeName = "analysis-grid";
+            break;
         case ViewMode::SideBySide:
             break;
         }
         values.insert_or_assign(std::string{kViewModeKey}, std::string{viewModeName});
-        static constexpr std::string_view metrics[] = {"rgb-absolute", "luma", "chroma", "heatmap"};
+        static constexpr std::string_view metrics[] = {
+            "rgb-absolute", "luma", "chroma", "heatmap", "exact-planes"};
         static constexpr std::string_view gains[] = {"1x", "2x", "4x", "8x", "16x"};
         static constexpr std::string_view filters[] = {"nearest", "bilinear", "bicubic"};
         values.insert_or_assign(std::string{kDifferenceMetricKey},

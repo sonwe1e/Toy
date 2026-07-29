@@ -54,6 +54,7 @@ struct FrameRequest final {
     domain::FrameId frameId;
     FrameRequestPriority priority;
     std::vector<SourceFrameOffset> sourceOffsets;
+    std::uint64_t alignmentRevision = 0U;
 };
 
 // Runs bounded, decoder-backed evidence collection off the coordinator thread. The adapter
@@ -73,6 +74,7 @@ struct SequenceAlignmentRequest final {
     PlaybackRequestContext context;
     domain::SourceId canonicalSourceId = 0;
     std::vector<SourceFrameOffset> expectedOffsets;
+    std::vector<SourceAlignmentAnchors> manualAnchors;
     SequenceAlignmentOptions options;
     std::size_t maximumFrameCount = 50'000U;
     AlignmentAnalysisJobId jobId;
@@ -104,6 +106,7 @@ struct ProjectSaveRequest final {
     // explicit operation and new projects have no bound document yet.
     std::filesystem::path projectPath;
     domain::Project project;
+    std::shared_ptr<const std::vector<SequenceAlignmentResult>> derivedAlignmentResults;
 };
 
 struct SettingsLoadRequest final {
@@ -158,12 +161,6 @@ public:
            std::shared_ptr<IApplicationEventSink> events) = 0;
     [[nodiscard]] virtual PortSubmitResult
     submit(const FrameRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const AlignmentEstimateRequest& request,
-           std::shared_ptr<IApplicationEventSink> events) = 0;
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const SequenceAlignmentRequest& request,
-           std::shared_ptr<IApplicationEventSink> events) = 0;
     [[nodiscard]] virtual PortSubmitResult
     submit(const FrameProviderCloseRequest& request,
            std::shared_ptr<IApplicationEventSink> events) = 0;

@@ -25,7 +25,10 @@ bool FrameCountInfo::isValid() const noexcept {
 bool MediaDescriptor::isValid() const noexcept {
     return !normalizedPath.empty() && extent.isValid() && frameCount.isValid() &&
            duration.microseconds() >= 0 && !codecId.empty() && !pixelFormatId.empty() &&
-           bitDepth != 0 && colorMetadata.isValid();
+           bitDepth != 0 &&
+           (rotationDegrees == 0U || rotationDegrees == 90U || rotationDegrees == 180U ||
+            rotationDegrees == 270U) &&
+           sampleAspectRatio.isValid() && colorMetadata.isValid();
 }
 
 Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
@@ -77,6 +80,16 @@ Result<MediaDescriptor> validateMediaDescriptor(MediaDescriptor descriptor) {
                            std::nullopt,
                            false,
                            "Media descriptor color metadata is invalid."));
+    }
+    if ((descriptor.rotationDegrees != 0U && descriptor.rotationDegrees != 90U &&
+         descriptor.rotationDegrees != 180U && descriptor.rotationDegrees != 270U) ||
+        !descriptor.sampleAspectRatio.isValid()) {
+        return Result<MediaDescriptor>::failure(makeMediaError(
+            MediaErrorCode::kInvalidMediaDescriptor,
+            MediaOperation::kMediaDescriptorValidation,
+            std::nullopt,
+            false,
+            "Media rotation must be right-angled and sample aspect ratio positive."));
     }
 
     // Constant-frame-rate sources must declare a rational rate; variable-frame-rate

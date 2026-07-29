@@ -113,5 +113,162 @@ TEST(SourceDecodeActorTests, ExactWorkDisplacesQueuedPrefetchWithoutCreatingWork
     EXPECT_EQ(actor.lastDecodeThreadId(), worker);
 }
 
+TEST(SourceDecodeActorTests, ExactRequestReusesAPrefetchedSourceFrameAcrossRequestIdentity) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        2U * 1024U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    SourceDecodeSubmission prefetch = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{6},
+        .priority = SourceDecodePriority::Prefetch,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(prefetch.status, application::PortSubmitResult::Accepted);
+    domain::Result<DecodedFrame> prefetched = prefetch.completion.get();
+    ASSERT_TRUE(prefetched) << prefetched.error().technicalDetail;
+    ASSERT_EQ(actor.completedDecodeCount(), 1U);
+
+    SourceDecodeSubmission exact = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{6},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(exact.status, application::PortSubmitResult::Accepted);
+    domain::Result<DecodedFrame> reused = exact.completion.get();
+    ASSERT_TRUE(reused) << reused.error().technicalDetail;
+
+    EXPECT_EQ(actor.completedDecodeCount(), 1U);
+    EXPECT_EQ(prefetched.value().handle.resource(), reused.value().handle.resource());
+    EXPECT_EQ(prefetched.value().presentationTime, reused.value().presentationTime);
+}
+
+TEST(SourceDecodeActorTests, SequentialRequestReusesAPrefetchedSourceFrameWithoutDecodingAgain) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        2U * 1024U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    SourceDecodeSubmission prefetch = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{1},
+        .priority = SourceDecodePriority::Prefetch,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(prefetch.status, application::PortSubmitResult::Accepted);
+    domain::Result<DecodedFrame> prefetched = prefetch.completion.get();
+    ASSERT_TRUE(prefetched) << prefetched.error().technicalDetail;
+    ASSERT_EQ(actor.completedDecodeCount(), 1U);
+
+    SourceDecodeSubmission sequential = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{1},
+        .priority = SourceDecodePriority::Sequential,
+        .continueSequentially = true,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(sequential.status, application::PortSubmitResult::Accepted);
+    domain::Result<DecodedFrame> reused = sequential.completion.get();
+    ASSERT_TRUE(reused) << reused.error().technicalDetail;
+
+    EXPECT_EQ(actor.completedDecodeCount(), 1U);
+    EXPECT_EQ(prefetched.value().handle.resource(), reused.value().handle.resource());
+    EXPECT_EQ(prefetched.value().presentationTime, reused.value().presentationTime);
+}
+
+TEST(SourceDecodeActorTests, SequentialReadAheadFillsOnlyTheSourceFrameCache) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        2U * 1024U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    SourceDecodeSubmission first = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{0},
+        .priority = SourceDecodePriority::Sequential,
+        .readAheadCount = 3U,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(first.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(first.completion.get());
+    ASSERT_EQ(actor.completedDecodeCount(), 4U);
+
+    SourceDecodeSubmission cached = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{1},
+        .priority = SourceDecodePriority::Sequential,
+        .continueSequentially = true,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(cached.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(cached.completion.get());
+    EXPECT_EQ(actor.completedDecodeCount(), 4U);
+    EXPECT_EQ(actor.backendStatus().cacheHitCount, 1U);
+}
+
+TEST(SourceDecodeActorTests, SequentialReadAheadSkipsAndClearsAOneFrameCache) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        100U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    SourceDecodeSubmission first = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{0},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(first.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(first.completion.get());
+
+    SourceDecodeSubmission sequential = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{1},
+        .priority = SourceDecodePriority::Sequential,
+        .continueSequentially = true,
+        .readAheadCount = 3U,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(sequential.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(sequential.completion.get());
+    ASSERT_EQ(actor.completedDecodeCount(), 2U);
+
+    SourceDecodeSubmission exactAgain = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{0},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(exactAgain.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(exactAgain.completion.get());
+    EXPECT_EQ(actor.completedDecodeCount(), 3U);
+    EXPECT_EQ(actor.backendStatus().cacheHitCount, 0U);
+}
+
 } // namespace
 } // namespace dvs::media::internal

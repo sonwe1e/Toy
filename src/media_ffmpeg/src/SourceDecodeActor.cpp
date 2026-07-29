@@ -7,7 +7,9 @@
 #endif
 #include <Windows.h>
 #include <algorithm>
+#include <chrono>
 #include <exception>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,7 +20,7 @@ namespace {
 constexpr std::size_t kExactCapacity = 1U;
 constexpr std::size_t kSequentialCapacity = 2U;
 constexpr std::size_t kPrefetchCapacity = 8U;
-constexpr std::size_t kAnalysisCapacity = 1U;
+constexpr std::uint8_t kMaximumReadAheadCount = 4U;
 
 [[nodiscard]] domain::MediaError
 actorError(const domain::SourceId sourceId, std::string detail, const bool recoverable = true) {
@@ -37,8 +39,6 @@ actorError(const domain::SourceId sourceId, std::string detail, const bool recov
         return kSequentialCapacity;
     case SourceDecodePriority::Prefetch:
         return kPrefetchCapacity;
-    case SourceDecodePriority::Analysis:
-        return kAnalysisCapacity;
     }
     std::terminate();
 }
@@ -58,10 +58,26 @@ SourceDecodeActor::SourceDecodeActor(const domain::SourceId sourceId,
                                      domain::MediaDescriptor descriptor,
                                      platform::FrameBudget& frameBudget,
                                      const std::atomic<bool>* const externalInterrupt,
-                                     const bool lowPriority)
-    : sourceId_(sourceId), decoder_(std::make_unique<SoftwareDecoder>(
-                               sourceId, std::move(descriptor), frameBudget, externalInterrupt)),
-      worker_([this] { run(); }) {
+                                     const bool lowPriority,
+                                     const std::size_t cacheCapacityBytes,
+                                     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
+    : sourceId_(sourceId), sourceFrameCount_(descriptor.frameCount.value),
+      decoder_(std::make_unique<SoftwareDecoder>(
+          sourceId, descriptor, frameBudget, externalInterrupt, std::move(deviceBroker))),
+      worker_([this] { run(); }), backendStatus_{.sourceId = sourceId}, cache_(cacheCapacityBytes),
+      cacheKey_{
+          .sourceFingerprint = descriptor.sourceIdentity.has_value()
+                                   ? descriptor.sourceIdentity->fingerprintSha256
+                                   : descriptor.normalizedPath.generic_string(),
+          .sourceFrame = domain::FrameId{0},
+          .profile =
+              NormalizationProfile{
+                  .format = descriptor.bitDepth == 10U ? application::NormalizedFrameFormat::P010_10
+                                                       : application::NormalizedFrameFormat::Nv12_8,
+                  .width = descriptor.extent.width,
+                  .height = descriptor.extent.height,
+              },
+      } {
     if (lowPriority) {
         static_cast<void>(SetThreadPriority(worker_.native_handle(), THREAD_PRIORITY_BELOW_NORMAL));
     }
@@ -92,7 +108,8 @@ domain::Status SourceDecodeActor::open(const std::atomic<bool>& cancellationRequ
 }
 
 SourceDecodeSubmission SourceDecodeActor::submit(SourceDecodeRequest request) {
-    if (request.cancellationRequested == nullptr || !request.frameId.isValid()) {
+    if (request.cancellationRequested == nullptr || !request.frameId.isValid() ||
+        request.readAheadCount > kMaximumReadAheadCount) {
         return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
     }
 
@@ -206,6 +223,11 @@ std::uint64_t SourceDecodeActor::completedDecodeCount() const noexcept {
     return completedDecodeCount_;
 }
 
+media::DecoderBackendStatus SourceDecodeActor::backendStatus() const {
+    std::scoped_lock lock{mutex_};
+    return backendStatus_;
+}
+
 std::deque<SourceDecodeActor::DecodeJob>&
 SourceDecodeActor::queueFor(const SourceDecodePriority priority) noexcept {
     switch (priority) {
@@ -215,15 +237,13 @@ SourceDecodeActor::queueFor(const SourceDecodePriority priority) noexcept {
         return sequentialQueue_;
     case SourceDecodePriority::Prefetch:
         return prefetchQueue_;
-    case SourceDecodePriority::Analysis:
-        return analysisQueue_;
     }
     std::terminate();
 }
 
 bool SourceDecodeActor::hasPendingLocked() const noexcept {
     return !controlQueue_.empty() || !exactQueue_.empty() || !sequentialQueue_.empty() ||
-           !prefetchQueue_.empty() || !analysisQueue_.empty();
+           !prefetchQueue_.empty();
 }
 
 std::optional<SourceDecodeActor::DecodeJob> SourceDecodeActor::takeNextDecodeLocked() {
@@ -241,10 +261,7 @@ std::optional<SourceDecodeActor::DecodeJob> SourceDecodeActor::takeNextDecodeLoc
     if (std::optional<DecodeJob> job = take(sequentialQueue_)) {
         return job;
     }
-    if (std::optional<DecodeJob> job = take(prefetchQueue_)) {
-        return job;
-    }
-    return take(analysisQueue_);
+    return take(prefetchQueue_);
 }
 
 void SourceDecodeActor::run() noexcept {
@@ -274,9 +291,28 @@ void SourceDecodeActor::run() noexcept {
 
         if (control.has_value()) {
             if (control->kind == ControlKind::Open && control->cancellationRequested != nullptr) {
-                control->completion.set_value(decoder_->open(*control->cancellationRequested));
+                domain::Status status = decoder_->open(*control->cancellationRequested);
+                {
+                    std::scoped_lock lock{mutex_};
+                    completedDecodeCount_ = 0U;
+                    cacheHitCount_ = 0U;
+                    totalDecodeMicroseconds_ = 0U;
+                    maximumDecodeMicroseconds_ = 0U;
+                    backendStatus_ = media::DecoderBackendStatus{
+                        .sourceId = sourceId_,
+                        .backend = decoder_->backend(),
+                        .fallbackReason = decoder_->fallbackReason(),
+                        .deviceGeneration = decoder_->deviceGeneration(),
+                    };
+                }
+                control->completion.set_value(std::move(status));
             } else {
                 decoder_->close();
+                cache_.clear();
+                {
+                    std::scoped_lock lock{mutex_};
+                    backendStatus_ = media::DecoderBackendStatus{.sourceId = sourceId_};
+                }
                 control->completion.set_value(domain::Status::success());
             }
             continue;
@@ -285,16 +321,123 @@ void SourceDecodeActor::run() noexcept {
             continue;
         }
 
+        const bool retainInCache = decode->request.priority == SourceDecodePriority::Exact ||
+                                   decode->request.priority == SourceDecodePriority::Prefetch;
+        const auto recordDecode = [this](const std::uint64_t decodeMicroseconds) {
+            std::scoped_lock lock{mutex_};
+            lastDecodeThreadId_ = std::this_thread::get_id();
+            ++completedDecodeCount_;
+            totalDecodeMicroseconds_ += decodeMicroseconds;
+            maximumDecodeMicroseconds_ = std::max(maximumDecodeMicroseconds_, decodeMicroseconds);
+            backendStatus_ = media::DecoderBackendStatus{
+                .sourceId = sourceId_,
+                .backend = decoder_->backend(),
+                .fallbackReason = decoder_->fallbackReason(),
+                .deviceGeneration = decoder_->deviceGeneration(),
+                .completedDecodeCount = completedDecodeCount_,
+                .cacheHitCount = cacheHitCount_,
+                .exactSeekCount = decoder_->exactSeekCount(),
+                .totalDecodeMicroseconds = totalDecodeMicroseconds_,
+                .maximumDecodeMicroseconds = maximumDecodeMicroseconds_,
+            };
+        };
+        const auto fillReadAhead = [this, &decode, &recordDecode](const std::size_t frameBytes) {
+            if (decode->request.priority != SourceDecodePriority::Sequential ||
+                decode->request.readAheadCount == 0U || frameBytes == 0U) {
+                return;
+            }
+            const std::size_t cacheFrameCapacity = cache_.capacityBytes() / frameBytes;
+            // A one-frame cache cannot provide meaningful look-ahead and requires an extra
+            // transient allocation before it can evict its current entry. At 4K P010 that
+            // transient overlaps render-generation retirement and can exhaust the shared budget.
+            if (cacheFrameCapacity < 2U) {
+                cache_.clear();
+                return;
+            }
+            const std::uint8_t effectiveReadAhead = static_cast<std::uint8_t>(
+                std::min<std::size_t>(decode->request.readAheadCount, cacheFrameCapacity));
+            for (std::uint8_t offset = 1U; offset <= effectiveReadAhead; ++offset) {
+                bool urgentWorkQueued = false;
+                {
+                    const std::scoped_lock lock{mutex_};
+                    urgentWorkQueued = stopping_ || !controlQueue_.empty() ||
+                                       !exactQueue_.empty() || !sequentialQueue_.empty();
+                }
+                if (urgentWorkQueued ||
+                    decode->request.cancellationRequested->load(std::memory_order_acquire)) {
+                    break;
+                }
+
+                const std::int64_t base = decode->request.frameId.value();
+                if (base > (std::numeric_limits<std::int64_t>::max)() - offset) {
+                    break;
+                }
+                const domain::FrameId candidate{base + offset};
+                if (candidate.value() >= sourceFrameCount_) {
+                    break;
+                }
+                cacheKey_.sourceFrame = candidate;
+                if (cache_.find(cacheKey_).has_value()) {
+                    continue;
+                }
+
+                const auto started = std::chrono::steady_clock::now();
+                domain::Result<DecodedFrame> result =
+                    decoder_->decodeSequential(candidate, *decode->request.cancellationRequested);
+                const auto elapsed = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started)
+                        .count());
+                recordDecode(elapsed);
+                if (!result) {
+                    break;
+                }
+                cache_.insert(cacheKey_,
+                              CachedSourceFrame{
+                                  .handle = result.value().handle,
+                                  .presentationTime = result.value().presentationTime,
+                              });
+            }
+        };
+        cacheKey_.sourceFrame = decode->request.frameId;
+        if (std::optional<CachedSourceFrame> cached = cache_.find(cacheKey_)) {
+            {
+                std::scoped_lock lock{mutex_};
+                ++cacheHitCount_;
+                backendStatus_.cacheHitCount = cacheHitCount_;
+            }
+            fillReadAhead(cached->handle.accountedBytes());
+            decode->completion.set_value(domain::Result<DecodedFrame>::success(DecodedFrame{
+                .handle = std::move(cached->handle),
+                .presentationTime = cached->presentationTime,
+            }));
+            continue;
+        }
+
+        const bool preferSequentialDecode =
+            decode->request.continueSequentially ||
+            decode->request.priority == SourceDecodePriority::Prefetch;
+        const auto decodeStarted = std::chrono::steady_clock::now();
         domain::Result<DecodedFrame> result =
-            decode->request.continueSequentially
+            preferSequentialDecode
                 ? decoder_->decodeSequential(decode->request.frameId,
                                              *decode->request.cancellationRequested)
                 : decoder_->decodeExact(decode->request.frameId,
                                         *decode->request.cancellationRequested);
-        {
-            std::scoped_lock lock{mutex_};
-            lastDecodeThreadId_ = std::this_thread::get_id();
-            ++completedDecodeCount_;
+        const auto decodeMicroseconds =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                           std::chrono::steady_clock::now() - decodeStarted)
+                                           .count());
+        if (retainInCache && result) {
+            cache_.insert(cacheKey_,
+                          CachedSourceFrame{
+                              .handle = result.value().handle,
+                              .presentationTime = result.value().presentationTime,
+                          });
+        }
+        recordDecode(decodeMicroseconds);
+        if (result) {
+            fillReadAhead(result.value().handle.accountedBytes());
         }
         decode->completion.set_value(std::move(result));
     }
@@ -312,7 +455,6 @@ void SourceDecodeActor::cancelQueuedLocked() {
     cancel(exactQueue_);
     cancel(sequentialQueue_);
     cancel(prefetchQueue_);
-    cancel(analysisQueue_);
 }
 
 void SourceDecodeActor::completeCanceled(DecodeJob job) noexcept {

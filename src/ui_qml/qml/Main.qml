@@ -32,6 +32,7 @@ Window {
     // qmllint disable unqualified
     readonly property var controller: reviewController
     readonly property var preferences: reviewPreferences
+    readonly property var workspace: workspaceController
     // qmllint enable unqualified
 
     property url selectedSourceA: ""
@@ -40,7 +41,12 @@ Window {
     // -1 means prediction-only; otherwise the selected source defines the canonical timeline.
     property int referenceSourceIndex: 0
 
-    readonly property bool busy: Boolean(controller && controller.busy)
+    readonly property bool busy: Boolean((controller && controller.busy) || (workspace && workspace.busy))
+    readonly property bool projectDirty: Boolean(workspace && workspace.dirty)
+    readonly property bool hasProject: Boolean(workspace && workspace.hasProject)
+    readonly property bool canSaveProject: Boolean(workspace && workspace.canSave)
+    readonly property bool relinkRequired: Boolean(workspace && workspace.relinkRequired)
+    readonly property string workspaceError: String(workspace && workspace.errorTechnicalDetail ? workspace.errorTechnicalDetail : "")
     readonly property bool playing: Boolean(controller && controller.playing)
     readonly property bool graphicsReady: Boolean(controller && controller.graphicsReady)
     readonly property var currentFrame: controller ? controller.currentFrame : -1
@@ -60,6 +66,12 @@ Window {
     readonly property string manualAnchorStatus: controller ? controller.manualAnchorStatus : ""
     readonly property var alignmentTimelineMarkers: controller ? controller.alignmentTimelineMarkers : []
     readonly property bool manualAnchorActive: Boolean(controller && controller.manualAnchorActive)
+    readonly property bool alignmentRequired: Boolean(controller && controller.alignmentRequired)
+    readonly property bool automaticAlignmentPending: Boolean(controller && controller.automaticAlignmentPending)
+    readonly property bool canConfirmAutomaticAlignment: Boolean(controller && controller.canConfirmAutomaticAlignment)
+    readonly property bool canUndoAutomaticAlignment: Boolean(controller && controller.canUndoAutomaticAlignment)
+    readonly property var compatibilityFindings: controller ? controller.compatibilityFindings : []
+    readonly property var differenceEdges: controller ? controller.differenceEdges : []
     readonly property string combinedAlignmentStatus: {
         const parts = [];
         if (frameMappingStatus.length > 0)
@@ -75,7 +87,7 @@ Window {
         return parts.join("  |  ");
     }
     readonly property bool autoAlignmentActive: Boolean(controller && controller.autoAlignmentActive)
-    readonly property bool hasErrors: sourceAErrorKey.length > 0 || sourceBErrorKey.length > 0 || sourceCErrorKey.length > 0 || pairErrorKey.length > 0
+    readonly property bool hasErrors: sourceAErrorKey.length > 0 || sourceBErrorKey.length > 0 || sourceCErrorKey.length > 0 || pairErrorKey.length > 0 || workspaceError.length > 0
     readonly property bool hasSelectedSourceA: selectedSourceA.toString().length > 0
     readonly property bool hasSelectedSourceB: selectedSourceB.toString().length > 0
     readonly property bool hasSelectedSourceC: selectedSourceC.toString().length > 0
@@ -91,11 +103,32 @@ Window {
     readonly property int largeStepFrames: preferences ? preferences.largeStepFrames : 10
     // ComparisonSurface is a C++ type registered by the host.
     // qmllint disable unqualified
-    readonly property bool differenceMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Difference : false
+    readonly property bool analysisGridMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.AnalysisGrid : false
+    readonly property bool differenceMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Difference || analysisGridMode : false
     // qmllint enable unqualified
     readonly property int differenceEdge: preferences ? Number(preferences.differenceEdge) : 0
-    readonly property int differenceFirstSlot: differenceEdge === 2 ? 1 : 0
-    readonly property int differenceSecondSlot: differenceEdge === 0 ? 1 : 2
+    property bool differenceThresholdEnabled: false
+    property int differenceThresholdCode: 0
+    property int differenceThresholdPolicy: 1
+    property bool roiSelecting: false
+    property int roiPanel: -1
+    property real roiStartX: 0
+    property real roiStartY: 0
+    property real roiCurrentX: 0
+    property real roiCurrentY: 0
+    property real panLastX: 0
+    property real panLastY: 0
+    readonly property var selectedDifferenceEdge: {
+        for (const edge of differenceEdges) {
+            if (Number(edge.preferenceValue) === differenceEdge)
+                return edge;
+        }
+        return null;
+    }
+    readonly property int differenceFirstSlot: selectedDifferenceEdge ? Number(selectedDifferenceEdge.firstSourceId) : 0
+    readonly property int differenceSecondSlot: selectedDifferenceEdge ? Number(selectedDifferenceEdge.secondSourceId) : 1
+    readonly property int selectedDifferenceExactness: selectedDifferenceEdge ? Number(selectedDifferenceEdge.exactness) : 4
+    readonly property bool exactPlaneMode: preferences ? Number(preferences.differenceMetric) === 4 : false
     readonly property string differenceUnavailableDetail: {
         if (!differenceMode || currentFrame < 0)
             return "";
@@ -104,9 +137,20 @@ Window {
             missing.push(sourceLabel(differenceFirstSlot));
         if (sourceMissing(differenceSecondSlot))
             missing.push(sourceLabel(differenceSecondSlot));
-        return missing.length > 0 ? qsTr("Frame %1 cannot be compared because %2 is missing.").arg(Number(currentFrame) + 1).arg(missing.join(qsTr(" and "))) : "";
+        if (missing.length > 0)
+            return qsTr("Frame %1 cannot be compared because %2 is missing.").arg(Number(currentFrame) + 1).arg(missing.join(qsTr(" and ")));
+        if (exactPlaneMode && selectedDifferenceExactness !== 0)
+            return qsTr("Exact Plane Diff requires equal dimensions, pixel format, bit depth, color metadata, and ExactIndex mapping.");
+        return "";
     }
-    readonly property bool manualOffsetActive: sourceAOffset.value !== 0 || sourceBOffset.value !== 0 || sourceCOffset.value !== 0
+    property var sourceOffsetValues: ({})
+    readonly property bool manualOffsetActive: {
+        for (const sourceId of Object.keys(sourceOffsetValues)) {
+            if (Number(sourceOffsetValues[sourceId]) !== 0)
+                return true;
+        }
+        return false;
+    }
     readonly property bool anyManualAlignmentActive: manualAnchorActive || manualOffsetActive
     property bool timelineDragging: false
     property int timelinePreviewFrame: -1
@@ -138,6 +182,94 @@ Window {
         return sourceCMissing;
     }
 
+    function differenceEdgeIndex(preferenceValue) {
+        for (let index = 0; index < differenceEdges.length; ++index) {
+            if (Number(differenceEdges[index].preferenceValue) === preferenceValue)
+                return index;
+        }
+        return differenceEdges.length > 0 ? 0 : -1;
+    }
+
+    function comparisonExactnessLabel(exactness) {
+        if (exactness === 0)
+            return qsTr("Pixel-exact");
+        if (exactness === 1)
+            return qsTr("Display-space converted");
+        if (exactness === 2)
+            return qsTr("Spatially resampled");
+        if (exactness === 3)
+            return qsTr("Temporally aligned");
+        return qsTr("Unavailable");
+    }
+
+    function panelPoint(x, y) {
+        let columns = 1;
+        let rows = 1;
+        const mode = preferences ? Number(preferences.viewMode) : 0;
+        // ComparisonSurface enum values are mirrored by ReviewPreferencesController.
+        if (mode === 0)
+            columns = 2;
+        else if (mode === 1)
+            columns = 3;
+        else if (mode === 2) {
+            const left = x < dualVideoSurface.width / 2;
+            const panel = left ? 0 : (y < dualVideoSurface.height / 2 ? 1 : 2);
+            return {
+                "panel": panel,
+                "x": left ? x / (dualVideoSurface.width / 2) : (x - dualVideoSurface.width / 2) / (dualVideoSurface.width / 2),
+                "y": left ? y / dualVideoSurface.height : (y % (dualVideoSurface.height / 2)) / (dualVideoSurface.height / 2)
+            };
+        } else if (mode === 4) {
+            columns = 2;
+            rows = 2;
+        }
+        const panelWidth = dualVideoSurface.width / columns;
+        const panelHeight = dualVideoSurface.height / rows;
+        const column = Math.max(0, Math.min(columns - 1, Math.floor(x / panelWidth)));
+        const row = Math.max(0, Math.min(rows - 1, Math.floor(y / panelHeight)));
+        return {
+            "panel": row * columns + column,
+            "x": (x - column * panelWidth) / panelWidth,
+            "y": (y - row * panelHeight) / panelHeight
+        };
+    }
+
+    function sourceOffsets() {
+        const offsets = [];
+        const sourceIds = Object.keys(sourceOffsetValues).sort((first, second) => Number(first) - Number(second));
+        for (const sourceId of sourceIds)
+            offsets.push({
+                "sourceId": Number(sourceId),
+                "frames": Number(sourceOffsetValues[sourceId])
+            });
+        return offsets;
+    }
+
+    function updateSourceOffset(sourceId, frames) {
+        const next = {};
+        for (const currentSourceId of Object.keys(sourceOffsetValues))
+            next[currentSourceId] = sourceOffsetValues[currentSourceId];
+        next[String(sourceId)] = Number(frames);
+        sourceOffsetValues = next;
+    }
+
+    function sourceOffset(sourceId, fallback) {
+        const key = String(sourceId);
+        return Object.prototype.hasOwnProperty.call(sourceOffsetValues, key) ? Number(sourceOffsetValues[key]) : Number(fallback);
+    }
+
+    function resetSourceOffsets() {
+        const next = {};
+        for (const sourceId of Object.keys(sourceOffsetValues))
+            next[sourceId] = 0;
+        sourceOffsetValues = next;
+    }
+
+    function resetCanonicalSourceOffset() {
+        const canonicalSourceId = referenceSourceIndex >= 0 ? referenceSourceIndex : 0;
+        updateSourceOffset(canonicalSourceId, 0);
+    }
+
     function frameAtTimelinePosition(position) {
         if (totalFrames <= 1)
             return 0;
@@ -154,6 +286,10 @@ Window {
             return "#c084fc";
         if (kind === "anchor")
             return "#22d3ee";
+        if (kind === "rejected-segment")
+            return "#dc2626";
+        if (kind === "review-segment")
+            return "#facc15";
         return "#facc15";
     }
 
@@ -169,6 +305,8 @@ Window {
 
     function errorDetails() {
         const errors = [];
+        if (workspaceError.length > 0)
+            errors.push(workspaceError);
         if (sourceAErrorKey.length > 0)
             errors.push(qsTr("Source A: %1").arg(errorMessage(sourceAErrorKey)));
         if (sourceBErrorKey.length > 0)
@@ -265,11 +403,18 @@ Window {
     }
 
     function compatibilityDetails() {
-        if (!controller || !controller.compatibilityWarningKeys)
-            return "";
         const messages = [];
-        for (const key of controller.compatibilityWarningKeys)
-            messages.push(errorMessage(key));
+        for (const finding of compatibilityFindings) {
+            const labels = [];
+            for (const sourceId of finding.sources)
+                labels.push(String.fromCharCode(65 + Number(sourceId)));
+            let severity = qsTr("warning");
+            if (Number(finding.severity) === 0)
+                severity = qsTr("incompatible");
+            else if (Number(finding.severity) === 2)
+                severity = qsTr("alignment required");
+            messages.push(qsTr("%1: %2 — %3").arg(labels.join(" ↔ ")).arg(errorMessage(finding.code)).arg(severity));
+        }
         return messages.join(" | ");
     }
 
@@ -358,6 +503,43 @@ Window {
         fileMode: FileDialog.OpenFile
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.selectedSourceC = selectedFile
+    }
+
+    FileDialog {
+        id: openProjectDialog
+
+        objectName: "openProjectDialog"
+        title: qsTr("Open review project")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Dual Video Studio projects (*.dvsproj)"), qsTr("All files (*)")]
+        onAccepted: {
+            root.selectedSourceA = "";
+            root.selectedSourceB = "";
+            root.selectedSourceC = "";
+            root.sourceOffsetValues = {};
+            root.workspace.openProject(selectedFile);
+        }
+    }
+
+    FileDialog {
+        id: saveProjectDialog
+
+        objectName: "saveProjectDialog"
+        title: qsTr("Save review project")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "dvsproj"
+        nameFilters: [qsTr("Dual Video Studio projects (*.dvsproj)")]
+        onAccepted: root.workspace.saveAs(selectedFile)
+    }
+
+    FileDialog {
+        id: relinkSourceDialog
+
+        objectName: "relinkSourceDialog"
+        title: qsTr("Relink missing or changed source")
+        fileMode: FileDialog.OpenFile
+        nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
+        onAccepted: root.workspace.relinkSource(root.workspace.nextRelinkSourceId, selectedFile)
     }
 
     Dialog {
@@ -530,7 +712,49 @@ Window {
             }
         }
 
+        Row {
+            id: projectControls
+
+            spacing: 8
+            anchors {
+                right: graphicsStatusBadge.left
+                rightMargin: 14
+                verticalCenter: parent.verticalCenter
+            }
+
+            ActionButton {
+                objectName: "openProjectButton"
+                text: qsTr("Open project")
+                enabled: !root.busy
+                onClicked: openProjectDialog.open()
+            }
+
+            ActionButton {
+                objectName: "saveProjectButton"
+                text: root.projectDirty ? qsTr("Save *") : qsTr("Save")
+                enabled: root.canSaveProject && root.hasProject && !root.busy
+                onClicked: root.workspace.save()
+            }
+
+            ActionButton {
+                objectName: "saveProjectAsButton"
+                text: qsTr("Save as")
+                enabled: root.canSaveProject && !root.busy
+                onClicked: saveProjectDialog.open()
+            }
+
+            ActionButton {
+                objectName: "relinkSourceButton"
+                text: qsTr("Relink source")
+                visible: root.relinkRequired
+                enabled: root.relinkRequired && !root.busy
+                onClicked: relinkSourceDialog.open()
+            }
+        }
+
         Rectangle {
+            id: graphicsStatusBadge
+
             implicitWidth: graphicsStatus.implicitWidth + 24
             implicitHeight: 28
             radius: 14
@@ -748,7 +972,10 @@ Window {
                 text: qsTr("Open")
                 enabled: root.hasSelectedSourceA && root.hasSelectedSourceB && root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canOpen)
                 Accessible.name: qsTr("Open selected comparison")
-                onClicked: root.controller.openComparisonSet(root.selectedSourceA, root.selectedSourceB, root.selectedSourceC, root.referenceSourceIndex)
+                onClicked: {
+                    root.sourceOffsetValues = {};
+                    root.controller.openComparisonSet(root.selectedSourceA, root.selectedSourceB, root.selectedSourceC, root.referenceSourceIndex);
+                }
                 anchors.verticalCenter: parent.verticalCenter
 
                 background: Rectangle {
@@ -804,12 +1031,7 @@ Window {
                         return;
                     }
                     root.referenceSourceIndex = index === 3 ? -1 : index;
-                    if (root.referenceSourceIndex === 0)
-                        sourceAOffset.value = 0;
-                    else if (root.referenceSourceIndex === 1)
-                        sourceBOffset.value = 0;
-                    else if (root.referenceSourceIndex === 2)
-                        sourceCOffset.value = 0;
+                    root.resetCanonicalSourceOffset();
                 }
             }
 
@@ -824,7 +1046,7 @@ Window {
                 id: viewModeCombo
 
                 objectName: "viewModeCombo"
-                model: [qsTr("Side by side"), qsTr("Three up"), qsTr("Reference focus"), qsTr("Diff")]
+                model: [qsTr("Side by side"), qsTr("Three up"), qsTr("Reference focus"), qsTr("Diff"), qsTr("Analysis grid")]
                 currentIndex: root.preferences ? Number(root.preferences.viewMode) : 0
                 Accessible.name: qsTr("Comparison view")
                 onActivated: index => {
@@ -846,7 +1068,7 @@ Window {
 
                 objectName: "differenceMetricCombo"
                 visible: root.differenceMode
-                model: [qsTr("RGB absolute"), qsTr("Luma"), qsTr("Chroma"), qsTr("Heatmap")]
+                model: [qsTr("RGB absolute"), qsTr("Luma"), qsTr("Chroma"), qsTr("Heatmap"), qsTr("Exact planes")]
                 currentIndex: root.preferences ? Number(root.preferences.differenceMetric) : 0
                 Accessible.name: qsTr("Difference metric")
                 onActivated: index => {
@@ -876,12 +1098,13 @@ Window {
                 objectName: "differenceEdgeCombo"
                 visible: root.differenceMode
                 implicitWidth: 94
-                model: [qsTr("Sources 0-1"), qsTr("Sources 0-2"), qsTr("Sources 1-2")]
-                currentIndex: root.preferences ? Number(root.preferences.differenceEdge) : 0
+                model: root.differenceEdges
+                textRole: "label"
+                currentIndex: root.differenceEdgeIndex(root.differenceEdge)
                 Accessible.name: qsTr("Difference source pair")
                 onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.differenceEdge = index;
+                    if (root.preferences && index >= 0 && index < root.differenceEdges.length)
+                        root.preferences.differenceEdge = Number(root.differenceEdges[index].preferenceValue);
                 }
             }
 
@@ -981,48 +1204,38 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            Text {
-                text: "A"
-                color: root.mutedTextColor
-                anchors.verticalCenter: parent.verticalCenter
-            }
+            Repeater {
+                id: sourceOffsetRepeater
 
-            OffsetSpinBox {
-                id: sourceAOffset
+                objectName: "sourceOffsetRepeater"
+                model: root.controller ? root.controller.sources : null
 
-                objectName: "sourceAOffset"
-                enabled: root.referenceSourceIndex !== 0 && !root.busy
-                Accessible.name: qsTr("Source A global frame offset")
-            }
+                delegate: Row {
+                    id: sourceOffsetDelegate
 
-            Text {
-                text: "B"
-                color: root.mutedTextColor
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                    required property int sourceId
+                    required property int role
+                    required property int manualOffset
+                    property int sourceIdValue: sourceId
 
-            OffsetSpinBox {
-                id: sourceBOffset
+                    spacing: 4
 
-                objectName: "sourceBOffset"
-                enabled: root.referenceSourceIndex !== 1 && !root.busy
-                Accessible.name: qsTr("Source B global frame offset")
-            }
+                    Text {
+                        text: String.fromCharCode(65 + sourceOffsetDelegate.sourceIdValue)
+                        color: root.mutedTextColor
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
 
-            Text {
-                visible: root.hasSelectedSourceC
-                text: "C"
-                color: root.mutedTextColor
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                    OffsetSpinBox {
+                        id: sourceOffsetInput
 
-            OffsetSpinBox {
-                id: sourceCOffset
-
-                objectName: "sourceCOffset"
-                visible: root.hasSelectedSourceC
-                enabled: root.referenceSourceIndex !== 2 && !root.busy
-                Accessible.name: qsTr("Source C global frame offset")
+                        objectName: "sourceOffset-" + sourceOffsetDelegate.sourceIdValue
+                        value: root.sourceOffset(sourceOffsetDelegate.sourceIdValue, sourceOffsetDelegate.manualOffset)
+                        enabled: sourceOffsetDelegate.sourceIdValue !== (root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 0) && !root.busy
+                        Accessible.name: qsTr("Source %1 global frame offset").arg(String.fromCharCode(65 + sourceOffsetDelegate.sourceIdValue))
+                        onValueChanged: root.updateSourceOffset(sourceOffsetDelegate.sourceIdValue, value)
+                    }
+                }
             }
 
             ActionButton {
@@ -1049,6 +1262,26 @@ Window {
             }
 
             ActionButton {
+                objectName: "confirmAutomaticAlignmentButton"
+                implicitWidth: root.canConfirmAutomaticAlignment ? 82 : 116
+                implicitHeight: 34
+                visible: root.automaticAlignmentPending
+                text: root.canConfirmAutomaticAlignment ? qsTr("Confirm map") : qsTr("Find drops first")
+                enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning && root.canConfirmAutomaticAlignment
+                onClicked: root.controller.confirmAutomaticAlignment()
+            }
+
+            ActionButton {
+                objectName: "undoAutomaticAlignmentButton"
+                implicitWidth: 76
+                implicitHeight: 34
+                visible: root.canUndoAutomaticAlignment
+                text: qsTr("Undo map")
+                enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning
+                onClicked: root.controller.undoAutomaticAlignment()
+            }
+
+            ActionButton {
                 objectName: "manualAnchorsButton"
                 implicitWidth: root.manualAnchorActive ? 136 : 78
                 implicitHeight: 34
@@ -1063,7 +1296,7 @@ Window {
                 implicitHeight: 34
                 text: qsTr("Apply")
                 enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
-                onClicked: root.controller.applyAlignmentOffsets(sourceAOffset.value, sourceBOffset.value, sourceCOffset.value)
+                onClicked: root.controller.applySourceOffsets(root.sourceOffsets())
             }
 
             ActionButton {
@@ -1073,10 +1306,8 @@ Window {
                 text: qsTr("Strict reset")
                 enabled: root.graphicsReady && !root.busy && (root.anyManualAlignmentActive || root.autoAlignmentActive) && Boolean(root.controller && root.controller.canFirst)
                 onClicked: {
-                    sourceAOffset.value = 0;
-                    sourceBOffset.value = 0;
-                    sourceCOffset.value = 0;
-                    root.controller.applyAlignmentOffsets(0, 0, 0);
+                    root.resetSourceOffsets();
+                    root.controller.applySourceOffsets(root.sourceOffsets());
                 }
             }
 
@@ -1142,6 +1373,10 @@ Window {
             differenceGain: root.preferences ? root.preferences.differenceGain : ComparisonSurface.Gain1x
             differenceEdge: root.preferences ? root.preferences.differenceEdge : ComparisonSurface.Edge0And1
             differenceFilter: root.preferences ? root.preferences.differenceFilter : ComparisonSurface.Bilinear
+            exactPlaneAvailable: root.selectedDifferenceExactness === 0
+            thresholdEnabled: root.differenceThresholdEnabled
+            threshold: Number(root.differenceThresholdCode) / 255
+            thresholdPolicy: root.differenceThresholdPolicy
             referenceSlot: root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 0
             anchors {
                 fill: parent
@@ -1149,6 +1384,138 @@ Window {
             }
         }
         // qmllint enable import unqualified unresolved-type
+
+        MouseArea {
+            id: viewportNavigation
+
+            anchors.fill: parent
+            anchors.margins: 1
+            acceptedButtons: Qt.LeftButton
+            hoverEnabled: true
+
+            onWheel: wheel => {
+                const point = root.panelPoint(wheel.x, wheel.y);
+                dualVideoSurface.zoomAt(point.x, point.y, wheel.angleDelta.y > 0 ? 1.25 : 0.8);
+                wheel.accepted = true;
+            }
+            onPressed: mouse => {
+                const point = root.panelPoint(mouse.x, mouse.y);
+                root.roiPanel = point.panel;
+                root.panLastX = point.x;
+                root.panLastY = point.y;
+                if ((mouse.modifiers & Qt.ShiftModifier) !== 0) {
+                    root.roiSelecting = true;
+                    root.roiStartX = mouse.x;
+                    root.roiStartY = mouse.y;
+                    root.roiCurrentX = mouse.x;
+                    root.roiCurrentY = mouse.y;
+                }
+                viewportFrame.forceActiveFocus();
+            }
+            onPositionChanged: mouse => {
+                const point = root.panelPoint(mouse.x, mouse.y);
+                if (root.roiSelecting) {
+                    root.roiCurrentX = mouse.x;
+                    root.roiCurrentY = mouse.y;
+                } else if (pressed && point.panel === root.roiPanel) {
+                    dualVideoSurface.panBy(point.x - root.panLastX, point.y - root.panLastY);
+                    root.panLastX = point.x;
+                    root.panLastY = point.y;
+                }
+            }
+            onReleased: mouse => {
+                if (root.roiSelecting) {
+                    const start = root.panelPoint(root.roiStartX, root.roiStartY);
+                    const end = root.panelPoint(mouse.x, mouse.y);
+                    if (start.panel === end.panel)
+                        dualVideoSurface.setRoiNormalized(start.x, start.y, end.x, end.y);
+                }
+                root.roiSelecting = false;
+                root.roiPanel = -1;
+            }
+            onDoubleClicked: dualVideoSurface.resetViewport()
+        }
+
+        Rectangle {
+            visible: root.roiSelecting
+            x: Math.min(root.roiStartX, root.roiCurrentX)
+            y: Math.min(root.roiStartY, root.roiCurrentY)
+            width: Math.abs(root.roiCurrentX - root.roiStartX)
+            height: Math.abs(root.roiCurrentY - root.roiStartY)
+            color: "#224b8df8"
+            border.color: root.accentColor
+            border.width: 1
+        }
+
+        Row {
+            spacing: 6
+            anchors {
+                right: parent.right
+                rightMargin: 12
+                top: parent.top
+                topMargin: 12
+            }
+
+            Rectangle {
+                height: 32
+                width: analysisControls.implicitWidth + 16
+                radius: 5
+                color: "#dc171e2a"
+                border.color: root.borderColor
+
+                Row {
+                    id: analysisControls
+
+                    spacing: 6
+                    anchors.centerIn: parent
+
+                    CheckBox {
+                        visible: root.differenceMode
+                        text: qsTr("Threshold")
+                        checked: root.differenceThresholdEnabled
+                        onToggled: root.differenceThresholdEnabled = checked
+                    }
+
+                    Label {
+                        visible: root.differenceMode
+                        text: root.comparisonExactnessLabel(root.selectedDifferenceExactness)
+                        color: root.selectedDifferenceExactness === 0 ? "#86efac" : "#facc15"
+                        font.pixelSize: 11
+                    }
+
+                    SpinBox {
+                        visible: root.differenceMode
+                        from: 0
+                        to: 255
+                        value: root.differenceThresholdCode
+                        editable: true
+                        implicitWidth: 72
+                        Accessible.name: qsTr("Difference threshold in 8-bit code values")
+                        onValueModified: root.differenceThresholdCode = value
+                    }
+
+                    ToolbarCombo {
+                        visible: root.differenceMode
+                        implicitWidth: 108
+                        model: [qsTr("Luma"), qsTr("Any channel"), qsTr("All channels")]
+                        currentIndex: root.differenceThresholdPolicy
+                        Accessible.name: qsTr("Difference threshold channel policy")
+                        onActivated: index => root.differenceThresholdPolicy = index
+                    }
+
+                    Button {
+                        text: qsTr("Reset zoom")
+                        onClicked: dualVideoSurface.resetViewport()
+                    }
+
+                    Button {
+                        visible: dualVideoSurface.roiEnabled
+                        text: qsTr("Clear ROI")
+                        onClicked: dualVideoSurface.clearRoi()
+                    }
+                }
+            }
+        }
 
         Rectangle {
             id: differenceUnavailableOverlay

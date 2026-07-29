@@ -36,6 +36,9 @@ public:
     // snapshot(). The coordinator is the only producer of these terminals.
     [[nodiscard]] std::vector<CommandTerminal> takeCompletedCommands();
 
+    [[nodiscard]] std::shared_ptr<const std::vector<SequenceAlignmentResult>>
+    acceptedSequenceAlignments() const;
+
     // Async adapters receive this independently owned gate instead of retaining the coordinator.
     // The gate fails closed once shutdown begins, so a worker can never become the thread that
     // releases the coordinator's final strong reference.

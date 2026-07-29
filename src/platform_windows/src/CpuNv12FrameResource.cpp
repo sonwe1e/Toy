@@ -1,6 +1,7 @@
 #include "dvs/platform/CpuNv12FrameResource.h"
 
 #include <limits>
+#include <mutex>
 #include <utility>
 
 namespace dvs::platform {
@@ -37,6 +38,84 @@ namespace {
 
 } // namespace
 
+struct Nv12BufferPool::State final {
+    explicit State(const std::size_t maximumRetainedBuffersValue)
+        : maximumRetainedBuffers(maximumRetainedBuffersValue) {}
+
+    std::mutex mutex;
+    std::size_t maximumRetainedBuffers = 0U;
+    std::vector<std::vector<std::uint8_t>> available;
+};
+
+Nv12BufferPool::Buffer::Buffer(std::shared_ptr<State> state,
+                               std::vector<std::uint8_t> storage) noexcept
+    : state_(std::move(state)), storage_(std::move(storage)) {}
+
+Nv12BufferPool::Buffer::~Buffer() {
+    release();
+}
+
+Nv12BufferPool::Buffer::Buffer(Buffer&& other) noexcept
+    : state_(std::move(other.state_)), storage_(std::move(other.storage_)) {}
+
+Nv12BufferPool::Buffer& Nv12BufferPool::Buffer::operator=(Buffer&& other) noexcept {
+    if (this != &other) {
+        release();
+        state_ = std::move(other.state_);
+        storage_ = std::move(other.storage_);
+    }
+    return *this;
+}
+
+std::span<std::uint8_t> Nv12BufferPool::Buffer::bytes() noexcept {
+    return storage_;
+}
+
+std::span<const std::uint8_t> Nv12BufferPool::Buffer::bytes() const noexcept {
+    return storage_;
+}
+
+Nv12BufferPool::Buffer::operator bool() const noexcept {
+    return state_ != nullptr && !storage_.empty();
+}
+
+void Nv12BufferPool::Buffer::release() noexcept {
+    if (state_ != nullptr && !storage_.empty()) {
+        try {
+            std::scoped_lock lock{state_->mutex};
+            if (state_->available.size() < state_->maximumRetainedBuffers) {
+                state_->available.push_back(std::move(storage_));
+            }
+        } catch (...) {
+        }
+    }
+    storage_.clear();
+    state_.reset();
+}
+
+Nv12BufferPool::Nv12BufferPool(const std::size_t maximumRetainedBuffers)
+    : state_(std::make_shared<State>(maximumRetainedBuffers)) {}
+
+std::optional<Nv12BufferPool::Buffer> Nv12BufferPool::acquire(const std::size_t bytes) noexcept {
+    if (bytes == 0U) {
+        return std::nullopt;
+    }
+    try {
+        std::vector<std::uint8_t> storage;
+        {
+            std::scoped_lock lock{state_->mutex};
+            if (!state_->available.empty()) {
+                storage = std::move(state_->available.back());
+                state_->available.pop_back();
+            }
+        }
+        storage.resize(bytes);
+        return Buffer{state_, std::move(storage)};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 bool Nv12FrameLayout::isValid() const noexcept {
     return byteCounts().has_value();
 }
@@ -65,7 +144,7 @@ CpuNv12FrameResource::CpuNv12FrameResource(const Nv12FrameLayout layout,
                                            const domain::ColorMetadata colorMetadata,
                                            const std::size_t yPlaneBytes,
                                            FrameBudget::Reservation reservation,
-                                           std::vector<std::uint8_t> storage) noexcept
+                                           Nv12BufferPool::Buffer storage) noexcept
     : layout_(layout), colorMetadata_(colorMetadata), yPlaneBytes_(yPlaneBytes),
       reservation_(std::move(reservation)), storage_(std::move(storage)) {}
 
@@ -74,15 +153,15 @@ const Nv12FrameLayout& CpuNv12FrameResource::layout() const noexcept {
 }
 
 std::span<const std::uint8_t> CpuNv12FrameResource::yPlane() const noexcept {
-    return {storage_.data(), yPlaneBytes_};
+    return storage_.bytes().first(yPlaneBytes_);
 }
 
 std::span<const std::uint8_t> CpuNv12FrameResource::uvPlane() const noexcept {
-    return {storage_.data() + yPlaneBytes_, storage_.size() - yPlaneBytes_};
+    return storage_.bytes().subspan(yPlaneBytes_);
 }
 
 std::size_t CpuNv12FrameResource::byteCount() const noexcept {
-    return storage_.size();
+    return storage_.bytes().size();
 }
 
 const domain::ColorMetadata& CpuNv12FrameResource::colorMetadata() const noexcept {

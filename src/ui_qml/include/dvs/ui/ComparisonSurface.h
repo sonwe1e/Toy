@@ -31,6 +31,21 @@ class ComparisonSurface : public QQuickItem {
                    differenceEdgeChanged)
     Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
                    NOTIFY differenceFilterChanged)
+    Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
+                   exactPlaneAvailableChanged)
+    Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
+                   thresholdChanged)
+    Q_PROPERTY(qreal threshold READ threshold WRITE setThreshold NOTIFY thresholdChanged)
+    Q_PROPERTY(ThresholdPolicy thresholdPolicy READ thresholdPolicy WRITE setThresholdPolicy NOTIFY
+                   thresholdChanged)
+    Q_PROPERTY(qreal viewCenterX READ viewCenterX NOTIFY viewportChanged)
+    Q_PROPERTY(qreal viewCenterY READ viewCenterY NOTIFY viewportChanged)
+    Q_PROPERTY(qreal viewScale READ viewScale NOTIFY viewportChanged)
+    Q_PROPERTY(bool roiEnabled READ roiEnabled NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiLeft READ roiLeft NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiTop READ roiTop NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiRight READ roiRight NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiBottom READ roiBottom NOTIFY viewportChanged)
     Q_PROPERTY(
         int referenceSlot READ referenceSlot WRITE setReferenceSlot NOTIFY referenceSlotChanged)
 
@@ -40,6 +55,7 @@ public:
         ThreeUp,
         ReferenceFocus,
         Difference,
+        AnalysisGrid,
     };
     Q_ENUM(ViewMode)
 
@@ -48,6 +64,7 @@ public:
         Luma,
         Chroma,
         Heatmap,
+        ExactPlanes,
     };
     Q_ENUM(DifferenceMetric)
 
@@ -76,6 +93,13 @@ public:
     };
     Q_ENUM(DifferenceFilter)
 
+    enum ThresholdPolicy {
+        ThresholdLumaOnly,
+        ThresholdAnyChannel,
+        ThresholdAllChannels,
+    };
+    Q_ENUM(ThresholdPolicy)
+
     explicit ComparisonSurface(QQuickItem* parent = nullptr);
     ~ComparisonSurface() override;
 
@@ -92,8 +116,30 @@ public:
     void setDifferenceEdge(DifferenceEdge value);
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
     void setDifferenceFilter(DifferenceFilter value);
+    [[nodiscard]] bool exactPlaneAvailable() const noexcept;
+    void setExactPlaneAvailable(bool value);
+    [[nodiscard]] bool thresholdEnabled() const noexcept;
+    void setThresholdEnabled(bool value);
+    [[nodiscard]] qreal threshold() const noexcept;
+    void setThreshold(qreal value);
+    [[nodiscard]] ThresholdPolicy thresholdPolicy() const noexcept;
+    void setThresholdPolicy(ThresholdPolicy value);
+    [[nodiscard]] qreal viewCenterX() const noexcept;
+    [[nodiscard]] qreal viewCenterY() const noexcept;
+    [[nodiscard]] qreal viewScale() const noexcept;
+    [[nodiscard]] bool roiEnabled() const noexcept;
+    [[nodiscard]] qreal roiLeft() const noexcept;
+    [[nodiscard]] qreal roiTop() const noexcept;
+    [[nodiscard]] qreal roiRight() const noexcept;
+    [[nodiscard]] qreal roiBottom() const noexcept;
     [[nodiscard]] int referenceSlot() const noexcept;
     void setReferenceSlot(int value);
+
+    Q_INVOKABLE void zoomAt(qreal normalizedX, qreal normalizedY, qreal factor);
+    Q_INVOKABLE void panBy(qreal normalizedDeltaX, qreal normalizedDeltaY);
+    Q_INVOKABLE void resetViewport();
+    Q_INVOKABLE void setRoiNormalized(qreal left, qreal top, qreal right, qreal bottom);
+    Q_INVOKABLE void clearRoi();
 
     [[nodiscard]] bool
     attachRendererServices(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -109,6 +155,9 @@ signals:
     void differenceGainChanged();
     void differenceEdgeChanged();
     void differenceFilterChanged();
+    void exactPlaneAvailableChanged();
+    void thresholdChanged();
+    void viewportChanged();
     void referenceSlotChanged();
 
 protected:
@@ -127,6 +176,18 @@ private:
     DifferenceGain differenceGain_ = Gain1x;
     DifferenceEdge differenceEdge_ = Edge0And1;
     DifferenceFilter differenceFilter_ = Bilinear;
+    bool exactPlaneAvailable_ = false;
+    bool thresholdEnabled_ = false;
+    qreal threshold_ = 0.0;
+    ThresholdPolicy thresholdPolicy_ = ThresholdAnyChannel;
+    qreal viewCenterX_ = 0.5;
+    qreal viewCenterY_ = 0.5;
+    qreal viewScale_ = 1.0;
+    bool roiEnabled_ = false;
+    qreal roiLeft_ = 0.0;
+    qreal roiTop_ = 0.0;
+    qreal roiRight_ = 1.0;
+    qreal roiBottom_ = 1.0;
     int referenceSlot_ = 0;
 };
 

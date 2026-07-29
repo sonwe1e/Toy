@@ -24,13 +24,28 @@ struct TextureRegion final {
     [[nodiscard]] constexpr bool operator==(const TextureRegion&) const = default;
 };
 
+struct FramePresentation final {
+    std::uint16_t rotationDegrees = 0U;
+    std::uint32_t sampleAspectNumerator = 1U;
+    std::uint32_t sampleAspectDenominator = 1U;
+
+    [[nodiscard]] constexpr bool isValid() const noexcept {
+        return (rotationDegrees == 0U || rotationDegrees == 90U || rotationDegrees == 180U ||
+                rotationDegrees == 270U) &&
+               sampleAspectNumerator != 0U && sampleAspectDenominator != 0U;
+    }
+
+    [[nodiscard]] constexpr bool operator==(const FramePresentation&) const = default;
+};
+
 struct FrameGeometry final {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     TextureRegion textureRegion{};
+    FramePresentation presentation{};
 
     [[nodiscard]] constexpr bool isValid() const noexcept {
-        return width != 0 && height != 0 && textureRegion.isValid();
+        return width != 0 && height != 0 && textureRegion.isValid() && presentation.isValid();
     }
 
     [[nodiscard]] constexpr bool operator==(const FrameGeometry&) const = default;

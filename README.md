@@ -16,8 +16,8 @@ in phases on the `refactor/unified-comparator` branch:
 | 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | done |
 | 3 | Parallel per-source decode, three-up/reference-focus layouts, selectable difference edges | done |
 | 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | done |
-| 5 | Extended difference and analysis layouts | in progress: pair selection and RGB/luma/chroma/heatmap differences done |
-| 6 | 10-bit/P010, D3D11VA hardware decode, performance hardening | planned |
+| 5 | Extended difference and analysis layouts | done |
+| 6 | Advanced analysis, 10-bit/P010, format normalization, D3D11VA, performance | done |
 
 `legacy/` contains the retired `DualVideoTool` and the `video-compare` fork as
 interaction and algorithm references only; neither is part of the CMake build.
@@ -103,8 +103,20 @@ remain scriptable without making the desktop executable open a terminal:
 ```
 
 Use `release`, `dev-coverage`, or `asan` in place of `dev` for the corresponding
-workflow. Hardware, packaged, performance, and shutdown-soak test layers are defined
-but intentionally report no tests until those suites land.
+workflow. The hardware layer contains real D3D11VA and decoder-surface zero-copy tests.
+The performance layer contains visible-window, three-source 1080p60 and 4K30 Main10
+five-minute gates. Point them at the six long-running fixtures and run:
+
+```powershell
+$env:DVS_PERFORMANCE_FIXTURE_ROOT = 'D:\dvs-performance-fixtures'
+ctest --preset hardware-d3d11 --output-on-failure
+ctest --preset performance-d3d11 --output-on-failure
+```
+
+`tools/run-performance-gate.ps1` is the shared local/runner entry point. It validates
+real presentation ACK continuity, source atomicity, D3D11VA backend selection, frame
+budget, thread stability, cold seek P95, warm adjacent stepping, analysis throughput,
+and bounded shutdown. Packaged and shutdown-soak layers remain separate release gates.
 
 ## Runtime Tool Pinning
 
@@ -132,7 +144,10 @@ replacement. The initial CI workflows do not download unpinned runtime tools.
 Native CI jobs require a self-hosted Windows x64 runner labeled `dvs-toolchain-4.4`,
 with the requirements above and either `VCPKG_ROOT` or `VCPKG_INSTALLATION_ROOT`
 configured. The runner must be 2.327.1 or newer because the pinned checkout action
-uses Node 24.
+uses Node 24. Hardware gates additionally require `dvs-gpu`, an interactive desktop,
+and the repository variable `DVS_PERFORMANCE_FIXTURE_ROOT`. See
+[docs/self-hosted-runner.md](docs/self-hosted-runner.md) for the pinned runner download,
+fixture contract, registration commands, and public-repository safety boundary.
 
 ## Repository Layout
 

@@ -5,10 +5,17 @@
 #include "dvs/domain/Result.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 
 namespace dvs::media {
+
+struct MediaProbeStatistics final {
+    std::uint64_t completedProbes = 0U;
+    std::uint64_t totalProbeIndexMicroseconds = 0U;
+    std::uint64_t maximumProbeIndexMicroseconds = 0U;
+};
 
 // FFmpeg-facing source inspection adapter. Its public surface is framework-neutral: callers see
 // only normalized domain descriptors and application events, never AV* types or FFmpeg fields.
@@ -31,6 +38,7 @@ public:
     submit(const application::MediaProbeRequest& request,
            std::shared_ptr<application::IApplicationEventSink> events) override;
     void cancel(const application::RequestContext& context) noexcept override;
+    [[nodiscard]] MediaProbeStatistics statistics() const noexcept;
 
 private:
     class Impl;

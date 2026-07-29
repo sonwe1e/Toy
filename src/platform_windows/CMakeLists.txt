@@ -5,6 +5,8 @@ add_library(
         src/AtomicFilePublisher.cpp
         src/FrameBudget.cpp
         src/CpuNv12FrameResource.cpp
+        src/CpuP010FrameResource.cpp
+        src/D3d11DecodedFrameResource.cpp
         src/D3d11GpuFrameBacking.cpp
         src/D3d11ComparisonRenderer.cpp
         src/D3d11RenderChannel.cpp
@@ -15,6 +17,7 @@ add_library(
         src/GpuFrameResource.cpp
         src/GpuTransferActor.cpp
         src/PresentationAckMailbox.cpp
+        src/ProcessTelemetry.cpp
         src/SourceIdentityService.cpp
         src/SteadyDeadlineScheduler.cpp
         src/WindowsPaths.cpp
@@ -36,7 +39,7 @@ target_include_directories(
     PRIVATE "${dvs_nv12_shader_include_directory}"
 )
 target_link_libraries(dvs_platform_windows PUBLIC dvs_application)
-target_link_libraries(dvs_platform_windows PRIVATE d3d11 dxgi ole32 shell32 uuid)
+target_link_libraries(dvs_platform_windows PRIVATE d3d11 dxgi ole32 psapi shell32 uuid)
 
 dvs_apply_project_warnings(dvs_platform_windows)
 dvs_register_architecture_target(dvs_platform_windows)

@@ -1,11 +1,21 @@
 #pragma once
 
+#include "dvs/media/DecoderBackend.h"
+#include "dvs/media/MediaProbe.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
+#include "dvs/platform/GpuTransferActor.h"
+#include "dvs/ui/RenderAckRelay.h"
+
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace dvs::ui {
 class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
+class WorkspaceController;
 } // namespace dvs::ui
 
 namespace dvs::app {
@@ -25,7 +35,15 @@ public:
 
     [[nodiscard]] ui::ReviewController* controller() noexcept;
     [[nodiscard]] ui::ReviewPreferencesController* preferences() noexcept;
+    [[nodiscard]] ui::WorkspaceController* workspace() noexcept;
     [[nodiscard]] bool attachSurface(ui::ComparisonSurface& surface) noexcept;
+    [[nodiscard]] std::vector<media::DecoderBackendStatus> decoderBackendStatuses() const;
+    [[nodiscard]] media::MediaProbeStatistics mediaProbeStatistics() const noexcept;
+    [[nodiscard]] media::FrameProviderStatistics frameProviderStatistics() const noexcept;
+    [[nodiscard]] std::uint64_t decodedSignatureCount() const noexcept;
+    [[nodiscard]] platform::GpuTransferStatistics transferStatistics() const noexcept;
+    [[nodiscard]] ui::RenderAckRelayStatistics renderRelayStatistics() const noexcept;
+    [[nodiscard]] std::size_t reservedFrameBytes() const noexcept;
 
     // GUI-thread phase. Stops UI ingress and detaches non-owning QML/render references without
     // waiting on media, render, or acknowledgement workers.

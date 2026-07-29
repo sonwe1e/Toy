@@ -5,6 +5,7 @@
 #include "dvs/application/Ports.h"
 #include "dvs/application/SessionSnapshot.h"
 
+#include <QAbstractItemModel>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -26,20 +27,21 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QString sourceAFilename READ sourceAFilename NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBFilename READ sourceBFilename NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCFilename READ sourceCFilename NOTIFY stateChanged)
+    Q_PROPERTY(QAbstractItemModel* sources READ sources CONSTANT)
     Q_PROPERTY(ReviewDisplayState displayState READ displayState NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool graphicsReady READ graphicsReady NOTIFY stateChanged)
-    Q_PROPERTY(qint64 currentFrame READ currentFrame NOTIFY stateChanged)
+    Q_PROPERTY(qint64 currentFrame READ currentFrame NOTIFY frameStateChanged)
     Q_PROPERTY(qulonglong totalFrames READ totalFrames NOTIFY stateChanged)
     Q_PROPERTY(QString sourceAErrorKey READ sourceAErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBErrorKey READ sourceBErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCErrorKey READ sourceCErrorKey NOTIFY stateChanged)
-    Q_PROPERTY(bool sourceAMissing READ sourceAMissing NOTIFY stateChanged)
-    Q_PROPERTY(bool sourceBMissing READ sourceBMissing NOTIFY stateChanged)
-    Q_PROPERTY(bool sourceCMissing READ sourceCMissing NOTIFY stateChanged)
+    Q_PROPERTY(bool sourceAMissing READ sourceAMissing NOTIFY frameStateChanged)
+    Q_PROPERTY(bool sourceBMissing READ sourceBMissing NOTIFY frameStateChanged)
+    Q_PROPERTY(bool sourceCMissing READ sourceCMissing NOTIFY frameStateChanged)
     Q_PROPERTY(QString pairErrorKey READ pairErrorKey NOTIFY stateChanged)
-    Q_PROPERTY(QString frameMappingStatus READ frameMappingStatus NOTIFY stateChanged)
+    Q_PROPERTY(QString frameMappingStatus READ frameMappingStatus NOTIFY frameStateChanged)
     Q_PROPERTY(QString alignmentEstimateStatus READ alignmentEstimateStatus NOTIFY stateChanged)
     Q_PROPERTY(QString sequenceAlignmentStatus READ sequenceAlignmentStatus NOTIFY stateChanged)
     Q_PROPERTY(bool alignmentAnalysisRunning READ alignmentAnalysisRunning NOTIFY stateChanged)
@@ -49,13 +51,18 @@ class ReviewController final : public QObject {
     Q_PROPERTY(
         QVariantList alignmentTimelineMarkers READ alignmentTimelineMarkers NOTIFY stateChanged)
     Q_PROPERTY(bool manualAnchorActive READ manualAnchorActive NOTIFY stateChanged)
-    Q_PROPERTY(bool autoAlignmentActive READ autoAlignmentActive NOTIFY stateChanged)
+    Q_PROPERTY(bool autoAlignmentActive READ autoAlignmentActive NOTIFY frameStateChanged)
+    Q_PROPERTY(bool alignmentRequired READ alignmentRequired NOTIFY stateChanged)
+    Q_PROPERTY(bool automaticAlignmentPending READ automaticAlignmentPending NOTIFY stateChanged)
     Q_PROPERTY(
-        QStringList compatibilityWarningKeys READ compatibilityWarningKeys NOTIFY stateChanged)
+        bool canConfirmAutomaticAlignment READ canConfirmAutomaticAlignment NOTIFY stateChanged)
+    Q_PROPERTY(bool canUndoAutomaticAlignment READ canUndoAutomaticAlignment NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList compatibilityFindings READ compatibilityFindings NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList differenceEdges READ differenceEdges NOTIFY frameStateChanged)
     Q_PROPERTY(bool canOpen READ canOpen NOTIFY stateChanged)
     Q_PROPERTY(bool canFirst READ canFirst NOTIFY stateChanged)
-    Q_PROPERTY(bool canPrevious READ canPrevious NOTIFY stateChanged)
-    Q_PROPERTY(bool canNext READ canNext NOTIFY stateChanged)
+    Q_PROPERTY(bool canPrevious READ canPrevious NOTIFY frameStateChanged)
+    Q_PROPERTY(bool canNext READ canNext NOTIFY frameStateChanged)
     Q_PROPERTY(bool canLast READ canLast NOTIFY stateChanged)
     Q_PROPERTY(bool canPlay READ canPlay NOTIFY stateChanged)
     Q_PROPERTY(bool canPause READ canPause NOTIFY stateChanged)
@@ -87,6 +94,7 @@ public:
     [[nodiscard]] QString sourceAFilename() const;
     [[nodiscard]] QString sourceBFilename() const;
     [[nodiscard]] QString sourceCFilename() const;
+    [[nodiscard]] QAbstractItemModel* sources() const noexcept;
     [[nodiscard]] ReviewDisplayState displayState() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] bool playing() const noexcept;
@@ -112,7 +120,12 @@ public:
     [[nodiscard]] QVariantList alignmentTimelineMarkers() const;
     [[nodiscard]] bool manualAnchorActive() const noexcept;
     [[nodiscard]] bool autoAlignmentActive() const noexcept;
-    [[nodiscard]] QStringList compatibilityWarningKeys() const;
+    [[nodiscard]] bool alignmentRequired() const noexcept;
+    [[nodiscard]] bool automaticAlignmentPending() const noexcept;
+    [[nodiscard]] bool canConfirmAutomaticAlignment() const noexcept;
+    [[nodiscard]] bool canUndoAutomaticAlignment() const noexcept;
+    [[nodiscard]] QVariantList compatibilityFindings() const;
+    [[nodiscard]] QVariantList differenceEdges() const;
     [[nodiscard]] bool canOpen() const noexcept;
     [[nodiscard]] bool canFirst() const noexcept;
     [[nodiscard]] bool canPrevious() const noexcept;
@@ -137,9 +150,12 @@ public:
     Q_INVOKABLE bool seekFrame(qint64 frame);
     Q_INVOKABLE bool
     applyAlignmentOffsets(qint64 sourceAFrames, qint64 sourceBFrames, qint64 sourceCFrames);
+    Q_INVOKABLE bool applySourceOffsets(const QVariantList& offsets);
     Q_INVOKABLE bool estimateAlignment();
     Q_INVOKABLE bool analyzeSequenceAlignment();
     Q_INVOKABLE bool cancelAlignmentAnalysis();
+    Q_INVOKABLE bool confirmAutomaticAlignment();
+    Q_INVOKABLE bool undoAutomaticAlignment();
     Q_INVOKABLE bool
     setManualAlignmentAnchor(int sourceIndex, qint64 canonicalFrame, qint64 sourceFrame);
     Q_INVOKABLE bool clearManualAlignmentAnchors();
@@ -153,6 +169,7 @@ public:
 
 Q_SIGNALS:
     void stateChanged();
+    void frameStateChanged();
 
 private:
     class Impl;

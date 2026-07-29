@@ -3,6 +3,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/buffer.h>
 #include <libswscale/swscale.h>
 }
 
@@ -49,6 +50,16 @@ struct AvFrameDeleter final {
 };
 
 using AvFramePtr = std::unique_ptr<AVFrame, AvFrameDeleter>;
+
+struct AvBufferRefDeleter final {
+    void operator()(AVBufferRef* reference) const noexcept {
+        if (reference != nullptr) {
+            av_buffer_unref(&reference);
+        }
+    }
+};
+
+using AvBufferRefPtr = std::unique_ptr<AVBufferRef, AvBufferRefDeleter>;
 
 struct SwsContextDeleter final {
     void operator()(SwsContext* context) const noexcept {

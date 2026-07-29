@@ -1,5 +1,8 @@
 #include "dvs/ui/ReviewController.h"
 
+#include "dvs/application/ComparisonExactness.h"
+#include "dvs/ui/SourceListModel.h"
+
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QThread>
@@ -7,12 +10,14 @@
 #include <QUrl>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace dvs::ui {
@@ -97,7 +102,12 @@ struct ReviewView final {
     QVariantList alignmentTimelineMarkers;
     bool manualAnchorActive = false;
     bool autoAlignmentActive = false;
-    QStringList compatibilityWarningKeys;
+    bool alignmentRequired = false;
+    bool automaticAlignmentPending = false;
+    bool canConfirmAutomaticAlignment = false;
+    bool canUndoAutomaticAlignment = false;
+    QVariantList compatibilityFindings;
+    QVariantList differenceEdges;
     bool canOpen = false;
     bool canFirst = false;
     bool canPrevious = false;
@@ -107,6 +117,15 @@ struct ReviewView final {
     bool canPause = false;
 
     [[nodiscard]] bool operator==(const ReviewView&) const = default;
+
+    [[nodiscard]] bool sameFrameState(const ReviewView& other) const {
+        return currentFrame == other.currentFrame && sourceAMissing == other.sourceAMissing &&
+               sourceBMissing == other.sourceBMissing && sourceCMissing == other.sourceCMissing &&
+               frameMappingStatus == other.frameMappingStatus &&
+               autoAlignmentActive == other.autoAlignmentActive &&
+               differenceEdges == other.differenceEdges && canPrevious == other.canPrevious &&
+               canNext == other.canNext;
+    }
 };
 
 [[nodiscard]] QString sourceName(const domain::SourceId sourceId) {
@@ -135,7 +154,7 @@ void appendTimelineMarker(QVariantList& markers,
 class ReviewController::Impl final {
 public:
     Impl(ReviewController& owner, Dependencies dependencies)
-        : owner_(owner), dependencies_(std::move(dependencies)) {
+        : owner_(owner), dependencies_(std::move(dependencies)), sourceModel_(&owner) {
         if (!dependencies_.submit || !dependencies_.snapshot ||
             !dependencies_.takeCompletedCommands) {
             throw std::invalid_argument{"Review controller dependencies must not be empty."};
@@ -155,6 +174,10 @@ public:
 
     [[nodiscard]] const ReviewView& view() const noexcept {
         return view_;
+    }
+
+    [[nodiscard]] QAbstractItemModel* sources() noexcept {
+        return &sourceModel_;
     }
 
     [[nodiscard]] bool openComparison(const QUrl& first, const QUrl& second) {
@@ -309,6 +332,49 @@ public:
             });
     }
 
+    [[nodiscard]] bool applySourceOffsets(const QVariantList& values) {
+        if (values.size() > 3) {
+            return false;
+        }
+
+        std::vector<application::SourceFrameOffset> offsets;
+        offsets.reserve(static_cast<std::size_t>(values.size()));
+        for (const QVariant& value : values) {
+            const QVariantMap item = value.toMap();
+            bool sourceOk = false;
+            bool framesOk = false;
+            const qulonglong sourceValue =
+                item.value(QStringLiteral("sourceId")).toULongLong(&sourceOk);
+            const qlonglong framesValue =
+                item.value(QStringLiteral("frames")).toLongLong(&framesOk);
+            if (!sourceOk || !framesOk ||
+                sourceValue > std::numeric_limits<domain::SourceId>::max()) {
+                return false;
+            }
+            const domain::SourceId sourceId = static_cast<domain::SourceId>(sourceValue);
+            if (std::any_of(offsets.begin(),
+                            offsets.end(),
+                            [sourceId](const application::SourceFrameOffset& offset) {
+                                return offset.sourceId == sourceId;
+                            })) {
+                return false;
+            }
+            offsets.push_back(application::SourceFrameOffset{
+                .sourceId = sourceId,
+                .frames = static_cast<std::int64_t>(framesValue),
+            });
+        }
+
+        return dispatchNavigation(
+            [](const ReviewView& view) { return view.canFirst; },
+            [offsets = std::move(offsets)](const application::CommandContext& context) mutable {
+                return application::PlaybackCommand{application::SetAlignmentOffsetsCommand{
+                    .context = context,
+                    .sourceOffsets = std::move(offsets),
+                }};
+            });
+    }
+
     [[nodiscard]] bool estimateAlignment() {
         return dispatchBackgroundAnalysis(
             [](const ReviewView& view) { return view.canFirst; },
@@ -333,6 +399,24 @@ public:
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
                     application::CancelAlignmentAnalysisCommand{.context = context}};
+            });
+    }
+
+    [[nodiscard]] bool confirmAutomaticAlignment() {
+        return dispatchNavigation(
+            [](const ReviewView& view) { return view.canConfirmAutomaticAlignment; },
+            [](const application::CommandContext& context) {
+                return application::PlaybackCommand{
+                    application::ConfirmAutomaticAlignmentCommand{.context = context}};
+            });
+    }
+
+    [[nodiscard]] bool undoAutomaticAlignment() {
+        return dispatchNavigation(
+            [](const ReviewView& view) { return view.canUndoAutomaticAlignment; },
+            [](const application::CommandContext& context) {
+                return application::PlaybackCommand{
+                    application::UndoAutomaticAlignmentCommand{.context = context}};
             });
     }
 
@@ -467,16 +551,27 @@ private:
             next.totalFrames = static_cast<qulonglong>(snapshot_->canonicalFrameCount);
             next.playing = snapshot_->playbackState == domain::PlaybackState::kPlaying ||
                            snapshot_->playbackState == domain::PlaybackState::kBuffering;
+            next.alignmentRequired = snapshot_->alignmentRequired;
+            next.automaticAlignmentPending = snapshot_->automaticAlignmentPending;
+            next.canConfirmAutomaticAlignment = snapshot_->canConfirmAutomaticAlignment;
+            next.canUndoAutomaticAlignment = snapshot_->canUndoAutomaticAlignment;
             next.alignmentAnalysisRunning = snapshot_->alignmentAnalysisJobId.has_value();
             if (next.alignmentAnalysisRunning) {
-                const qulonglong completed = snapshot_->alignmentAnalysisCompletedFrames;
-                const qulonglong total = snapshot_->alignmentAnalysisTotalFrames;
+                const qulonglong completed = snapshot_->alignmentAnalysisCompletedUnits;
+                const qulonglong total = snapshot_->alignmentAnalysisWork.totalUnits;
                 next.alignmentAnalysisProgress =
                     total == 0U ? 0.0 : static_cast<qreal>(completed) / static_cast<qreal>(total);
-                next.alignmentAnalysisStatus =
-                    total == 0U ? QStringLiteral("Preparing alignment analysis…")
-                                : QStringLiteral("Analyzing alignment… %1%")
-                                      .arg(qRound(next.alignmentAnalysisProgress * 100.0));
+                if (total == 0U || !snapshot_->alignmentAnalysisPhase.has_value()) {
+                    next.alignmentAnalysisStatus = QStringLiteral("Preparing alignment analysis…");
+                } else {
+                    const QString phase =
+                        *snapshot_->alignmentAnalysisPhase ==
+                                application::AlignmentAnalysisPhase::CollectingSignatures
+                            ? QStringLiteral("Collecting signatures")
+                            : QStringLiteral("Computing alignment");
+                    next.alignmentAnalysisStatus = QStringLiteral("%1… %2%").arg(phase).arg(
+                        qRound(next.alignmentAnalysisProgress * 100.0));
+                }
             }
 
             QStringList mappingParts;
@@ -520,6 +615,9 @@ private:
                             .arg(offset >= 0 ? QStringLiteral("+") : QString{})
                             .arg(offset)
                             .arg(qRound(source.alignmentConfidence * 100.0F)));
+                    if (source.matchKind == application::FrameMatchKind::AutoAligned) {
+                        next.autoAlignmentActive = true;
+                    }
                 }
             }
             next.frameMappingStatus = mappingParts.join(QStringLiteral("  |  "));
@@ -533,9 +631,11 @@ private:
                         .arg(estimate.bestOffset);
                 const int confidence = qRound(estimate.confidence * 100.0F);
                 if (estimate.autoApplicable) {
-                    next.autoAlignmentActive = true;
-                    estimateParts.push_back(QStringLiteral("%1: auto %2 (%3%)")
-                                                .arg(currentSourceName, signedOffset)
+                    const QString mode = snapshot_->automaticAlignmentPending
+                                             ? QStringLiteral("proposal")
+                                             : QStringLiteral("auto");
+                    estimateParts.push_back(QStringLiteral("%1: %2 %3 (%4%)")
+                                                .arg(currentSourceName, mode, signedOffset)
                                                 .arg(confidence));
                 } else {
                     estimateParts.push_back(
@@ -579,20 +679,45 @@ private:
                         break;
                     }
                 }
-                const QString mode =
-                    result.autoApplicable ? QStringLiteral("mapped") : QStringLiteral("suggested");
-                sequenceParts.push_back(QStringLiteral("%1: sequence %2, %3% confidence%4")
+                const QString mode = snapshot_->automaticAlignmentPending
+                                         ? QStringLiteral("proposal")
+                                         : (result.autoApplicable ? QStringLiteral("mapped")
+                                                                  : QStringLiteral("suggested"));
+                qsizetype reviewSegments = 0;
+                qsizetype rejectedSegments = 0;
+                for (const application::SequenceAlignmentSegment& segment : result.segments) {
+                    if (segment.state == application::AlignmentSegmentState::Accepted) {
+                        continue;
+                    }
+                    const bool rejected =
+                        segment.state == application::AlignmentSegmentState::Rejected;
+                    if (rejected) {
+                        ++rejectedSegments;
+                    } else {
+                        ++reviewSegments;
+                    }
+                    appendTimelineMarker(next.alignmentTimelineMarkers,
+                                         segment.firstCanonicalFrame,
+                                         rejected ? QStringLiteral("rejected-segment")
+                                                  : QStringLiteral("review-segment"),
+                                         currentSourceName,
+                                         qRound(segment.p10Confidence * 100.0F));
+                }
+                QString segmentStatus;
+                if (reviewSegments > 0 || rejectedSegments > 0) {
+                    segmentStatus = QStringLiteral(", %1 review / %2 rejected segments")
+                                        .arg(reviewSegments)
+                                        .arg(rejectedSegments);
+                }
+                sequenceParts.push_back(QStringLiteral("%1: sequence %2, %3% confidence%4%5")
                                             .arg(currentSourceName)
                                             .arg(mode)
                                             .arg(qRound(result.confidence * 100.0F))
                                             .arg(anomalyParts.isEmpty()
                                                      ? QStringLiteral(", no local anomalies")
-                                                     : QStringLiteral(", %1").arg(anomalyParts.join(
-                                                           QStringLiteral(", ")))));
-                if (result.autoApplicable) {
-                    next.autoAlignmentActive = true;
-                }
-
+                                                     : QStringLiteral(", %1").arg(
+                                                           anomalyParts.join(QStringLiteral(", "))))
+                                            .arg(segmentStatus));
                 for (const application::SequenceAlignmentLowConfidenceRun& run :
                      result.lowConfidenceRuns) {
                     appendTimelineMarker(lowConfidenceTimelineMarkers,
@@ -628,10 +753,21 @@ private:
                 }
                 next.alignmentTimelineMarkers.push_back(marker);
             }
-            for (const domain::MediaErrorCode warning : snapshot_->compatibilityWarnings) {
-                next.compatibilityWarningKeys.push_back(
-                    QString::fromLatin1(domain::stableId(warning).data(),
-                                        static_cast<qsizetype>(domain::stableId(warning).size())));
+            for (const application::CompatibilityFindingView& finding :
+                 snapshot_->compatibilityFindings) {
+                QVariantList sourceIds;
+                sourceIds.reserve(static_cast<qsizetype>(finding.sources.size()));
+                for (const domain::SourceId sourceId : finding.sources) {
+                    sourceIds.push_back(QVariant::fromValue<qulonglong>(sourceId));
+                }
+                const std::string_view stableCode = domain::stableId(finding.code);
+                next.compatibilityFindings.push_back(QVariantMap{
+                    {QStringLiteral("severity"), static_cast<int>(finding.severity)},
+                    {QStringLiteral("code"),
+                     QString::fromLatin1(stableCode.data(),
+                                         static_cast<qsizetype>(stableCode.size()))},
+                    {QStringLiteral("sources"), sourceIds},
+                });
             }
 
             if (snapshot_->lastError.has_value()) {
@@ -657,6 +793,72 @@ private:
             }
         }
 
+        std::vector<SourceListRow> sourceRows;
+        if (snapshot_) {
+            sourceRows.reserve(snapshot_->sources.size());
+            for (const application::SessionSourceView& source : snapshot_->sources) {
+                const auto presented =
+                    std::find_if(snapshot_->presentedSources.begin(),
+                                 snapshot_->presentedSources.end(),
+                                 [&source](const application::PresentedSourceState& value) {
+                                     return value.sourceId == source.sourceId;
+                                 });
+                QString errorKey;
+                if (source.sourceId == 0U) {
+                    errorKey = next.sourceAErrorKey;
+                } else if (source.sourceId == 1U) {
+                    errorKey = next.sourceBErrorKey;
+                } else if (source.sourceId == 2U) {
+                    errorKey = next.sourceCErrorKey;
+                }
+                SourceListRow row{
+                    .sourceId = source.sourceId,
+                    .role = static_cast<int>(source.role),
+                    .filename = QString::fromStdString(source.displayName),
+                    .errorKey = std::move(errorKey),
+                };
+                if (presented != snapshot_->presentedSources.end()) {
+                    row.currentSourceFrame =
+                        presented->sourceFrameId.has_value()
+                            ? std::optional<qint64>{presented->sourceFrameId->value()}
+                            : std::nullopt;
+                    row.matchKind = static_cast<int>(presented->matchKind);
+                    row.confidence = presented->alignmentConfidence;
+                    row.missing = !presented->sourceFrameId.has_value();
+                    row.missingReason = presented->missingReason.has_value()
+                                            ? static_cast<int>(*presented->missingReason)
+                                            : -1;
+                    if (presented->matchKind == application::FrameMatchKind::GlobalOffset &&
+                        presented->sourceFrameId.has_value() && next.currentFrame >= 0) {
+                        row.manualOffset = presented->sourceFrameId->value() - next.currentFrame;
+                    }
+                }
+                sourceRows.push_back(std::move(row));
+            }
+        }
+        for (std::size_t first = 0U; first < sourceRows.size(); ++first) {
+            for (std::size_t second = first + 1U; second < sourceRows.size(); ++second) {
+                const int preferenceValue = first == 0U && second == 1U ? 0 : (first == 0U ? 1 : 2);
+                next.differenceEdges.push_back(QVariantMap{
+                    {QStringLiteral("label"),
+                     QStringLiteral("%1 ↔ %2").arg(sourceName(sourceRows[first].sourceId),
+                                                   sourceName(sourceRows[second].sourceId))},
+                    {QStringLiteral("preferenceValue"), preferenceValue},
+                    {QStringLiteral("firstSourceId"),
+                     QVariant::fromValue<qulonglong>(sourceRows[first].sourceId)},
+                    {QStringLiteral("secondSourceId"),
+                     QVariant::fromValue<qulonglong>(sourceRows[second].sourceId)},
+                    {QStringLiteral("exactness"),
+                     static_cast<int>(
+                         snapshot_ ? application::comparisonExactness(*snapshot_,
+                                                                      sourceRows[first].sourceId,
+                                                                      sourceRows[second].sourceId)
+                                   : application::ComparisonExactness::Unavailable)},
+                });
+            }
+        }
+        sourceModel_.setRows(std::move(sourceRows));
+
         next.busy = pendingCommand_.has_value() && !stopped_;
         const bool transportPending = pendingTransportCommand_.has_value();
         const bool playbackDraining =
@@ -679,9 +881,30 @@ private:
                        next.totalFrames > 1U;
         next.canPause = !next.busy && !transportPending && next.playing;
 
-        if (!(next == view_)) {
+        const bool changed = !(next == view_);
+        const bool frameStateChanged = !next.sameFrameState(view_);
+        const bool otherStateChanged = changed && (!frameStateChanged || [&] {
+                                           ReviewView normalized = next;
+                                           normalized.currentFrame = view_.currentFrame;
+                                           normalized.sourceAMissing = view_.sourceAMissing;
+                                           normalized.sourceBMissing = view_.sourceBMissing;
+                                           normalized.sourceCMissing = view_.sourceCMissing;
+                                           normalized.frameMappingStatus = view_.frameMappingStatus;
+                                           normalized.autoAlignmentActive =
+                                               view_.autoAlignmentActive;
+                                           normalized.differenceEdges = view_.differenceEdges;
+                                           normalized.canPrevious = view_.canPrevious;
+                                           normalized.canNext = view_.canNext;
+                                           return !(normalized == view_);
+                                       }());
+        if (changed) {
             view_ = std::move(next);
+        }
+        if (otherStateChanged) {
             Q_EMIT owner_.stateChanged();
+        }
+        if (frameStateChanged) {
+            Q_EMIT owner_.frameStateChanged();
         }
     }
 
@@ -796,6 +1019,7 @@ private:
 
     ReviewController& owner_;
     Dependencies dependencies_;
+    SourceListModel sourceModel_;
     QTimer projectionTimer_;
     std::shared_ptr<const application::SessionSnapshot> snapshot_;
     std::optional<LocalFileCandidate> sourceA_;
@@ -827,6 +1051,10 @@ QString ReviewController::sourceBFilename() const {
 
 QString ReviewController::sourceCFilename() const {
     return impl_->view().sourceCFilename;
+}
+
+QAbstractItemModel* ReviewController::sources() const noexcept {
+    return impl_->sources();
 }
 
 ReviewController::ReviewDisplayState ReviewController::displayState() const noexcept {
@@ -925,8 +1153,28 @@ bool ReviewController::autoAlignmentActive() const noexcept {
     return impl_->view().autoAlignmentActive;
 }
 
-QStringList ReviewController::compatibilityWarningKeys() const {
-    return impl_->view().compatibilityWarningKeys;
+bool ReviewController::alignmentRequired() const noexcept {
+    return impl_->view().alignmentRequired;
+}
+
+bool ReviewController::automaticAlignmentPending() const noexcept {
+    return impl_->view().automaticAlignmentPending;
+}
+
+bool ReviewController::canConfirmAutomaticAlignment() const noexcept {
+    return impl_->view().canConfirmAutomaticAlignment;
+}
+
+bool ReviewController::canUndoAutomaticAlignment() const noexcept {
+    return impl_->view().canUndoAutomaticAlignment;
+}
+
+QVariantList ReviewController::compatibilityFindings() const {
+    return impl_->view().compatibilityFindings;
+}
+
+QVariantList ReviewController::differenceEdges() const {
+    return impl_->view().differenceEdges;
 }
 
 bool ReviewController::canOpen() const noexcept {
@@ -998,6 +1246,10 @@ bool ReviewController::applyAlignmentOffsets(const qint64 sourceAFrames,
     return impl_->applyAlignmentOffsets(sourceAFrames, sourceBFrames, sourceCFrames);
 }
 
+bool ReviewController::applySourceOffsets(const QVariantList& offsets) {
+    return impl_->applySourceOffsets(offsets);
+}
+
 bool ReviewController::estimateAlignment() {
     return impl_->estimateAlignment();
 }
@@ -1008,6 +1260,14 @@ bool ReviewController::analyzeSequenceAlignment() {
 
 bool ReviewController::cancelAlignmentAnalysis() {
     return impl_->cancelAlignmentAnalysis();
+}
+
+bool ReviewController::confirmAutomaticAlignment() {
+    return impl_->confirmAutomaticAlignment();
+}
+
+bool ReviewController::undoAutomaticAlignment() {
+    return impl_->undoAutomaticAlignment();
 }
 
 bool ReviewController::setManualAlignmentAnchor(const int sourceIndex,

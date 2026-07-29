@@ -1,6 +1,8 @@
 #include "SoftwareDecoder.h"
 
+#include "dvs/platform/D3d11DecodedFrameResource.h"
 #include "dvs/platform/FrameResourceFactory.h"
+#include "dvs/platform/GraphicsDeviceBroker.h"
 #include "dvs/platform/SourceIdentityService.h"
 #include "dvs/platform/WindowsPaths.h"
 
@@ -9,6 +11,8 @@
 
 extern "C" {
 #include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_d3d11va.h>
 #include <libavutil/pixdesc.h>
 }
 
@@ -84,25 +88,42 @@ struct TimelineIndexCancellationState final {
 [[nodiscard]] bool isSupportedDecodedFormat(const AVFrame& frame) noexcept {
     const auto pixelFormat = static_cast<AVPixelFormat>(frame.format);
     const AVPixFmtDescriptor* const descriptor = av_pix_fmt_desc_get(pixelFormat);
-    if (descriptor == nullptr || descriptor->nb_components != 3 || descriptor->log2_chroma_w != 1 ||
-        descriptor->log2_chroma_h != 1) {
+    if (descriptor == nullptr) {
         return false;
     }
-    for (int component = 0; component < descriptor->nb_components; ++component) {
-        if (descriptor->comp[component].depth != 8) {
+    const int bitDepth = descriptor->comp[0].depth;
+    const bool rgb = (descriptor->flags & AV_PIX_FMT_FLAG_RGB) != 0;
+    if ((rgb &&
+         (descriptor->nb_components < 3 || descriptor->nb_components > 4 || bitDepth != 8)) ||
+        (!rgb && (descriptor->nb_components < 3 || descriptor->nb_components > 4 ||
+                  descriptor->log2_chroma_w < 0 || descriptor->log2_chroma_w > 1 ||
+                  descriptor->log2_chroma_h < 0 || descriptor->log2_chroma_h > 1 ||
+                  (bitDepth != 8 && bitDepth != 10)))) {
+        return false;
+    }
+    for (int component = 1; component < descriptor->nb_components; ++component) {
+        if (descriptor->comp[component].depth != bitDepth) {
             return false;
         }
     }
     return true;
 }
 
-[[nodiscard]] bool
-multiplyFits(const std::size_t left, const std::size_t right, std::size_t* const result) noexcept {
-    if (left != 0U && right > std::numeric_limits<std::size_t>::max() / left) {
-        return false;
+[[nodiscard]] int swsColorSpace(const domain::ColorMetadata& metadata) noexcept {
+    return metadata.matrix == domain::ColorMatrix::kBt709 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+}
+
+[[nodiscard]] bool supportsD3d11Va(const AVCodec* const decoder) noexcept {
+    for (int index = 0;; ++index) {
+        const AVCodecHWConfig* const configuration = avcodec_get_hw_config(decoder, index);
+        if (configuration == nullptr) {
+            return false;
+        }
+        if (configuration->device_type == AV_HWDEVICE_TYPE_D3D11VA &&
+            (configuration->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) != 0) {
+            return true;
+        }
     }
-    *result = left * right;
-    return true;
 }
 
 } // namespace
@@ -112,12 +133,41 @@ public:
     Impl(const domain::SourceId sourceIdValue,
          domain::MediaDescriptor descriptorValue,
          platform::FrameBudget& frameBudget,
-         const std::atomic<bool>* const externalInterrupt)
-        : sourceId(sourceIdValue), descriptor(std::move(descriptorValue)), factory(frameBudget),
-          interruptState{.requested = &interrupted, .externalRequested = externalInterrupt} {}
+         const std::atomic<bool>* const externalInterrupt,
+         std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue)
+        : sourceId(sourceIdValue), descriptor(std::move(descriptorValue)), frameBudget(frameBudget),
+          deviceBroker(std::move(deviceBrokerValue)),
+          factory(frameBudget,
+                  application::FramePresentation{
+                      .rotationDegrees = descriptor.rotationDegrees,
+                      .sampleAspectNumerator = descriptor.sampleAspectRatio.numerator,
+                      .sampleAspectDenominator = descriptor.sampleAspectRatio.denominator,
+                  }),
+          interruptState{.requested = &interrupted, .externalRequested = externalInterrupt},
+          bufferPool(3U) {}
+
+    [[nodiscard]] static AVPixelFormat
+    selectHardwareFormat(AVCodecContext* const context,
+                         const AVPixelFormat* const formats) noexcept {
+        auto* const self = static_cast<Impl*>(context->opaque);
+        if (self != nullptr && self->hardwareRequested) {
+            for (const AVPixelFormat* format = formats; *format != AV_PIX_FMT_NONE; ++format) {
+                if (*format == AV_PIX_FMT_D3D11) {
+                    self->backend = DecoderBackend::D3d11Va;
+                    return *format;
+                }
+            }
+            self->backend = DecoderBackend::Software;
+            self->fallbackReason =
+                "The decoder did not offer a D3D11VA output format for this stream.";
+        }
+        return avcodec_default_get_format(context, formats);
+    }
 
     domain::SourceId sourceId;
     domain::MediaDescriptor descriptor;
+    platform::FrameBudget& frameBudget;
+    std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker;
     platform::FrameResourceFactory factory;
     std::atomic<bool> interrupted = false;
     InterruptState interruptState;
@@ -125,10 +175,14 @@ public:
     AvCodecContextPtr codec;
     AvPacketPtr packet;
     AvFramePtr frame;
+    AvBufferRefPtr hardwareDevice;
+    std::optional<platform::GraphicsDeviceLease> hardwareLease;
+    SwsContextPtr sws;
+    platform::Nv12BufferPool bufferPool;
     int streamIndex = -1;
     AVRational timeBase{};
     std::int64_t startTimestamp = 0;
-    std::optional<std::vector<std::int64_t>> presentationTimestamps;
+    std::shared_ptr<const std::vector<std::int64_t>> presentationTimestamps;
     std::optional<domain::FrameId> lastReturnedFrame;
     std::uint64_t exactSeekCount = 0;
     bool packetPending = false;
@@ -136,15 +190,21 @@ public:
     bool flushSubmitted = false;
     bool sequentialReady = false;
     bool opened = false;
+    bool hardwareRequested = false;
+    media::DecoderBackend backend = media::DecoderBackend::Software;
+    std::string fallbackReason;
 };
 
 SoftwareDecoder::SoftwareDecoder(const domain::SourceId sourceId,
                                  domain::MediaDescriptor descriptor,
                                  platform::FrameBudget& frameBudget,
-                                 const std::atomic<bool>* const externalInterrupt)
-    : impl_(
-          std::make_unique<Impl>(sourceId, std::move(descriptor), frameBudget, externalInterrupt)) {
-}
+                                 const std::atomic<bool>* const externalInterrupt,
+                                 std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
+    : impl_(std::make_unique<Impl>(sourceId,
+                                   std::move(descriptor),
+                                   frameBudget,
+                                   externalInterrupt,
+                                   std::move(deviceBroker))) {}
 
 SoftwareDecoder::~SoftwareDecoder() = default;
 
@@ -251,27 +311,101 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
                         "FFmpeg has no decoder for the probed source codec.",
                         true));
     }
-    AVCodecContext* rawCodec = avcodec_alloc_context3(decoder);
-    if (rawCodec == nullptr) {
-        return domain::Status::failure(decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                   sourceId,
-                                                   "FFmpeg could not allocate a codec context."));
+    const auto allocateCodec = [decoder, stream]() {
+        AvCodecContextPtr result{avcodec_alloc_context3(decoder)};
+        if (result != nullptr &&
+            avcodec_parameters_to_context(result.get(), stream->codecpar) < 0) {
+            result.reset();
+        }
+        return result;
+    };
+    AvCodecContextPtr openedCodec = allocateCodec();
+    if (openedCodec == nullptr) {
+        return domain::Status::failure(
+            decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
+                        sourceId,
+                        "FFmpeg could not allocate or configure a codec context."));
     }
-    AvCodecContextPtr openedCodec{rawCodec};
-    const int parameterResult = avcodec_parameters_to_context(openedCodec.get(), stream->codecpar);
-    if (parameterResult < 0) {
-        return domain::Status::failure(decodeError(
-            domain::MediaErrorCode::kMediaDecodeFailed,
-            sourceId,
-            "FFmpeg could not transfer source codec parameters: " + ffmpegError(parameterResult)));
+    impl_->backend = DecoderBackend::Software;
+    impl_->fallbackReason.clear();
+    impl_->hardwareRequested = false;
+    impl_->hardwareDevice.reset();
+    impl_->hardwareLease.reset();
+
+    if (!impl_->deviceBroker) {
+        impl_->fallbackReason = "No shared Qt D3D11 device was configured.";
+    } else if (!supportsD3d11Va(decoder)) {
+        impl_->fallbackReason = "The FFmpeg decoder does not expose D3D11VA for this codec.";
+    } else {
+        platform::GraphicsDeviceLeaseResult leaseResult = impl_->deviceBroker->tryLease();
+        if (leaseResult.status == platform::GraphicsDeviceLeaseStatus::Available &&
+            leaseResult.lease) {
+            AvBufferRefPtr hardwareDevice{av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA)};
+            if (hardwareDevice != nullptr) {
+                auto* const deviceContext =
+                    reinterpret_cast<AVHWDeviceContext*>(hardwareDevice->data);
+                auto* const d3d11Context =
+                    static_cast<AVD3D11VADeviceContext*>(deviceContext->hwctx);
+                d3d11Context->device = leaseResult.lease->device.Get();
+                d3d11Context->device->AddRef();
+                d3d11Context->BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
+                const int hardwareInitResult = av_hwdevice_ctx_init(hardwareDevice.get());
+                if (hardwareInitResult >= 0) {
+                    openedCodec->opaque = impl_.get();
+                    openedCodec->get_format = &Impl::selectHardwareFormat;
+                    openedCodec->extra_hw_frames = 8;
+                    openedCodec->hw_device_ctx = av_buffer_ref(hardwareDevice.get());
+                    if (openedCodec->hw_device_ctx != nullptr) {
+                        impl_->hardwareRequested = true;
+                        impl_->hardwareDevice = std::move(hardwareDevice);
+                        impl_->hardwareLease = std::move(*leaseResult.lease);
+                    } else {
+                        impl_->fallbackReason =
+                            "FFmpeg could not retain the shared D3D11 device context.";
+                    }
+                } else {
+                    impl_->fallbackReason =
+                        "FFmpeg could not initialize the shared D3D11 device: " +
+                        ffmpegError(hardwareInitResult);
+                }
+            } else {
+                impl_->fallbackReason = "FFmpeg could not allocate a D3D11VA device context.";
+            }
+        } else if (leaseResult.status == platform::GraphicsDeviceLeaseStatus::Busy) {
+            impl_->fallbackReason = "The shared D3D11 device was busy during decoder open.";
+        } else if (leaseResult.status == platform::GraphicsDeviceLeaseStatus::Closed) {
+            impl_->fallbackReason = "The shared D3D11 device broker is closed.";
+        } else {
+            impl_->fallbackReason = "The shared D3D11 device is not available.";
+        }
     }
-    const int codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
+
+    int codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
+    if (codecOpenResult < 0 && impl_->hardwareRequested) {
+        impl_->fallbackReason = "D3D11VA decoder open failed; software fallback is active: " +
+                                ffmpegError(codecOpenResult);
+        impl_->hardwareRequested = false;
+        impl_->backend = DecoderBackend::Software;
+        impl_->hardwareDevice.reset();
+        impl_->hardwareLease.reset();
+        openedCodec = allocateCodec();
+        if (openedCodec == nullptr) {
+            return domain::Status::failure(decodeError(
+                domain::MediaErrorCode::kMediaDecodeFailed,
+                sourceId,
+                "FFmpeg could not recreate the software decoder after D3D11VA failed."));
+        }
+        codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
+    }
     if (codecOpenResult < 0) {
         return domain::Status::failure(
             decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                         sourceId,
                         "FFmpeg could not open the source decoder: " + ffmpegError(codecOpenResult),
                         true));
+    }
+    if (impl_->hardwareRequested) {
+        impl_->backend = DecoderBackend::D3d11Va;
     }
 
     impl_->format = std::move(openedFormat);
@@ -291,6 +425,13 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
         .sourceId = sourceId,
         .operation = domain::MediaOperation::kMediaDecode,
         .expectedFrameCount = impl_->descriptor.frameCount.value,
+        .sourceIdentity = impl_->descriptor.sourceIdentity,
+        .streamIndex = selectedStream,
+        .timeBase =
+            TimelineRational{
+                .numerator = stream->time_base.num,
+                .denominator = stream->time_base.den,
+            },
         .cancellation =
             TimelineCancellation{
                 .isRequested = timelineIndexCancellationRequested,
@@ -359,7 +500,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                         sourceId,
                         "The decoded source has a stream time base outside FFmpeg limits."));
     }
-    if (!impl_->presentationTimestamps.has_value()) {
+    if (!impl_->presentationTimestamps) {
         return domain::Result<DecodedFrame>::failure(
             decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
                         sourceId,
@@ -455,11 +596,103 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                                     std::to_string(timestamp) + ").",
                                 true));
             }
+
+            if (impl_->frame->format == AV_PIX_FMT_D3D11) {
+                if (!impl_->hardwareLease || !impl_->deviceBroker ||
+                    impl_->deviceBroker->currentGeneration() !=
+                        impl_->hardwareLease->deviceGeneration) {
+                    return domain::Result<DecodedFrame>::failure(decodeError(
+                        domain::MediaErrorCode::kMediaDecodeFailed,
+                        sourceId,
+                        "The shared D3D11 device generation changed during hardware decode.",
+                        true));
+                }
+                auto* const texture = reinterpret_cast<ID3D11Texture2D*>(impl_->frame->data[0]);
+                const std::intptr_t sliceValue =
+                    reinterpret_cast<std::intptr_t>(impl_->frame->data[1]);
+                if (texture == nullptr || sliceValue < 0 ||
+                    static_cast<std::uint64_t>(sliceValue) >
+                        (std::numeric_limits<std::uint32_t>::max)()) {
+                    return domain::Result<DecodedFrame>::failure(
+                        decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                    sourceId,
+                                    "FFmpeg returned an invalid D3D11VA texture slice.",
+                                    true));
+                }
+                D3D11_TEXTURE2D_DESC textureDescription{};
+                texture->GetDesc(&textureDescription);
+                std::optional<application::NormalizedFrameFormat> outputFormat;
+                if (textureDescription.Format == DXGI_FORMAT_NV12 &&
+                    impl_->descriptor.bitDepth == 8U) {
+                    outputFormat = application::NormalizedFrameFormat::Nv12_8;
+                } else if (textureDescription.Format == DXGI_FORMAT_P010 &&
+                           impl_->descriptor.bitDepth == 10U) {
+                    outputFormat = application::NormalizedFrameFormat::P010_10;
+                }
+                if (!outputFormat) {
+                    return domain::Result<DecodedFrame>::failure(decodeError(
+                        domain::MediaErrorCode::kUnsupportedPixelFormat,
+                        sourceId,
+                        "D3D11VA returned a texture outside the normalized NV12/P010 contract.",
+                        true));
+                }
+
+                AVFrame* const clonedFrame = av_frame_clone(impl_->frame.get());
+                if (clonedFrame == nullptr) {
+                    return domain::Result<DecodedFrame>::failure(
+                        decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                    sourceId,
+                                    "FFmpeg could not retain the decoded D3D11VA frame.",
+                                    true));
+                }
+                std::shared_ptr<const void> lifetimeAnchor{
+                    clonedFrame,
+                    [](const void* const opaque) noexcept {
+                        auto* frame = const_cast<AVFrame*>(static_cast<const AVFrame*>(opaque));
+                        av_frame_free(&frame);
+                    },
+                };
+                Microsoft::WRL::ComPtr<ID3D11Texture2D> retainedTexture = texture;
+                auto handle = platform::D3d11DecodedFrameResource::create(
+                    std::move(retainedTexture),
+                    static_cast<std::uint32_t>(sliceValue),
+                    static_cast<std::uint32_t>(impl_->frame->width),
+                    static_cast<std::uint32_t>(impl_->frame->height),
+                    impl_->hardwareLease->deviceGeneration,
+                    *outputFormat,
+                    impl_->descriptor.colorMetadata,
+                    application::FramePresentation{
+                        .rotationDegrees = impl_->descriptor.rotationDegrees,
+                        .sampleAspectNumerator = impl_->descriptor.sampleAspectRatio.numerator,
+                        .sampleAspectDenominator = impl_->descriptor.sampleAspectRatio.denominator,
+                    },
+                    std::move(lifetimeAnchor),
+                    impl_->frameBudget);
+                if (!handle) {
+                    return domain::Result<DecodedFrame>::failure(
+                        decodeError(domain::MediaErrorCode::kFrameBudgetExceeded,
+                                    sourceId,
+                                    "The shared frame budget could not retain the D3D11VA frame.",
+                                    true));
+                }
+                const std::int64_t presentationMicroseconds = av_rescale_q(
+                    timestamp, impl_->timeBase, AVRational{.num = 1, .den = AV_TIME_BASE});
+                auto result = domain::Result<DecodedFrame>::success(DecodedFrame{
+                    .handle = std::move(*handle),
+                    .presentationTime = domain::MediaTime{presentationMicroseconds},
+                });
+                av_frame_unref(impl_->frame.get());
+                impl_->lastReturnedFrame = frameId;
+                impl_->sequentialReady = true;
+                return result;
+            }
+
             if (!isSupportedDecodedFormat(*impl_->frame)) {
                 return domain::Result<DecodedFrame>::failure(decodeError(
                     domain::MediaErrorCode::kUnsupportedPixelFormat,
                     sourceId,
-                    "The decoder produced a pixel format outside the v1 8-bit 4:2:0 contract.",
+                    "The decoder produced a pixel format outside the normalized 8/10-bit "
+                    "4:2:0 contract.",
                     true));
             }
 
@@ -475,46 +708,98 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
             }
             const std::uint32_t width = static_cast<std::uint32_t>(impl_->frame->width);
             const std::uint32_t height = static_cast<std::uint32_t>(impl_->frame->height);
-            const std::uint32_t stride = (width + 1U) & ~1U;
-            if (width == 0U || height == 0U || stride > static_cast<std::uint32_t>(INT_MAX)) {
+            const bool outputP010 = impl_->descriptor.bitDepth == 10U;
+            const std::uint64_t alignedWidth = (static_cast<std::uint64_t>(width) + 1U) & ~1ULL;
+            const std::uint64_t stride64 = alignedWidth * (outputP010 ? 2U : 1U);
+            if (width == 0U || height == 0U || stride64 > static_cast<std::uint64_t>(INT_MAX)) {
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                                 sourceId,
-                                "Decoded frame dimensions cannot form a valid NV12 layout."));
+                                "Decoded frame dimensions cannot form a valid normalized layout."));
             }
-            std::size_t yBytes = 0;
-            std::size_t uvBytes = 0;
-            if (!multiplyFits(stride, height, &yBytes) ||
-                !multiplyFits(stride, static_cast<std::size_t>((height + 1U) / 2U), &uvBytes) ||
-                yBytes > std::numeric_limits<std::size_t>::max() - uvBytes) {
-                return domain::Result<DecodedFrame>::failure(
-                    decodeError(domain::MediaErrorCode::kArithmeticOverflow,
-                                sourceId,
-                                "Decoded NV12 frame byte count overflowed."));
-            }
-
+            const std::uint32_t stride = static_cast<std::uint32_t>(stride64);
             try {
-                std::vector<std::uint8_t> nv12(yBytes + uvBytes);
-                SwsContextPtr converter{
-                    sws_getContext(impl_->frame->width,
-                                   impl_->frame->height,
-                                   static_cast<AVPixelFormat>(impl_->frame->format),
-                                   impl_->frame->width,
-                                   impl_->frame->height,
-                                   AV_PIX_FMT_NV12,
-                                   SWS_BILINEAR,
-                                   nullptr,
-                                   nullptr,
-                                   nullptr)};
-                if (converter == nullptr) {
+                std::optional<platform::WritableCpuNv12Frame> writableNv12;
+                std::optional<platform::WritableCpuP010Frame> writableP010;
+                if (outputP010) {
+                    writableP010 = impl_->factory.acquireWritableCpuP010(
+                        platform::P010FrameLayout{
+                            .width = width,
+                            .height = height,
+                            .yStride = stride,
+                            .uvStride = stride,
+                        },
+                        impl_->descriptor.colorMetadata,
+                        impl_->bufferPool);
+                } else {
+                    writableNv12 = impl_->factory.acquireWritableCpuNv12(
+                        platform::Nv12FrameLayout{
+                            .width = width,
+                            .height = height,
+                            .yStride = stride,
+                            .uvStride = stride,
+                        },
+                        impl_->descriptor.colorMetadata,
+                        impl_->bufferPool);
+                }
+                if ((!outputP010 && !writableNv12) || (outputP010 && !writableP010)) {
+                    return domain::Result<DecodedFrame>::failure(decodeError(
+                        domain::MediaErrorCode::kFrameBudgetExceeded,
+                        sourceId,
+                        "The shared frame budget could not reserve this normalized frame.",
+                        true));
+                }
+
+                const AVPixelFormat outputFormat = outputP010 ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12;
+                SwsContext* const cached =
+                    sws_getCachedContext(impl_->sws.release(),
+                                         impl_->frame->width,
+                                         impl_->frame->height,
+                                         static_cast<AVPixelFormat>(impl_->frame->format),
+                                         impl_->frame->width,
+                                         impl_->frame->height,
+                                         outputFormat,
+                                         SWS_BILINEAR,
+                                         nullptr,
+                                         nullptr,
+                                         nullptr);
+                impl_->sws.reset(cached);
+                if (impl_->sws == nullptr) {
                     return domain::Result<DecodedFrame>::failure(
                         decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                                     sourceId,
-                                    "FFmpeg could not create an NV12 conversion context."));
+                                    "FFmpeg could not create a normalized conversion context."));
                 }
+                const AVPixFmtDescriptor* const sourcePixelDescriptor =
+                    av_pix_fmt_desc_get(static_cast<AVPixelFormat>(impl_->frame->format));
+                const bool sourceRgb = sourcePixelDescriptor != nullptr &&
+                                       (sourcePixelDescriptor->flags & AV_PIX_FMT_FLAG_RGB) != 0;
+                const int* const coefficients =
+                    sws_getCoefficients(swsColorSpace(impl_->descriptor.colorMetadata));
+                const int sourceFullRange =
+                    sourceRgb || impl_->frame->color_range == AVCOL_RANGE_JPEG ? 1 : 0;
+                const int destinationFullRange =
+                    impl_->descriptor.colorMetadata.range == domain::ColorRange::kFull ? 1 : 0;
+                if (coefficients == nullptr || sws_setColorspaceDetails(impl_->sws.get(),
+                                                                        coefficients,
+                                                                        sourceFullRange,
+                                                                        coefficients,
+                                                                        destinationFullRange,
+                                                                        0,
+                                                                        1 << 16,
+                                                                        1 << 16) < 0) {
+                    return domain::Result<DecodedFrame>::failure(
+                        decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                    sourceId,
+                                    "FFmpeg could not configure normalized color conversion."));
+                }
+                const std::span<std::uint8_t> yPlane =
+                    outputP010 ? writableP010->yPlane() : writableNv12->yPlane();
+                const std::span<std::uint8_t> uvPlane =
+                    outputP010 ? writableP010->uvPlane() : writableNv12->uvPlane();
                 std::array<std::uint8_t*, 4> outputPlanes{
-                    nv12.data(),
-                    nv12.data() + static_cast<std::ptrdiff_t>(yBytes),
+                    yPlane.data(),
+                    uvPlane.data(),
                     nullptr,
                     nullptr,
                 };
@@ -524,7 +809,7 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                     0,
                     0,
                 };
-                const int convertedRows = sws_scale(converter.get(),
+                const int convertedRows = sws_scale(impl_->sws.get(),
                                                     impl_->frame->data,
                                                     impl_->frame->linesize,
                                                     0,
@@ -535,26 +820,17 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                     return domain::Result<DecodedFrame>::failure(
                         decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                                     sourceId,
-                                    "FFmpeg could not convert the decoded frame to NV12."));
+                                    "FFmpeg could not convert the decoded frame to the normalized "
+                                    "storage format."));
                 }
-                const platform::Nv12FrameLayout layout{
-                    .width = width,
-                    .height = height,
-                    .yStride = stride,
-                    .uvStride = stride,
-                };
-                auto handle = impl_->factory.createCpuNv12(
-                    layout,
-                    impl_->descriptor.colorMetadata,
-                    std::span<const std::uint8_t>{nv12.data(), yBytes},
-                    std::span<const std::uint8_t>{nv12.data() + static_cast<std::ptrdiff_t>(yBytes),
-                                                  uvBytes});
+                auto handle =
+                    outputP010 ? std::move(*writableP010).seal() : std::move(*writableNv12).seal();
                 if (!handle) {
-                    return domain::Result<DecodedFrame>::failure(decodeError(
-                        domain::MediaErrorCode::kFrameBudgetExceeded,
-                        sourceId,
-                        "The shared frame budget could not reserve this decoded NV12 frame.",
-                        true));
+                    return domain::Result<DecodedFrame>::failure(
+                        decodeError(domain::MediaErrorCode::kFrameBudgetExceeded,
+                                    sourceId,
+                                    "The shared frame budget could not seal this normalized frame.",
+                                    true));
                 }
                 const std::int64_t presentationMicroseconds = av_rescale_q(
                     timestamp, impl_->timeBase, AVRational{.num = 1, .den = AV_TIME_BASE});
@@ -567,11 +843,11 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 impl_->sequentialReady = true;
                 return result;
             } catch (const std::exception& exception) {
-                return domain::Result<DecodedFrame>::failure(
-                    decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                sourceId,
-                                "Decoded NV12 allocation failed: " + std::string{exception.what()},
-                                true));
+                return domain::Result<DecodedFrame>::failure(decodeError(
+                    domain::MediaErrorCode::kMediaDecodeFailed,
+                    sourceId,
+                    "Decoded normalized allocation failed: " + std::string{exception.what()},
+                    true));
             }
         }
 
@@ -662,6 +938,19 @@ std::uint64_t SoftwareDecoder::exactSeekCount() const noexcept {
     return impl_->exactSeekCount;
 }
 
+media::DecoderBackend SoftwareDecoder::backend() const noexcept {
+    return impl_->backend;
+}
+
+std::string SoftwareDecoder::fallbackReason() const {
+    return impl_->fallbackReason;
+}
+
+domain::DeviceGeneration SoftwareDecoder::deviceGeneration() const noexcept {
+    return impl_->hardwareLease ? impl_->hardwareLease->deviceGeneration
+                                : domain::DeviceGeneration{0U};
+}
+
 void SoftwareDecoder::requestInterrupt() noexcept {
     impl_->interrupted.store(true, std::memory_order_release);
     impl_->sequentialReady = false;
@@ -671,7 +960,10 @@ void SoftwareDecoder::close() noexcept {
     impl_->interrupted.store(true, std::memory_order_release);
     impl_->frame.reset();
     impl_->packet.reset();
+    impl_->sws.reset();
     impl_->codec.reset();
+    impl_->hardwareDevice.reset();
+    impl_->hardwareLease.reset();
     impl_->format.reset();
     impl_->streamIndex = -1;
     impl_->timeBase = AVRational{};
@@ -684,6 +976,8 @@ void SoftwareDecoder::close() noexcept {
     impl_->flushSubmitted = false;
     impl_->sequentialReady = false;
     impl_->opened = false;
+    impl_->hardwareRequested = false;
+    impl_->backend = DecoderBackend::Software;
 }
 
 } // namespace dvs::media::internal

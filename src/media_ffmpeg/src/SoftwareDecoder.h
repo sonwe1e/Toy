@@ -4,14 +4,17 @@
 #include "dvs/domain/ComparisonSource.h"
 #include "dvs/domain/MediaDescriptor.h"
 #include "dvs/domain/Result.h"
+#include "dvs/media/DecoderBackend.h"
 
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace dvs::platform {
 class FrameBudget;
-}
+class GraphicsDeviceBroker;
+} // namespace dvs::platform
 
 namespace dvs::media::internal {
 
@@ -27,7 +30,8 @@ public:
     SoftwareDecoder(domain::SourceId sourceId,
                     domain::MediaDescriptor descriptor,
                     platform::FrameBudget& frameBudget,
-                    const std::atomic<bool>* externalInterrupt = nullptr);
+                    const std::atomic<bool>* externalInterrupt = nullptr,
+                    std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker = {});
     ~SoftwareDecoder();
 
     SoftwareDecoder(const SoftwareDecoder&) = delete;
@@ -43,6 +47,9 @@ public:
 
     // Internal diagnostic used by component tests to keep the sequential path honest.
     [[nodiscard]] std::uint64_t exactSeekCount() const noexcept;
+    [[nodiscard]] media::DecoderBackend backend() const noexcept;
+    [[nodiscard]] std::string fallbackReason() const;
+    [[nodiscard]] domain::DeviceGeneration deviceGeneration() const noexcept;
 
     void requestInterrupt() noexcept;
     void close() noexcept;

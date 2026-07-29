@@ -1,12 +1,19 @@
 # Target Architecture
 
-Status: **phases 0–4 implemented; phase 5 in progress**. The FrameSet model,
+Status: **phases 0–6 implemented and locally validated**. The FrameSet model,
 2–3 source validation with compatibility reports, missing-frame semantics, parallel
 multi-source decode/render pipeline, three-up/reference-focus layouts, selectable
 difference edges, confidence-gated global/sequence alignment, manual anchors, and
-timeline diagnostics are in the codebase today. Phase 5 already includes selectable
-RGB absolute, luma, chroma, and heatmap difference metrics; threshold masks, ROI zoom,
-and the complete analysis grid remain. The historical A/B design is archived in
+timeline diagnostics are in the codebase today. Phase 5 includes the GUI project
+open/save/relink loop and schema v3. Phase 6 now includes synchronized pan/zoom, ROI,
+threshold masks, the four-panel analysis grid, exact-plane difference with a persistent
+exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
+transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
+array slices flow directly to plane SRVs while an AVFrame lifetime anchor prevents premature
+surface reuse. Three-source 1080p60 and 4K30 Main10 visible-window hardware gates both pass
+for five continuous minutes with no source split, bounded frame memory, stable worker counts,
+and shutdown well below the seven-second limit.
+The historical A/B design is archived in
 [design/architecture-overview.md](design/architecture-overview.md).
 
 DualVideoStudio is a VFI-dedicated comparator. Its job is not "play two videos" but

@@ -5,18 +5,13 @@
 #include <cstddef>
 #include <memory>
 
-namespace dvs::platform {
-class FrameBudget;
-}
-
 namespace dvs::media {
 
-// Runs alignment jobs on a decode provider that is physically separate from playback. The
-// service owns one low-priority worker and a bounded admission queue.
+// Runs alignment jobs on dedicated luma-signature decoders. The service owns one low-priority
+// worker, a bounded admission queue, and a process-local signature cache.
 class AlignmentAnalysisService final : public application::IAlignmentAnalysisService {
 public:
-    explicit AlignmentAnalysisService(platform::FrameBudget& frameBudget,
-                                      std::size_t queueCapacity = 2U);
+    explicit AlignmentAnalysisService(std::size_t queueCapacity = 2U);
     ~AlignmentAnalysisService() override;
 
     AlignmentAnalysisService(const AlignmentAnalysisService&) = delete;
@@ -31,6 +26,9 @@ public:
     submit(const application::SequenceAlignmentRequest& request,
            std::shared_ptr<application::IApplicationEventSink> events) override;
     void cancel(application::AlignmentAnalysisJobId jobId) noexcept override;
+
+    [[nodiscard]] std::uint64_t decodedSignatureCountForTesting() const noexcept;
+    [[nodiscard]] std::uint64_t openSessionCountForTesting() const noexcept;
 
 private:
     class Impl;

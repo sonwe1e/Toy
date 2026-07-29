@@ -186,7 +186,6 @@ TEST(RenderAckRelayTests, DrainsAcknowledgementAndPostsOnlyFromRelayWorker) {
     ASSERT_EQ(relay.tryPublishAcknowledgement(acknowledgement),
               platform::PresentationAckPushResult::Accepted);
     ASSERT_TRUE(events->waitForCriticalCount(1U, 1s));
-    ASSERT_TRUE(waitUntil([&relay] { return relay.statistics().itemUpdates == 1U; }, 1s));
 
     const std::vector<application::ApplicationEvent> posted = events->criticalEvents();
     ASSERT_EQ(posted.size(), 1U);
@@ -199,14 +198,56 @@ TEST(RenderAckRelayTests, DrainsAcknowledgementAndPostsOnlyFromRelayWorker) {
     EXPECT_EQ(statistics.ackNotifications, 1U);
     EXPECT_EQ(statistics.acknowledgementsPopped, 1U);
     EXPECT_EQ(statistics.criticalPostsAccepted, 1U);
-    EXPECT_EQ(statistics.updateRequests, 1U);
+    EXPECT_EQ(statistics.ackBackpressureNotifications, 0U);
+    EXPECT_EQ(statistics.updateRequests, 0U);
+    EXPECT_EQ(statistics.renderRetryRequests, 0U);
     EXPECT_EQ(statistics.workerThread, statistics.lastCriticalPostThread);
     EXPECT_EQ(statistics.workerThread, events->lastCriticalThread());
     EXPECT_NE(statistics.workerThread, renderCaller);
     EXPECT_TRUE(relay.shutdown(2s));
 }
 
-TEST(RenderAckRelayTests, PopQueuesRenderRetryBeforeBackpressuredCriticalPostReturns) {
+TEST(RenderAckRelayTests, CountsCanonicalGapsOnlyWithinOnePlaybackScope) {
+    auto mailbox = std::make_shared<platform::PresentationAckMailbox>();
+    auto events = std::make_shared<RecordingEventSink>();
+    RenderAckRelay relay{mailbox, events};
+
+    ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(1U, 10)),
+              platform::PresentationAckPushResult::Accepted);
+    ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(2U, 12)),
+              platform::PresentationAckPushResult::Accepted);
+    ASSERT_TRUE(events->waitForCriticalCount(2U, 1s));
+
+    const RenderAckRelayStatistics statistics = relay.statistics();
+    EXPECT_EQ(statistics.acknowledgementsPopped, 2U);
+    EXPECT_EQ(statistics.canonicalFrameGaps, 1U);
+    EXPECT_EQ(statistics.canonicalFrameRegressions, 0U);
+    EXPECT_TRUE(relay.shutdown(2s));
+}
+
+TEST(RenderAckRelayTests, CountsRegressionButResetsSequenceForAnotherPlaybackGeneration) {
+    auto mailbox = std::make_shared<platform::PresentationAckMailbox>();
+    auto events = std::make_shared<RecordingEventSink>();
+    RenderAckRelay relay{mailbox, events};
+
+    ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(1U, 10)),
+              platform::PresentationAckPushResult::Accepted);
+    ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(2U, 9)),
+              platform::PresentationAckPushResult::Accepted);
+    ASSERT_TRUE(events->waitForCriticalCount(2U, 1s));
+    application::FrameSetPresented nextScope = makeAcknowledgement(3U, 40);
+    nextScope.context.playback.playbackGeneration = domain::PlaybackGeneration{6U};
+    ASSERT_EQ(relay.tryPublishAcknowledgement(nextScope),
+              platform::PresentationAckPushResult::Accepted);
+    ASSERT_TRUE(events->waitForCriticalCount(3U, 1s));
+
+    const RenderAckRelayStatistics statistics = relay.statistics();
+    EXPECT_EQ(statistics.canonicalFrameGaps, 0U);
+    EXPECT_EQ(statistics.canonicalFrameRegressions, 1U);
+    EXPECT_TRUE(relay.shutdown(2s));
+}
+
+TEST(RenderAckRelayTests, BackpressureQueuesOneRenderRetryAfterCriticalPostReturns) {
     auto mailbox = std::make_shared<platform::PresentationAckMailbox>();
     auto events = std::make_shared<BlockingEventSink>();
     RenderAckRelay relay{mailbox, events};
@@ -216,7 +257,6 @@ TEST(RenderAckRelayTests, PopQueuesRenderRetryBeforeBackpressuredCriticalPostRet
     ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(1U, 1)),
               platform::PresentationAckPushResult::Accepted);
     ASSERT_TRUE(events->waitUntilEntered(1s));
-    EXPECT_TRUE(waitUntil([&relay] { return relay.statistics().itemUpdates == 1U; }, 1s));
 
     ASSERT_EQ(relay.tryPublishAcknowledgement(makeAcknowledgement(2U, 2)),
               platform::PresentationAckPushResult::Accepted);
@@ -227,9 +267,12 @@ TEST(RenderAckRelayTests, PopQueuesRenderRetryBeforeBackpressuredCriticalPostRet
 
     events->release();
     ASSERT_TRUE(events->waitUntilReturned(1s));
+    EXPECT_TRUE(waitUntil([&relay] { return relay.statistics().itemUpdates == 1U; }, 1s));
     ASSERT_TRUE(
         waitUntil([&relay] { return relay.statistics().acknowledgementsPopped == 3U; }, 1s));
-    EXPECT_GE(relay.statistics().updateRequests, 3U);
+    EXPECT_EQ(relay.statistics().ackBackpressureNotifications, 1U);
+    EXPECT_EQ(relay.statistics().renderRetryRequests, 1U);
+    EXPECT_EQ(relay.statistics().updateRequests, 1U);
     EXPECT_TRUE(relay.shutdown(2s));
 }
 

@@ -22,11 +22,24 @@ namespace dvs::ui {
 struct RenderAckRelayStatistics final {
     std::uint64_t frameNotifications = 0U;
     std::uint64_t ackNotifications = 0U;
+    std::uint64_t ackBackpressureNotifications = 0U;
     std::uint64_t acknowledgementsPopped = 0U;
+    std::uint64_t canonicalFrameGaps = 0U;
+    std::uint64_t canonicalFrameRegressions = 0U;
     std::uint64_t criticalPostsAccepted = 0U;
     std::uint64_t updateRequests = 0U;
+    std::uint64_t renderRetryRequests = 0U;
     std::uint64_t queuedUpdates = 0U;
     std::uint64_t itemUpdates = 0U;
+    std::uint64_t frameToRenderSamples = 0U;
+    std::uint64_t totalFrameToRenderMicroseconds = 0U;
+    std::uint64_t maximumFrameToRenderMicroseconds = 0U;
+    std::uint64_t renderToAckSamples = 0U;
+    std::uint64_t totalRenderToAckMicroseconds = 0U;
+    std::uint64_t maximumRenderToAckMicroseconds = 0U;
+    std::uint64_t frameToAckSamples = 0U;
+    std::uint64_t totalFrameToAckMicroseconds = 0U;
+    std::uint64_t maximumFrameToAckMicroseconds = 0U;
     std::thread::id workerThread;
     std::thread::id lastCriticalPostThread;
 };
@@ -54,7 +67,9 @@ public:
     tryPublishAcknowledgement(const application::FrameSetPresented& acknowledgement) noexcept;
 
     void notifyFramePublished() noexcept override;
+    void notifyFrameRenderStarted() noexcept override;
     void notifyAckPublished() noexcept override;
+    void notifyAckBackpressured() noexcept override;
 
     // Control-thread only. Closing is immediate; waiting is bounded and queued entries are drained.
     [[nodiscard]] bool shutdown(std::chrono::milliseconds timeout) noexcept;

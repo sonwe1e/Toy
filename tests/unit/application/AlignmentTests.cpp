@@ -44,7 +44,36 @@ sequenceFromContent(const std::vector<std::int64_t>& contentFrames) {
     return result;
 }
 
+[[nodiscard]] std::vector<FrameLumaSignature>
+timedSequenceFromContent(const std::vector<std::int64_t>& contentFrames,
+                         const std::int64_t frameDurationMicroseconds) {
+    std::vector<FrameLumaSignature> result = sequenceFromContent(contentFrames);
+    for (std::size_t frame = 0U; frame < result.size(); ++frame) {
+        result[frame].displayTime =
+            domain::MediaTime{static_cast<std::int64_t>(frame) * frameDurationMicroseconds};
+    }
+    return result;
+}
+
 } // namespace
+
+TEST(AlignmentTests, MultiScaleSignatureRetainsDetailHiddenByTheCoarseGrid) {
+    std::array<std::uint8_t, kAlignmentDetailPixels> hardEdges{};
+    std::array<std::uint8_t, kAlignmentDetailPixels> ramps{};
+    for (std::size_t y = 0U; y < kAlignmentDetailHeight; ++y) {
+        for (std::size_t x = 0U; x < kAlignmentDetailWidth; ++x) {
+            hardEdges[(y * kAlignmentDetailWidth) + x] = (x % 4U) < 2U ? 0U : 255U;
+            ramps[(y * kAlignmentDetailWidth) + x] = static_cast<std::uint8_t>((x % 4U) * 85U);
+        }
+    }
+
+    const FrameLumaSignature hard = makeMultiScaleFrameLumaSignature(domain::FrameId{0}, hardEdges);
+    const FrameLumaSignature ramp = makeMultiScaleFrameLumaSignature(domain::FrameId{0}, ramps);
+
+    EXPECT_EQ(hard.luma, ramp.luma);
+    EXPECT_NE(hard.sobelBlocks, ramp.sobelBlocks);
+    EXPECT_NE(hard, ramp);
+}
 
 TEST(AlignmentTests, FindsPositiveTargetFrameOffsetWithStrongEvidence) {
     const std::vector<FrameLumaSignature> reference = sequence(24);
@@ -195,6 +224,129 @@ TEST(AlignmentTests, BandedSequenceAlignmentKeepsConstantEvidenceSuggestionOnly)
     ASSERT_TRUE(result.has_value());
     EXPECT_FLOAT_EQ(result->confidence, 0.0F);
     EXPECT_FALSE(result->autoApplicable);
+}
+
+TEST(AlignmentTests, TimeGuidedBandAlignsThirtyToSixtyFpsWithANarrowBand) {
+    std::vector<std::int64_t> referenceContent;
+    std::vector<std::int64_t> targetContent;
+    for (std::int64_t frame = 0; frame < 10; ++frame) {
+        referenceContent.push_back(frame);
+        targetContent.push_back(frame);
+        targetContent.push_back(frame);
+    }
+    const auto reference = timedSequenceFromContent(referenceContent, 33'334);
+    const auto target = timedSequenceFromContent(targetContent, 16'667);
+
+    const auto result = alignFrameSequences(1U,
+                                            reference,
+                                            target,
+                                            SequenceAlignmentOptions{
+                                                .bandWidth = 1U,
+                                            });
+
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->entries.size(), reference.size());
+    for (std::size_t frame = 0U; frame < result->entries.size(); ++frame) {
+        ASSERT_TRUE(result->entries[frame].sourceFrameId.has_value());
+        const std::int64_t mapped = result->entries[frame].sourceFrameId->value();
+        EXPECT_GE(mapped, static_cast<std::int64_t>(frame * 2U));
+        EXPECT_LE(mapped, static_cast<std::int64_t>((frame * 2U) + 1U));
+    }
+}
+
+TEST(AlignmentTests, AnchorsAreMandatoryDpCellsInsteadOfPostProcessingOverrides) {
+    std::array<std::uint8_t, kAlignmentSignaturePixels> pixels{};
+    pixels.fill(96U);
+    std::vector<FrameLumaSignature> reference;
+    std::vector<FrameLumaSignature> target;
+    for (std::int64_t frame = 0; frame < 12; ++frame) {
+        reference.push_back(makeFrameLumaSignature(domain::FrameId{frame}, pixels));
+        target.push_back(makeFrameLumaSignature(domain::FrameId{frame}, pixels));
+    }
+    const std::array anchors{
+        ManualAlignmentAnchor{
+            .canonicalFrameId = domain::FrameId{2},
+            .sourceFrameId = domain::FrameId{4},
+        },
+        ManualAlignmentAnchor{
+            .canonicalFrameId = domain::FrameId{7},
+            .sourceFrameId = domain::FrameId{9},
+        },
+    };
+
+    const auto result = alignFrameSequences(1U,
+                                            reference,
+                                            target,
+                                            SequenceAlignmentOptions{
+                                                .bandWidth = 4U,
+                                            },
+                                            anchors);
+
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->entries[2U].sourceFrameId, domain::FrameId{4});
+    EXPECT_EQ(result->entries[7U].sourceFrameId, domain::FrameId{9});
+    for (std::size_t frame = 1U; frame < result->entries.size(); ++frame) {
+        if (result->entries[frame - 1U].sourceFrameId.has_value() &&
+            result->entries[frame].sourceFrameId.has_value()) {
+            EXPECT_LT(*result->entries[frame - 1U].sourceFrameId,
+                      *result->entries[frame].sourceFrameId);
+        }
+    }
+}
+
+TEST(AlignmentTests, SegmentConfidenceIsLocalInsteadOfAllOrNothing) {
+    std::vector<std::int64_t> content;
+    for (std::int64_t frame = 0; frame < 90; ++frame) {
+        content.push_back(frame >= 30 && frame < 60 ? 500 : frame);
+    }
+    const auto reference = sequenceFromContent(content);
+    const auto target = sequenceFromContent(content);
+
+    const auto result = alignFrameSequences(1U,
+                                            reference,
+                                            target,
+                                            SequenceAlignmentOptions{
+                                                .bandWidth = 4U,
+                                                .sceneCutDistance = 1.0F,
+                                                .segmentLength = 30U,
+                                                .maximumLowConfidenceRun = 4U,
+                                            });
+
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->segments.size(), 3U);
+    EXPECT_EQ(result->segments[0U].state, AlignmentSegmentState::Accepted);
+    EXPECT_EQ(result->segments[1U].state, AlignmentSegmentState::ReviewRequired);
+    EXPECT_EQ(result->segments[2U].state, AlignmentSegmentState::Accepted);
+    EXPECT_TRUE(result->autoApplicable);
+}
+
+TEST(AlignmentTests, SceneCutCreatesAnExplicitSegmentBoundary) {
+    std::array<std::uint8_t, kAlignmentSignaturePixels> dark{};
+    std::array<std::uint8_t, kAlignmentSignaturePixels> bright{};
+    bright.fill(255U);
+    std::vector<FrameLumaSignature> reference;
+    std::vector<FrameLumaSignature> target;
+    for (std::int64_t frame = 0; frame < 20; ++frame) {
+        const auto& pixels = frame < 10 ? dark : bright;
+        reference.push_back(makeFrameLumaSignature(domain::FrameId{frame}, pixels));
+        target.push_back(makeFrameLumaSignature(domain::FrameId{frame}, pixels));
+    }
+
+    const auto result = alignFrameSequences(1U,
+                                            reference,
+                                            target,
+                                            SequenceAlignmentOptions{
+                                                .sceneCutDistance = 0.20F,
+                                                .segmentLength = 100U,
+                                                .maximumLowConfidenceRun = 100U,
+                                                .minimumSegmentP10Confidence = 0.0F,
+                                            });
+
+    ASSERT_TRUE(result.has_value());
+    ASSERT_EQ(result->segments.size(), 2U);
+    EXPECT_EQ(result->segments[0U].lastCanonicalFrame, domain::FrameId{9});
+    EXPECT_EQ(result->segments[1U].firstCanonicalFrame, domain::FrameId{10});
+    EXPECT_TRUE(result->segments[1U].sceneCutProximity);
 }
 
 TEST(AlignmentTests, ManualAnchorsInterpolateMonotonicallyAndExtendBoundaryOffsets) {

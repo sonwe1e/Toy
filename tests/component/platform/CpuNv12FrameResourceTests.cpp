@@ -1,7 +1,10 @@
 #include "dvs/platform/FrameResourceFactory.h"
 
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
+#include <utility>
 #include <vector>
 
 namespace dvs::platform {
@@ -74,6 +77,94 @@ TEST(CpuNv12FrameResourceTests, RejectsInvalidLayoutsAndDoesNotLeakBudgetOnFailu
 
     EXPECT_FALSE(factory.createCpuNv12(valid, colorMetadata, y, uv).has_value());
     EXPECT_EQ(budget.reservedBytes(), 0U);
+}
+
+TEST(CpuNv12FrameResourceTests, WritableAcquisitionSealsWithoutAPlaneCopy) {
+    const Nv12FrameLayout layout{
+        .width = 4,
+        .height = 2,
+        .yStride = 4,
+        .uvStride = 4,
+    };
+    FrameBudget budget{12U};
+    FrameResourceFactory factory{budget};
+    Nv12BufferPool pool;
+
+    std::optional<WritableCpuNv12Frame> writable =
+        factory.acquireWritableCpuNv12(layout, domain::ColorMetadata{}, pool);
+    ASSERT_TRUE(writable.has_value());
+    std::fill(writable->yPlane().begin(), writable->yPlane().end(), 17U);
+    std::fill(writable->uvPlane().begin(), writable->uvPlane().end(), 29U);
+    const std::uint8_t* const writableAddress = writable->yPlane().data();
+
+    std::optional<application::FrameHandle> handle = std::move(*writable).seal();
+    ASSERT_TRUE(handle.has_value());
+    const auto resource = std::dynamic_pointer_cast<const CpuNv12FrameResource>(handle->resource());
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->yPlane().data(), writableAddress);
+    EXPECT_EQ(resource->yPlane().front(), 17U);
+    EXPECT_EQ(resource->uvPlane().front(), 29U);
+}
+
+TEST(CpuNv12FrameResourceTests, BufferPoolReusesReleasedStorage) {
+    Nv12BufferPool pool{1U};
+    const std::uint8_t* firstAddress = nullptr;
+    {
+        std::optional<Nv12BufferPool::Buffer> first = pool.acquire(4'096U);
+        ASSERT_TRUE(first.has_value());
+        firstAddress = first->bytes().data();
+    }
+    std::optional<Nv12BufferPool::Buffer> second = pool.acquire(4'096U);
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->bytes().data(), firstAddress);
+}
+
+TEST(CpuP010FrameResourceTests, PreservesSixteenBitPlanesAndAccountsTheirFullBudget) {
+    const P010FrameLayout layout{
+        .width = 3U,
+        .height = 3U,
+        .yStride = 8U,
+        .uvStride = 8U,
+    };
+    const std::optional<P010PlaneByteCounts> byteCounts = layout.byteCounts();
+    ASSERT_TRUE(byteCounts.has_value());
+    EXPECT_EQ(byteCounts->y, 24U);
+    EXPECT_EQ(byteCounts->uv, 16U);
+
+    FrameBudget budget{byteCounts->total()};
+    FrameResourceFactory factory{budget};
+    std::vector<std::uint8_t> y(byteCounts->y, 0U);
+    std::vector<std::uint8_t> uv(byteCounts->uv, 0U);
+    y[0U] = 0x00U;
+    y[1U] = 0x40U;
+    uv[0U] = 0x00U;
+    uv[1U] = 0x80U;
+    auto handle = factory.createCpuP010(layout, domain::ColorMetadata{}, y, uv);
+    ASSERT_TRUE(handle.has_value());
+
+    const auto resource = std::dynamic_pointer_cast<const CpuP010FrameResource>(handle->resource());
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->yPlane()[1U], 0x40U);
+    EXPECT_EQ(resource->uvPlane()[1U], 0x80U);
+    EXPECT_EQ(resource->byteCount(), 40U);
+    EXPECT_EQ(handle->accountedBytes(), 40U);
+}
+
+TEST(CpuP010FrameResourceTests, RejectsOddOrUndersizedByteStrides) {
+    EXPECT_FALSE((P010FrameLayout{
+                      .width = 3U,
+                      .height = 2U,
+                      .yStride = 6U,
+                      .uvStride = 7U,
+                  })
+                     .isValid());
+    EXPECT_FALSE((P010FrameLayout{
+                      .width = 3U,
+                      .height = 2U,
+                      .yStride = 5U,
+                      .uvStride = 8U,
+                  })
+                     .isValid());
 }
 
 } // namespace dvs::platform

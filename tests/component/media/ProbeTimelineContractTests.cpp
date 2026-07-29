@@ -42,7 +42,12 @@ namespace {
         .codecId = "h264",
         .pixelFormatId = "nv12",
         .bitDepth = 8U,
-        .colorMetadata = {domain::ColorMatrix::kBt709, domain::ColorRange::kLimited, false},
+        .colorMetadata =
+            {
+                .matrix = domain::ColorMatrix::kBt709,
+                .range = domain::ColorRange::kLimited,
+                .matrixInferred = false,
+            },
         .decodeCapabilities = {true, false},
         .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
         .sourceIdentity = std::nullopt,
@@ -60,7 +65,12 @@ namespace {
         .codecId = "h264",
         .pixelFormatId = "nv12",
         .bitDepth = 8U,
-        .colorMetadata = {domain::ColorMatrix::kBt709, domain::ColorRange::kLimited, false},
+        .colorMetadata =
+            {
+                .matrix = domain::ColorMatrix::kBt709,
+                .range = domain::ColorRange::kLimited,
+                .matrixInferred = false,
+            },
         .decodeCapabilities = {true, false},
         .timingConfidence = domain::TimingConfidence::kVariableFrameRate,
         .sourceIdentity = std::nullopt,

@@ -1,7 +1,9 @@
 #include "dvs/media/AlignmentAnalysisService.h"
 
-#include "dvs/media/MultiSourceFrameProvider.h"
-#include "dvs/platform/FrameBudget.h"
+#include "dvs/application/AlignmentWorkEstimator.h"
+
+#include "SignatureCache.h"
+#include "SignatureDecodeSession.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -13,13 +15,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace dvs::media {
 namespace {
@@ -46,103 +51,15 @@ context(const AnalysisRequest& request) noexcept {
                : application::AlignmentAnalysisKind::Sequence;
 }
 
-[[nodiscard]] std::uint64_t totalFrames(const AnalysisRequest& request) noexcept {
-    return std::visit(
-        [](const auto& value) {
-            std::uint64_t total = 0U;
-            for (const domain::ComparisonSource& source : value.sources) {
-                if (source.descriptor.frameCount.value > 0) {
-                    total += static_cast<std::uint64_t>(source.descriptor.frameCount.value);
-                }
-            }
-            return total;
-        },
-        request);
-}
-
-[[nodiscard]] domain::MediaError serviceError(std::string detail) {
+[[nodiscard]] domain::MediaError serviceError(std::string detail,
+                                              const domain::SourceId sourceId = 0) {
     return domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
                                   domain::MediaOperation::kMediaDecode,
-                                  std::nullopt,
+                                  sourceId == 0 ? std::nullopt
+                                                : std::optional<domain::SourceId>{sourceId},
                                   true,
                                   std::move(detail));
 }
-
-class EventQueue final : public application::IApplicationEventSink {
-public:
-    [[nodiscard]] application::EventPostResult
-    postCritical(application::ApplicationEvent event) noexcept override {
-        {
-            std::scoped_lock lock(mutex_);
-            if (closed_) {
-                return application::EventPostResult::Closed;
-            }
-            critical_.push_back(std::move(event));
-        }
-        condition_.notify_one();
-        return application::EventPostResult::Accepted;
-    }
-
-    [[nodiscard]] application::EventPostResult
-    postRealtime(application::ApplicationEvent event) noexcept override {
-        {
-            std::scoped_lock lock(mutex_);
-            if (closed_) {
-                return application::EventPostResult::Closed;
-            }
-            realtime_ = std::move(event);
-        }
-        condition_.notify_one();
-        return application::EventPostResult::Accepted;
-    }
-
-    void closeRealtimeIngress() noexcept override {
-        std::scoped_lock lock(mutex_);
-        realtime_.reset();
-    }
-
-    void closeCriticalIngress() noexcept override {
-        {
-            std::scoped_lock lock(mutex_);
-            closed_ = true;
-        }
-        condition_.notify_all();
-    }
-
-    [[nodiscard]] std::optional<application::ApplicationEvent> wait() {
-        std::unique_lock lock(mutex_);
-        condition_.wait(lock,
-                        [this] { return closed_ || !critical_.empty() || realtime_.has_value(); });
-        if (!critical_.empty()) {
-            application::ApplicationEvent event = std::move(critical_.front());
-            critical_.pop_front();
-            return event;
-        }
-        if (realtime_.has_value()) {
-            application::ApplicationEvent event = std::move(*realtime_);
-            realtime_.reset();
-            return event;
-        }
-        return std::nullopt;
-    }
-
-private:
-    std::mutex mutex_;
-    std::condition_variable condition_;
-    std::deque<application::ApplicationEvent> critical_;
-    std::optional<application::ApplicationEvent> realtime_;
-    bool closed_ = false;
-};
-
-struct AnalysisOperation final {
-    AnalysisRequest request;
-    std::weak_ptr<application::IApplicationEventSink> events;
-    std::atomic<bool> canceled = false;
-
-    AnalysisOperation(AnalysisRequest requestValue,
-                      std::weak_ptr<application::IApplicationEventSink> eventsValue)
-        : request(std::move(requestValue)), events(std::move(eventsValue)) {}
-};
 
 void post(const std::weak_ptr<application::IApplicationEventSink>& events,
           application::ApplicationEvent event,
@@ -156,14 +73,128 @@ void post(const std::weak_ptr<application::IApplicationEventSink>& events,
     }
 }
 
+struct AnalysisOperation final {
+    AnalysisRequest request;
+    std::weak_ptr<application::IApplicationEventSink> events;
+    std::atomic<bool> canceled = false;
+
+    AnalysisOperation(AnalysisRequest requestValue,
+                      std::weak_ptr<application::IApplicationEventSink> eventsValue)
+        : request(std::move(requestValue)), events(std::move(eventsValue)) {}
+};
+
+[[nodiscard]] const domain::ComparisonSource*
+findSource(const std::vector<domain::ComparisonSource>& sources,
+           const domain::SourceId sourceId) noexcept {
+    const auto found = std::find_if(sources.begin(), sources.end(), [sourceId](const auto& source) {
+        return source.id == sourceId;
+    });
+    return found == sources.end() ? nullptr : &*found;
+}
+
+[[nodiscard]] std::uint64_t saturatedAdd(const std::uint64_t left,
+                                         const std::uint64_t right) noexcept {
+    return right > (std::numeric_limits<std::uint64_t>::max)() - left
+               ? (std::numeric_limits<std::uint64_t>::max)()
+               : left + right;
+}
+
+[[nodiscard]] std::uint64_t
+dynamicProgrammingUnits(const std::int64_t referenceCount,
+                        const std::int64_t targetCount,
+                        const application::SequenceAlignmentOptions& options) noexcept {
+    std::uint64_t units = 0U;
+    for (std::int64_t prefix = 0; prefix <= referenceCount; ++prefix) {
+        const std::int64_t center = prefix + options.expectedOffset;
+        const std::int64_t first =
+            std::max<std::int64_t>(0, center - static_cast<std::int64_t>(options.bandWidth));
+        const std::int64_t last =
+            std::min(targetCount, center + static_cast<std::int64_t>(options.bandWidth));
+        if (last >= first) {
+            units = saturatedAdd(units, static_cast<std::uint64_t>(last - first + 1));
+        }
+    }
+    return units;
+}
+
+struct GlobalPlan final {
+    application::GlobalOffsetEstimationOptions options;
+    std::vector<domain::FrameId> anchors;
+};
+
+[[nodiscard]] std::optional<GlobalPlan>
+buildGlobalPlan(const application::AlignmentEstimateRequest& request) {
+    const domain::ComparisonSource* const canonical =
+        findSource(request.sources, request.canonicalSourceId);
+    if (canonical == nullptr || !request.options.isValid() ||
+        request.candidateSampleCount < request.options.minimumEvidence ||
+        canonical->descriptor.frameCount.value <
+            static_cast<std::int64_t>(request.options.minimumEvidence)) {
+        return std::nullopt;
+    }
+
+    GlobalPlan plan{.options = request.options};
+    const std::int64_t canonicalFrameCount = canonical->descriptor.frameCount.value;
+    const std::int64_t maximumWindow =
+        (canonicalFrameCount - static_cast<std::int64_t>(plan.options.minimumEvidence)) / 2;
+    plan.options.minimumOffset = std::max(plan.options.minimumOffset, -maximumWindow);
+    plan.options.maximumOffset = std::min(plan.options.maximumOffset, maximumWindow);
+    const std::int64_t safeFirst = std::max<std::int64_t>(0, -plan.options.minimumOffset);
+    const std::int64_t safeLast =
+        canonicalFrameCount - 1 - std::max<std::int64_t>(0, plan.options.maximumOffset);
+    if (safeLast < safeFirst ||
+        static_cast<std::uint64_t>(safeLast - safeFirst + 1) < request.options.minimumEvidence) {
+        return std::nullopt;
+    }
+
+    const std::size_t sampleCount = std::min<std::size_t>(
+        request.candidateSampleCount, static_cast<std::size_t>(safeLast - safeFirst + 1));
+    plan.anchors.reserve(sampleCount);
+    for (std::size_t index = 0U; index < sampleCount; ++index) {
+        const std::int64_t frame =
+            sampleCount == 1U
+                ? safeFirst
+                : safeFirst + static_cast<std::int64_t>(
+                                  (static_cast<std::uint64_t>(safeLast - safeFirst) * index) /
+                                  (sampleCount - 1U));
+        if (plan.anchors.empty() || plan.anchors.back().value() != frame) {
+            plan.anchors.emplace_back(frame);
+        }
+    }
+    return plan;
+}
+
+[[nodiscard]] std::vector<domain::FrameId>
+targetFrames(const domain::ComparisonSource& source,
+             const std::vector<domain::FrameId>& anchors,
+             const application::GlobalOffsetEstimationOptions& options) {
+    std::set<std::int64_t> unique;
+    for (const domain::FrameId anchor : anchors) {
+        for (std::int64_t offset = options.minimumOffset; offset <= options.maximumOffset;
+             ++offset) {
+            const std::int64_t frame = anchor.value() + offset;
+            if (frame >= 0 && frame < source.descriptor.frameCount.value) {
+                unique.insert(frame);
+            }
+            if (offset == options.maximumOffset) {
+                break;
+            }
+        }
+    }
+    std::vector<domain::FrameId> frames;
+    frames.reserve(unique.size());
+    for (const std::int64_t frame : unique) {
+        frames.emplace_back(frame);
+    }
+    return frames;
+}
+
 } // namespace
 
 class AlignmentAnalysisService::Impl final {
 public:
-    Impl(platform::FrameBudget& frameBudget, const std::size_t queueCapacity)
-        : queueCapacity_(std::max<std::size_t>(1U, queueCapacity)),
-          provider_(std::make_unique<MultiSourceFrameProvider>(frameBudget, 16U, true)),
-          worker_([this] { run(); }) {}
+    explicit Impl(const std::size_t queueCapacity)
+        : queueCapacity_(std::max<std::size_t>(1U, queueCapacity)), worker_([this] { run(); }) {}
 
     ~Impl() {
         shutdown();
@@ -208,17 +239,74 @@ public:
             if (active_ && jobId(active_->request) == requestedJobId) {
                 active = active_;
                 active->canceled.store(true, std::memory_order_release);
+                for (internal::SignatureDecodeSession* const decoder : activeDecoders_) {
+                    decoder->requestInterrupt();
+                }
             }
-        }
-        if (active) {
-            provider_->cancel(context(active->request));
         }
         if (queued) {
             postCanceled(*queued, application::CancellationReason::UserRequested);
         }
     }
 
+    [[nodiscard]] std::uint64_t decodedSignatureCount() const noexcept {
+        return decodedSignatureCount_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::uint64_t openSessionCount() const noexcept {
+        return openSessionCount_.load(std::memory_order_acquire);
+    }
+
 private:
+    class RegisteredDecoder final {
+    public:
+        RegisteredDecoder(Impl& owner,
+                          const domain::ComparisonSource& source,
+                          const std::atomic<bool>& cancellation)
+            : owner_(owner), decoder_(source.id, source.descriptor) {
+            status_ = decoder_.open(cancellation);
+            if (status_) {
+                std::scoped_lock lock(owner_.mutex_);
+                owner_.activeDecoders_.push_back(&decoder_);
+                owner_.openSessionCount_.fetch_add(1U, std::memory_order_release);
+                registered_ = true;
+            }
+        }
+
+        ~RegisteredDecoder() {
+            if (registered_) {
+                std::scoped_lock lock(owner_.mutex_);
+                const auto found = std::find(
+                    owner_.activeDecoders_.begin(), owner_.activeDecoders_.end(), &decoder_);
+                if (found != owner_.activeDecoders_.end()) {
+                    owner_.activeDecoders_.erase(found);
+                }
+                decoder_.close();
+                owner_.openSessionCount_.fetch_sub(1U, std::memory_order_release);
+            }
+        }
+
+        [[nodiscard]] const domain::Status& status() const noexcept {
+            return status_;
+        }
+
+        [[nodiscard]] internal::SignatureDecodeSession& decoder() noexcept {
+            return decoder_;
+        }
+
+    private:
+        Impl& owner_;
+        internal::SignatureDecodeSession decoder_;
+        domain::Status status_ = domain::Status::success();
+        bool registered_ = false;
+    };
+
+    struct ProgressState final {
+        application::AlignmentWorkEstimate work;
+        std::uint64_t completed = 0U;
+        std::uint64_t lastPublished = 0U;
+    };
+
     void postCanceled(const AnalysisOperation& operation,
                       const application::CancellationReason reason) const noexcept {
         post(operation.events,
@@ -241,121 +329,395 @@ private:
              }});
     }
 
-    [[nodiscard]] bool waitForOpen(const std::shared_ptr<AnalysisOperation>& operation,
-                                   const std::shared_ptr<EventQueue>& queue) {
-        for (;;) {
-            const std::optional<application::ApplicationEvent> event = queue->wait();
-            if (!event.has_value()) {
-                return false;
-            }
-            const auto* terminal = std::get_if<application::RequestTerminal>(&*event);
-            if (terminal == nullptr) {
-                continue;
-            }
-            if (const auto* failed = std::get_if<application::RequestFailed>(terminal)) {
-                postFailed(*operation, failed->error);
-                return false;
-            }
-            if (const auto* canceled = std::get_if<application::RequestCanceled>(terminal)) {
-                postCanceled(*operation, canceled->reason);
-                return false;
-            }
-            return true;
-        }
-    }
-
-    void waitForAnalysis(const std::shared_ptr<AnalysisOperation>& operation,
-                         const std::shared_ptr<EventQueue>& queue) {
-        std::vector<application::GlobalOffsetEstimate> estimates;
-        std::vector<application::SequenceAlignmentResult> sequenceResults;
-        bool hasPayload = false;
-        for (;;) {
-            const std::optional<application::ApplicationEvent> event = queue->wait();
-            if (!event.has_value()) {
-                postFailed(*operation, serviceError("The analysis event stream closed."));
-                return;
-            }
-            if (std::holds_alternative<application::AlignmentAnalysisProgress>(*event)) {
-                post(operation->events, *event, true);
-                continue;
-            }
-            if (const auto* result = std::get_if<application::AlignmentEstimated>(&*event)) {
-                estimates = result->estimates;
-                hasPayload = true;
-                continue;
-            }
-            if (const auto* result = std::get_if<application::SequenceAlignmentAnalyzed>(&*event)) {
-                sequenceResults = result->results;
-                hasPayload = true;
-                continue;
-            }
-            const auto* terminal = std::get_if<application::RequestTerminal>(&*event);
-            if (terminal == nullptr) {
-                continue;
-            }
-            if (const auto* failed = std::get_if<application::RequestFailed>(terminal)) {
-                postFailed(*operation, failed->error);
-                return;
-            }
-            if (const auto* canceled = std::get_if<application::RequestCanceled>(terminal)) {
-                postCanceled(*operation, canceled->reason);
-                return;
-            }
-            if (!hasPayload) {
-                postFailed(*operation,
-                           serviceError("Analysis completed without a result payload."));
-                return;
-            }
-            post(operation->events,
-                 application::ApplicationEvent{application::AlignmentAnalysisCompleted{
-                     .jobId = jobId(operation->request),
-                     .context = context(operation->request),
-                     .kind = kind(operation->request),
-                     .estimates = std::move(estimates),
-                     .sequenceResults = std::move(sequenceResults),
-                 }});
-            return;
-        }
-    }
-
-    void execute(const std::shared_ptr<AnalysisOperation>& operation) {
-        if (operation->canceled.load(std::memory_order_acquire)) {
-            postCanceled(*operation, application::CancellationReason::UserRequested);
-            return;
-        }
-        post(operation->events,
+    void postStarted(const AnalysisOperation& operation,
+                     const application::AlignmentWorkEstimate& work) const noexcept {
+        post(operation.events,
              application::ApplicationEvent{application::AlignmentAnalysisStarted{
-                 .jobId = jobId(operation->request),
-                 .context = context(operation->request),
-                 .kind = kind(operation->request),
-                 .totalFrames = totalFrames(operation->request),
+                 .jobId = jobId(operation.request),
+                 .context = context(operation.request),
+                 .kind = kind(operation.request),
+                 .work = work,
              }});
+    }
 
-        const auto queue = std::make_shared<EventQueue>();
-        const application::FrameProviderOpenRequest open{
-            .context = context(operation->request),
-            .sources =
-                std::visit([](const auto& value) { return value.sources; }, operation->request),
-            .canonicalSourceId = std::visit(
-                [](const auto& value) { return value.canonicalSourceId; }, operation->request),
-            .timeline =
-                *std::visit([](const auto& value) { return value.timeline; }, operation->request),
-        };
-        if (provider_->submit(open, queue) != application::PortSubmitResult::Accepted) {
-            postFailed(*operation, serviceError("The analysis decoder rejected source opening."));
+    void advanceProgress(const AnalysisOperation& operation,
+                         ProgressState& progress,
+                         const std::uint64_t units,
+                         const application::AlignmentAnalysisPhase phase,
+                         const bool force = false) const noexcept {
+        progress.completed =
+            std::min(progress.work.totalUnits, saturatedAdd(progress.completed, units));
+        if (!force && progress.completed != progress.work.totalUnits &&
+            progress.completed - progress.lastPublished < 32U) {
             return;
         }
-        if (!waitForOpen(operation, queue)) {
+        progress.lastPublished = progress.completed;
+        post(operation.events,
+             application::ApplicationEvent{application::AlignmentAnalysisProgress{
+                 .jobId = jobId(operation.request),
+                 .context = context(operation.request),
+                 .kind = kind(operation.request),
+                 .phase = phase,
+                 .completedUnits = progress.completed,
+                 .work = progress.work,
+             }},
+             true);
+    }
+
+    [[nodiscard]] bool canceled(const AnalysisOperation& operation) const noexcept {
+        return operation.canceled.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] std::optional<std::vector<application::FrameLumaSignature>>
+    collectFrames(const AnalysisOperation& operation,
+                  const domain::ComparisonSource& source,
+                  const std::vector<domain::FrameId>& frames,
+                  ProgressState& progress,
+                  domain::MediaError* const failure) {
+        std::vector<application::FrameLumaSignature> signatures;
+        signatures.reserve(frames.size());
+        std::vector<domain::FrameId> missing;
+        missing.reserve(frames.size());
+        for (const domain::FrameId frame : frames) {
+            const auto cached = signatureCache_.find(source.descriptor, frame);
+            if (cached.has_value()) {
+                signatures.push_back(*cached);
+                advanceProgress(operation,
+                                progress,
+                                1U,
+                                application::AlignmentAnalysisPhase::CollectingSignatures);
+            } else {
+                missing.push_back(frame);
+            }
+        }
+        if (!missing.empty()) {
+            RegisteredDecoder registered{*this, source, operation.canceled};
+            if (!registered.status()) {
+                *failure = registered.status().error();
+                return std::nullopt;
+            }
+            for (const domain::FrameId frame : missing) {
+                auto signature = registered.decoder().decodeSignature(frame, operation.canceled);
+                if (!signature) {
+                    *failure = signature.error();
+                    return std::nullopt;
+                }
+                decodedSignatureCount_.fetch_add(1U, std::memory_order_release);
+                signatureCache_.store(source.descriptor, signature.value());
+                signatures.push_back(std::move(signature).value());
+                advanceProgress(operation,
+                                progress,
+                                1U,
+                                application::AlignmentAnalysisPhase::CollectingSignatures);
+            }
+        }
+        std::sort(signatures.begin(), signatures.end(), [](const auto& left, const auto& right) {
+            return left.frameId < right.frameId;
+        });
+        advanceProgress(operation,
+                        progress,
+                        0U,
+                        application::AlignmentAnalysisPhase::CollectingSignatures,
+                        true);
+        return signatures;
+    }
+
+    [[nodiscard]] std::optional<std::vector<application::FrameLumaSignature>>
+    collectRange(const AnalysisOperation& operation,
+                 const domain::ComparisonSource& source,
+                 ProgressState& progress,
+                 domain::MediaError* const failure) {
+        const std::int64_t frameCount = source.descriptor.frameCount.value;
+        auto cached = signatureCache_.findRange(source.descriptor, frameCount);
+        if (cached.has_value()) {
+            advanceProgress(operation,
+                            progress,
+                            static_cast<std::uint64_t>(frameCount),
+                            application::AlignmentAnalysisPhase::CollectingSignatures,
+                            true);
+            return cached;
+        }
+
+        RegisteredDecoder registered{*this, source, operation.canceled};
+        if (!registered.status()) {
+            *failure = registered.status().error();
+            return std::nullopt;
+        }
+        auto signatures = registered.decoder().decodeRange(
+            domain::FrameId{0},
+            frameCount,
+            operation.canceled,
+            [this, &operation, &progress](const std::uint64_t units) {
+                decodedSignatureCount_.fetch_add(units, std::memory_order_release);
+                advanceProgress(operation,
+                                progress,
+                                units,
+                                application::AlignmentAnalysisPhase::CollectingSignatures);
+            });
+        if (!signatures) {
+            *failure = signatures.error();
+            return std::nullopt;
+        }
+        signatureCache_.storeRange(source.descriptor, signatures.value());
+        advanceProgress(operation,
+                        progress,
+                        0U,
+                        application::AlignmentAnalysisPhase::CollectingSignatures,
+                        true);
+        return std::move(signatures).value();
+    }
+
+    void completeGlobal(const AnalysisOperation& operation,
+                        std::vector<application::GlobalOffsetEstimate> estimates) const noexcept {
+        post(operation.events,
+             application::ApplicationEvent{application::AlignmentAnalysisCompleted{
+                 .jobId = jobId(operation.request),
+                 .context = context(operation.request),
+                 .kind = application::AlignmentAnalysisKind::GlobalOffset,
+                 .estimates = std::move(estimates),
+             }});
+    }
+
+    void
+    completeSequence(const AnalysisOperation& operation,
+                     std::vector<application::SequenceAlignmentResult> results) const noexcept {
+        post(operation.events,
+             application::ApplicationEvent{application::AlignmentAnalysisCompleted{
+                 .jobId = jobId(operation.request),
+                 .context = context(operation.request),
+                 .kind = application::AlignmentAnalysisKind::Sequence,
+                 .sequenceResults = std::move(results),
+             }});
+    }
+
+    void executeGlobal(const AnalysisOperation& operation,
+                       const application::AlignmentEstimateRequest& request) {
+        const std::optional<GlobalPlan> plan = buildGlobalPlan(request);
+        const application::AlignmentWorkEstimate work = application::estimateAlignmentWork(request);
+        if (!plan.has_value() || work.totalUnits == 0U) {
+            postFailed(operation,
+                       serviceError("The global alignment request cannot form a valid sample "
+                                    "plan."));
             return;
         }
-        const application::PortSubmitResult admitted = std::visit(
-            [this, &queue](const auto& request) { return provider_->submit(request, queue); },
-            operation->request);
-        if (admitted != application::PortSubmitResult::Accepted) {
-            postFailed(*operation, serviceError("The analysis decoder rejected the job."));
+        postStarted(operation, work);
+        ProgressState progress{.work = work};
+        domain::MediaError failure = serviceError("Signature collection failed.");
+        const domain::ComparisonSource* const canonical =
+            findSource(request.sources, request.canonicalSourceId);
+        auto reference = collectFrames(operation, *canonical, plan->anchors, progress, &failure);
+        if (!reference.has_value()) {
+            canceled(operation)
+                ? postCanceled(operation, application::CancellationReason::UserRequested)
+                : postFailed(operation, std::move(failure));
             return;
         }
-        waitForAnalysis(operation, queue);
+
+        std::vector<application::GlobalOffsetEstimate> estimates;
+        estimates.reserve(request.sources.size() - 1U);
+        for (const domain::ComparisonSource& source : request.sources) {
+            if (source.id == request.canonicalSourceId) {
+                continue;
+            }
+            auto target = collectFrames(operation,
+                                        source,
+                                        targetFrames(source, plan->anchors, plan->options),
+                                        progress,
+                                        &failure);
+            if (!target.has_value()) {
+                canceled(operation)
+                    ? postCanceled(operation, application::CancellationReason::UserRequested)
+                    : postFailed(operation, std::move(failure));
+                return;
+            }
+            advanceProgress(operation,
+                            progress,
+                            0U,
+                            application::AlignmentAnalysisPhase::ComputingAlignment,
+                            true);
+            const auto estimate =
+                application::estimateGlobalOffset(source.id, *reference, *target, plan->options);
+            if (!estimate.has_value()) {
+                postFailed(operation,
+                           serviceError("Collected signatures could not produce a global "
+                                        "alignment estimate.",
+                                        source.id));
+                return;
+            }
+            estimates.push_back(*estimate);
+        }
+        if (canceled(operation)) {
+            postCanceled(operation, application::CancellationReason::UserRequested);
+            return;
+        }
+        advanceProgress(operation,
+                        progress,
+                        work.totalUnits - progress.completed,
+                        application::AlignmentAnalysisPhase::ComputingAlignment,
+                        true);
+        completeGlobal(operation, std::move(estimates));
+    }
+
+    [[nodiscard]] bool validateSequence(const application::SequenceAlignmentRequest& request,
+                                        domain::MediaError* const error) const {
+        if (!request.options.isValid() || request.maximumFrameCount == 0U ||
+            request.maximumFrameCount > 100'000U ||
+            findSource(request.sources, request.canonicalSourceId) == nullptr) {
+            *error = serviceError("The sequence alignment request is invalid.");
+            return false;
+        }
+        for (std::size_t index = 0U; index < request.expectedOffsets.size(); ++index) {
+            const application::SourceFrameOffset& offset = request.expectedOffsets[index];
+            const bool known = findSource(request.sources, offset.sourceId) != nullptr;
+            const bool duplicate = std::any_of(
+                request.expectedOffsets.begin() + static_cast<std::ptrdiff_t>(index + 1U),
+                request.expectedOffsets.end(),
+                [&offset](const auto& other) { return other.sourceId == offset.sourceId; });
+            if (!known || duplicate || offset.sourceId == request.canonicalSourceId ||
+                std::abs(offset.frames) > static_cast<std::int64_t>(request.options.bandWidth)) {
+                *error = serviceError(
+                    "Sequence expected offsets must uniquely name open non-canonical sources.",
+                    offset.sourceId);
+                return false;
+            }
+        }
+        for (std::size_t index = 0U; index < request.manualAnchors.size(); ++index) {
+            const application::SourceAlignmentAnchors& anchors = request.manualAnchors[index];
+            const domain::ComparisonSource* const source =
+                findSource(request.sources, anchors.sourceId);
+            const bool duplicate = std::any_of(
+                request.manualAnchors.begin() + static_cast<std::ptrdiff_t>(index + 1U),
+                request.manualAnchors.end(),
+                [&anchors](const auto& other) { return other.sourceId == anchors.sourceId; });
+            if (source == nullptr || duplicate || anchors.sourceId == request.canonicalSourceId ||
+                !anchors.isValid()) {
+                *error =
+                    serviceError("Sequence anchors must uniquely name open non-canonical sources.",
+                                 anchors.sourceId);
+                return false;
+            }
+            const domain::ComparisonSource* const canonical =
+                findSource(request.sources, request.canonicalSourceId);
+            if (std::any_of(anchors.anchors.begin(),
+                            anchors.anchors.end(),
+                            [&](const application::ManualAlignmentAnchor& anchor) {
+                                return anchor.canonicalFrameId.value() >=
+                                           canonical->descriptor.frameCount.value ||
+                                       anchor.sourceFrameId.value() >=
+                                           source->descriptor.frameCount.value;
+                            })) {
+                *error =
+                    serviceError("Sequence anchors are outside the source timeline.", source->id);
+                return false;
+            }
+        }
+        for (const domain::ComparisonSource& source : request.sources) {
+            if (source.descriptor.frameCount.value <= 0 ||
+                source.descriptor.frameCount.value >
+                    static_cast<std::int64_t>(request.maximumFrameCount)) {
+                *error =
+                    serviceError("A sequence source exceeds the supported frame count.", source.id);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void executeSequence(const AnalysisOperation& operation,
+                         const application::SequenceAlignmentRequest& request) {
+        domain::MediaError failure = serviceError("The sequence request is invalid.");
+        const application::AlignmentWorkEstimate work = application::estimateAlignmentWork(request);
+        if (!validateSequence(request, &failure) || work.totalUnits == 0U) {
+            postFailed(operation, std::move(failure));
+            return;
+        }
+        postStarted(operation, work);
+        ProgressState progress{.work = work};
+        const domain::ComparisonSource* const canonical =
+            findSource(request.sources, request.canonicalSourceId);
+        auto reference = collectRange(operation, *canonical, progress, &failure);
+        if (!reference.has_value()) {
+            canceled(operation)
+                ? postCanceled(operation, application::CancellationReason::UserRequested)
+                : postFailed(operation, std::move(failure));
+            return;
+        }
+
+        std::vector<application::SequenceAlignmentResult> results;
+        results.reserve(request.sources.size() - 1U);
+        for (const domain::ComparisonSource& source : request.sources) {
+            if (source.id == request.canonicalSourceId) {
+                continue;
+            }
+            auto target = collectRange(operation, source, progress, &failure);
+            if (!target.has_value()) {
+                canceled(operation)
+                    ? postCanceled(operation, application::CancellationReason::UserRequested)
+                    : postFailed(operation, std::move(failure));
+                return;
+            }
+            application::SequenceAlignmentOptions options = request.options;
+            const auto expected = std::find_if(
+                request.expectedOffsets.begin(),
+                request.expectedOffsets.end(),
+                [&source](const auto& offset) { return offset.sourceId == source.id; });
+            options.expectedOffset =
+                expected == request.expectedOffsets.end() ? 0 : expected->frames;
+            const auto requestedAnchors =
+                std::find_if(request.manualAnchors.begin(),
+                             request.manualAnchors.end(),
+                             [&source](const auto& value) { return value.sourceId == source.id; });
+            const std::span<const application::ManualAlignmentAnchor> anchors =
+                requestedAnchors == request.manualAnchors.end()
+                    ? std::span<const application::ManualAlignmentAnchor>{}
+                    : std::span<const application::ManualAlignmentAnchor>{
+                          requestedAnchors->anchors};
+            advanceProgress(operation,
+                            progress,
+                            0U,
+                            application::AlignmentAnalysisPhase::ComputingAlignment,
+                            true);
+            const auto result =
+                application::alignFrameSequences(source.id, *reference, *target, options, anchors);
+            if (!result.has_value()) {
+                postFailed(operation,
+                           serviceError("Collected signatures could not produce a sequence "
+                                        "alignment map.",
+                                        source.id));
+                return;
+            }
+            results.push_back(*result);
+            advanceProgress(operation,
+                            progress,
+                            dynamicProgrammingUnits(static_cast<std::int64_t>(reference->size()),
+                                                    static_cast<std::int64_t>(target->size()),
+                                                    options),
+                            application::AlignmentAnalysisPhase::ComputingAlignment,
+                            true);
+        }
+        if (canceled(operation)) {
+            postCanceled(operation, application::CancellationReason::UserRequested);
+            return;
+        }
+        advanceProgress(operation,
+                        progress,
+                        work.totalUnits - progress.completed,
+                        application::AlignmentAnalysisPhase::ComputingAlignment,
+                        true);
+        completeSequence(operation, std::move(results));
+    }
+
+    void execute(const AnalysisOperation& operation) {
+        std::visit(
+            [this, &operation](const auto& request) {
+                using Request = std::decay_t<decltype(request)>;
+                if constexpr (std::is_same_v<Request, application::AlignmentEstimateRequest>) {
+                    executeGlobal(operation, request);
+                } else {
+                    executeSequence(operation, request);
+                }
+            },
+            operation.request);
     }
 
     void run() {
@@ -376,17 +738,23 @@ private:
                 active_ = operation;
             }
             try {
-                const bool hasSourcesAndTimeline = std::visit(
+                const bool hasMetadata = std::visit(
                     [](const auto& request) {
                         return request.sources.size() >= 2U && request.timeline.has_value();
                     },
                     operation->request);
-                if (!hasSourcesAndTimeline) {
+                if (!hasMetadata) {
                     postFailed(*operation,
                                serviceError("The analysis job is missing source metadata."));
+                } else if (canceled(*operation)) {
+                    postCanceled(*operation, application::CancellationReason::UserRequested);
                 } else {
-                    execute(operation);
+                    execute(*operation);
                 }
+            } catch (const std::exception& exception) {
+                postFailed(*operation,
+                           serviceError("Unexpected analysis service exception: " +
+                                        std::string{exception.what()}));
             } catch (...) {
                 postFailed(*operation, serviceError("Unexpected analysis service exception."));
             }
@@ -412,34 +780,35 @@ private:
             active = active_;
             if (active) {
                 active->canceled.store(true, std::memory_order_release);
+                for (internal::SignatureDecodeSession* const decoder : activeDecoders_) {
+                    decoder->requestInterrupt();
+                }
             }
         }
         for (const auto& operation : queued) {
             postCanceled(*operation, application::CancellationReason::Shutdown);
         }
-        if (active) {
-            provider_->cancel(context(active->request));
-        }
         condition_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
         }
-        provider_.reset();
     }
 
     std::size_t queueCapacity_;
-    std::unique_ptr<MultiSourceFrameProvider> provider_;
+    internal::SignatureCache signatureCache_;
+    std::atomic<std::uint64_t> decodedSignatureCount_ = 0U;
+    std::atomic<std::uint64_t> openSessionCount_ = 0U;
     std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<std::shared_ptr<AnalysisOperation>> queue_;
     std::shared_ptr<AnalysisOperation> active_;
+    std::vector<internal::SignatureDecodeSession*> activeDecoders_;
     bool closed_ = false;
     std::thread worker_;
 };
 
-AlignmentAnalysisService::AlignmentAnalysisService(platform::FrameBudget& frameBudget,
-                                                   const std::size_t queueCapacity)
-    : impl_(std::make_unique<Impl>(frameBudget, queueCapacity)) {}
+AlignmentAnalysisService::AlignmentAnalysisService(const std::size_t queueCapacity)
+    : impl_(std::make_unique<Impl>(queueCapacity)) {}
 
 AlignmentAnalysisService::~AlignmentAnalysisService() = default;
 
@@ -458,6 +827,14 @@ AlignmentAnalysisService::submit(const application::SequenceAlignmentRequest& re
 void AlignmentAnalysisService::cancel(
     const application::AlignmentAnalysisJobId jobIdValue) noexcept {
     impl_->cancel(jobIdValue);
+}
+
+std::uint64_t AlignmentAnalysisService::decodedSignatureCountForTesting() const noexcept {
+    return impl_->decodedSignatureCount();
+}
+
+std::uint64_t AlignmentAnalysisService::openSessionCountForTesting() const noexcept {
+    return impl_->openSessionCount();
 }
 
 } // namespace dvs::media

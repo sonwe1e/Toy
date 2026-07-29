@@ -4,11 +4,15 @@ add_library(
         src/AlignmentAnalysisService.cpp
         src/Module.cpp
         src/MultiSourceFrameProvider.cpp
+        src/PresentationIndexCache.cpp
         src/FrameSetAssembler.cpp
         src/FrameTimelineIndex.cpp
         src/MediaProbe.cpp
         src/SourceDecodeActor.cpp
+        src/SourceFrameCache.cpp
         src/SoftwareDecoder.cpp
+        src/SignatureCache.cpp
+        src/SignatureDecodeSession.cpp
 )
 add_library(dvs::media_ffmpeg ALIAS dvs_media_ffmpeg)
 

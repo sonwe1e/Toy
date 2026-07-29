@@ -1,6 +1,8 @@
 #include "dvs/platform/GpuTransferActor.h"
 
 #include "dvs/platform/CpuNv12FrameResource.h"
+#include "dvs/platform/CpuP010FrameResource.h"
+#include "dvs/platform/D3d11DecodedFrameResource.h"
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/FrameMailbox.h"
 #include "dvs/platform/GraphicsDeviceBroker.h"
@@ -90,8 +92,14 @@ struct VisiblePlaneLayout final {
 
 struct CpuSourceView final {
     domain::SourceId sourceId = 0;
-    std::shared_ptr<const CpuNv12FrameResource> resource;
+    std::shared_ptr<const application::IFrameResource> resource;
     application::FrameGeometry geometry;
+    application::NormalizedFrameFormat format = application::NormalizedFrameFormat::Nv12_8;
+    domain::ColorMetadata colorMetadata;
+    std::span<const std::uint8_t> yPlane;
+    std::span<const std::uint8_t> uvPlane;
+    std::uint32_t yStride = 0U;
+    std::uint32_t uvStride = 0U;
     VisiblePlaneLayout y;
     VisiblePlaneLayout uv;
     std::size_t gpuBytes = 0U;
@@ -99,42 +107,98 @@ struct CpuSourceView final {
 
 struct CpuSetView final {
     std::vector<CpuSourceView> sources;
+    struct DirectSourceView final {
+        domain::SourceId sourceId = 0U;
+        std::shared_ptr<const D3d11DecodedFrameResource> resource;
+        application::FrameGeometry geometry;
+        application::NormalizedFrameFormat format = application::NormalizedFrameFormat::Nv12_8;
+        domain::ColorMetadata colorMetadata;
+        std::size_t gpuBytes = 0U;
+    };
+    std::vector<DirectSourceView> directSources;
     std::size_t stagingBytes = 0U;
 };
 
 [[nodiscard]] std::optional<CpuSourceView>
 inspectSource(const domain::SourceId sourceId, const application::FrameHandle& handle) noexcept {
-    const auto resource = std::dynamic_pointer_cast<const CpuNv12FrameResource>(handle.resource());
-    if (!resource || !handle.isValid() || !resource->colorMetadata().isValid()) {
+    if (!handle.isValid()) {
         return std::nullopt;
     }
 
-    const Nv12FrameLayout& layout = resource->layout();
-    if (!layout.isValid() || handle.geometry().width != layout.width ||
-        handle.geometry().height != layout.height) {
+    std::shared_ptr<const application::IFrameResource> resource;
+    application::NormalizedFrameFormat format = application::NormalizedFrameFormat::Nv12_8;
+    domain::ColorMetadata colorMetadata;
+    std::span<const std::uint8_t> yPlane;
+    std::span<const std::uint8_t> uvPlane;
+    std::uint32_t width = 0U;
+    std::uint32_t height = 0U;
+    std::uint32_t yStride = 0U;
+    std::uint32_t uvStride = 0U;
+    std::uint32_t bytesPerSample = 1U;
+
+    if (const auto nv12 =
+            std::dynamic_pointer_cast<const CpuNv12FrameResource>(handle.resource())) {
+        const Nv12FrameLayout& layout = nv12->layout();
+        if (!layout.isValid()) {
+            return std::nullopt;
+        }
+        resource = nv12;
+        colorMetadata = nv12->colorMetadata();
+        yPlane = nv12->yPlane();
+        uvPlane = nv12->uvPlane();
+        width = layout.width;
+        height = layout.height;
+        yStride = layout.yStride;
+        uvStride = layout.uvStride;
+    } else if (const auto p010 =
+                   std::dynamic_pointer_cast<const CpuP010FrameResource>(handle.resource())) {
+        const P010FrameLayout& layout = p010->layout();
+        if (!layout.isValid()) {
+            return std::nullopt;
+        }
+        resource = p010;
+        format = application::NormalizedFrameFormat::P010_10;
+        colorMetadata = p010->colorMetadata();
+        yPlane = p010->yPlane();
+        uvPlane = p010->uvPlane();
+        width = layout.width;
+        height = layout.height;
+        yStride = layout.yStride;
+        uvStride = layout.uvStride;
+        bytesPerSample = 2U;
+    } else {
         return std::nullopt;
     }
 
-    const std::uint64_t uvWidth64 = (static_cast<std::uint64_t>(layout.width) + 1U) / 2U;
-    const std::uint64_t uvHeight64 = (static_cast<std::uint64_t>(layout.height) + 1U) / 2U;
-    const std::uint64_t uvRowBytes64 = uvWidth64 * 2U;
+    if (!colorMetadata.isValid() || handle.geometry().width != width ||
+        handle.geometry().height != height) {
+        return std::nullopt;
+    }
+
+    const std::uint64_t uvWidth64 = (static_cast<std::uint64_t>(width) + 1U) / 2U;
+    const std::uint64_t uvHeight64 = (static_cast<std::uint64_t>(height) + 1U) / 2U;
+    const std::uint64_t yRowBytes64 = static_cast<std::uint64_t>(width) * bytesPerSample;
+    const std::uint64_t uvRowBytes64 = uvWidth64 * 2U * bytesPerSample;
     if (uvWidth64 > (std::numeric_limits<std::uint32_t>::max)() ||
         uvHeight64 > (std::numeric_limits<std::uint32_t>::max)() ||
+        yRowBytes64 > (std::numeric_limits<std::uint32_t>::max)() ||
         uvRowBytes64 > (std::numeric_limits<std::uint32_t>::max)()) {
         return std::nullopt;
     }
 
     const VisiblePlaneLayout y{
-        .width = layout.width,
-        .height = layout.height,
-        .rowBytes = layout.width,
-        .format = DXGI_FORMAT_R8_UNORM,
+        .width = width,
+        .height = height,
+        .rowBytes = static_cast<std::uint32_t>(yRowBytes64),
+        .format = format == application::NormalizedFrameFormat::P010_10 ? DXGI_FORMAT_R16_UNORM
+                                                                        : DXGI_FORMAT_R8_UNORM,
     };
     const VisiblePlaneLayout uv{
         .width = static_cast<std::uint32_t>(uvWidth64),
         .height = static_cast<std::uint32_t>(uvHeight64),
         .rowBytes = static_cast<std::uint32_t>(uvRowBytes64),
-        .format = DXGI_FORMAT_R8G8_UNORM,
+        .format = format == application::NormalizedFrameFormat::P010_10 ? DXGI_FORMAT_R16G16_UNORM
+                                                                        : DXGI_FORMAT_R8G8_UNORM,
     };
     const std::optional<std::size_t> yBytes = checkedProduct(y.rowBytes, y.height);
     const std::optional<std::size_t> uvBytes = checkedProduct(uv.rowBytes, uv.height);
@@ -150,6 +214,12 @@ inspectSource(const domain::SourceId sourceId, const application::FrameHandle& h
         .sourceId = sourceId,
         .resource = std::move(resource),
         .geometry = handle.geometry(),
+        .format = format,
+        .colorMetadata = colorMetadata,
+        .yPlane = yPlane,
+        .uvPlane = uvPlane,
+        .yStride = yStride,
+        .uvStride = uvStride,
         .y = y,
         .uv = uv,
         .gpuBytes = *gpuBytes,
@@ -162,6 +232,7 @@ inspectSource(const domain::SourceId sourceId, const application::FrameHandle& h
     }
 
     std::vector<CpuSourceView> sources;
+    std::vector<CpuSetView::DirectSourceView> directSources;
     std::size_t stagingBytes = 0U;
 
     for (const application::MappedSourceFrame& entry : set.sources()) {
@@ -170,11 +241,27 @@ inspectSource(const domain::SourceId sourceId, const application::FrameHandle& h
             continue;
         }
 
+        if (const auto direct = std::dynamic_pointer_cast<const D3d11DecodedFrameResource>(
+                entry.frame->resource())) {
+            if (!direct->colorMetadata().isValid() ||
+                direct->byteCount() != entry.frame->accountedBytes()) {
+                return std::nullopt;
+            }
+            directSources.push_back(CpuSetView::DirectSourceView{
+                .sourceId = entry.sourceId,
+                .resource = direct,
+                .geometry = entry.frame->geometry(),
+                .format = direct->format(),
+                .colorMetadata = direct->colorMetadata(),
+                .gpuBytes = direct->byteCount(),
+            });
+            continue;
+        }
+
         std::optional<CpuSourceView> source = inspectSource(entry.sourceId, *entry.frame);
         if (!source) {
             return std::nullopt;
         }
-
         const std::optional<std::size_t> newStagingBytes =
             checkedSum(stagingBytes, source->gpuBytes);
         if (!newStagingBytes) {
@@ -184,10 +271,12 @@ inspectSource(const domain::SourceId sourceId, const application::FrameHandle& h
         sources.push_back(std::move(*source));
     }
 
-    return CpuSetView{
+    CpuSetView result{
         .sources = std::move(sources),
+        .directSources = std::move(directSources),
         .stagingBytes = stagingBytes,
     };
+    return result;
 }
 
 struct TransferTask final {
@@ -205,11 +294,68 @@ struct UploadPlane final {
 
 struct UploadSource final {
     const CpuSourceView* cpu = nullptr;
+    const CpuSetView::DirectSourceView* direct = nullptr;
     std::optional<FrameBudget::Reservation> gpuReservation;
     UploadPlane y;
     UploadPlane uv;
     ComPtr<ID3D11Query> fence;
 };
+
+[[nodiscard]] HRESULT createDirectSource(ID3D11Device* const device,
+                                         const CpuSetView::DirectSourceView& direct,
+                                         UploadSource& output) noexcept {
+    if (direct.resource->deviceGeneration().value() == 0U ||
+        direct.format == application::NormalizedFrameFormat::Bgra8) {
+        return E_INVALIDARG;
+    }
+    ComPtr<ID3D11Device> textureDevice;
+    direct.resource->texture()->GetDevice(textureDevice.GetAddressOf());
+    if (textureDevice.Get() != device) {
+        return E_INVALIDARG;
+    }
+
+    D3D11_TEXTURE2D_DESC textureDescription{};
+    direct.resource->texture()->GetDesc(&textureDescription);
+    const DXGI_FORMAT yFormat = direct.format == application::NormalizedFrameFormat::P010_10
+                                    ? DXGI_FORMAT_R16_UNORM
+                                    : DXGI_FORMAT_R8_UNORM;
+    const DXGI_FORMAT uvFormat = direct.format == application::NormalizedFrameFormat::P010_10
+                                     ? DXGI_FORMAT_R16G16_UNORM
+                                     : DXGI_FORMAT_R8G8_UNORM;
+    const auto createView = [&](const DXGI_FORMAT format,
+                                ComPtr<ID3D11ShaderResourceView>& view) noexcept {
+        D3D11_SHADER_RESOURCE_VIEW_DESC description{};
+        description.Format = format;
+        description.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+        description.Texture2DArray.MostDetailedMip = 0U;
+        description.Texture2DArray.MipLevels = 1U;
+        description.Texture2DArray.FirstArraySlice = direct.resource->arraySlice();
+        description.Texture2DArray.ArraySize = 1U;
+        return device->CreateShaderResourceView(
+            direct.resource->texture(), &description, view.ReleaseAndGetAddressOf());
+    };
+
+    output.direct = &direct;
+    output.y.layout = VisiblePlaneLayout{
+        .width = textureDescription.Width,
+        .height = textureDescription.Height,
+        .rowBytes = 0U,
+        .format = yFormat,
+    };
+    output.uv.layout = VisiblePlaneLayout{
+        .width = (textureDescription.Width + 1U) / 2U,
+        .height = (textureDescription.Height + 1U) / 2U,
+        .rowBytes = 0U,
+        .format = uvFormat,
+    };
+    output.y.texture = direct.resource->texture();
+    output.uv.texture = direct.resource->texture();
+    HRESULT result = createView(yFormat, output.y.view);
+    if (FAILED(result)) {
+        return result;
+    }
+    return createView(uvFormat, output.uv.view);
+}
 
 enum class UploadResultKind {
     Published,
@@ -414,15 +560,13 @@ struct GpuTransferState final {
     ID3D11DeviceContext* const context = lease.immediateContext.Get();
 
     for (UploadSource& source : sources) {
-        const Nv12FrameLayout& layout = source.cpu->resource->layout();
-
         UploadResult result = mapPlane(state,
                                        device,
                                        context,
                                        task.context,
                                        source.y,
-                                       source.cpu->resource->yPlane(),
-                                       layout.yStride);
+                                       source.cpu->yPlane,
+                                       source.cpu->yStride);
         if (result.kind != UploadResultKind::Published) {
             return result;
         }
@@ -431,8 +575,8 @@ struct GpuTransferState final {
                           context,
                           task.context,
                           source.uv,
-                          source.cpu->resource->uvPlane(),
-                          layout.uvStride);
+                          source.cpu->uvPlane,
+                          source.cpu->uvStride);
         if (result.kind != UploadResultKind::Published) {
             return result;
         }
@@ -503,10 +647,24 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
                 const TransferTask& task,
                 UploadSource& upload,
                 const domain::SourceId sourceId) noexcept {
-    if (!upload.gpuReservation || upload.cpu == nullptr) {
+    if ((upload.cpu == nullptr && upload.direct == nullptr) ||
+        (upload.cpu != nullptr && !upload.gpuReservation)) {
         return {};
     }
 
+    const application::FrameGeometry geometry =
+        upload.cpu != nullptr ? upload.cpu->geometry : upload.direct->geometry;
+    const domain::ColorMetadata colorMetadata =
+        upload.cpu != nullptr ? upload.cpu->colorMetadata : upload.direct->colorMetadata;
+    const application::NormalizedFrameFormat format =
+        upload.cpu != nullptr ? upload.cpu->format : upload.direct->format;
+    std::shared_ptr<const void> lifetimeAnchor;
+    if (upload.direct != nullptr) {
+        // The decoder-owned resource already reserves these physical texture bytes. Retaining
+        // that resource keeps both its FFmpeg surface lifetime and its one budget reservation
+        // alive; creating shader views must not charge the same D3D11 texture a second time.
+        lifetimeAnchor = upload.direct->resource;
+    }
     std::unique_ptr<const IGpuFrameBacking> backing{new (std::nothrow) D3d11GpuFrameBacking{
         std::move(upload.y.texture),
         std::move(upload.y.view),
@@ -520,24 +678,35 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
             .width = upload.uv.layout.width,
             .height = upload.uv.layout.height,
         },
+        std::move(lifetimeAnchor),
     }};
     if (!backing) {
         return {};
     }
 
-    GpuFrameAllocation allocation{std::move(*upload.gpuReservation), std::move(backing)};
-    upload.gpuReservation.reset();
-
-    return GpuFrameResource::createDeferred(
-        GpuFrameIdentity{
-            .context = task.context,
-            .frameId = task.set.canonicalFrameId(),
-            .sourceId = sourceId,
-        },
-        upload.cpu->geometry,
-        upload.cpu->resource->colorMetadata(),
-        std::move(allocation),
-        state->retirementDomain);
+    const auto createResource = [&](GpuFrameAllocation allocation) {
+        return GpuFrameResource::createDeferred(
+            GpuFrameIdentity{
+                .context = task.context,
+                .frameId = task.set.canonicalFrameId(),
+                .sourceId = sourceId,
+            },
+            geometry,
+            colorMetadata,
+            std::move(allocation),
+            state->retirementDomain,
+            format);
+    };
+    if (upload.cpu != nullptr) {
+        GpuFrameAllocation allocation{std::move(*upload.gpuReservation), std::move(backing)};
+        upload.gpuReservation.reset();
+        return createResource(std::move(allocation));
+    }
+    return createResource(GpuFrameAllocation{
+        upload.direct->gpuBytes,
+        upload.direct->resource,
+        std::move(backing),
+    });
 }
 
 [[nodiscard]] UploadResult performUpload(const std::shared_ptr<GpuTransferState>& state,
@@ -551,16 +720,19 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
 
     // The comparison contract permits at most three present sources. Missing entries have
     // already been removed by inspectSet and therefore consume no upload slot.
-    if (task.cpu.sources.size() > 3U) {
+    if ((task.cpu.sources.size() + task.cpu.directSources.size()) > 3U) {
         return UploadResult{.kind = UploadResultKind::Failed};
     }
 
-    // Reserve all logical staging and destination bytes before allocating resources or reading a
-    // single decoder-owned byte. CPU resources remain pinned in task for the entire operation.
-    std::optional<FrameBudget::Reservation> stagingReservation =
-        state->frameBudget->tryReserve(task.cpu.stagingBytes);
-    if (!stagingReservation) {
-        return UploadResult{.kind = UploadResultKind::Failed};
+    // Reserve all staging and newly allocated destination bytes before allocating resources or
+    // reading a single decoder-owned byte. Direct D3D11VA textures already carry their own budget
+    // reservation and only acquire shader views here.
+    std::optional<FrameBudget::Reservation> stagingReservation;
+    if (task.cpu.stagingBytes != 0U) {
+        stagingReservation = state->frameBudget->tryReserve(task.cpu.stagingBytes);
+        if (!stagingReservation) {
+            return UploadResult{.kind = UploadResultKind::Failed};
+        }
     }
 
     std::vector<UploadSource> uploadSources;
@@ -576,12 +748,30 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
             .gpuReservation = std::move(reservation),
         });
     }
+    std::vector<UploadSource> directSources;
+    directSources.reserve(task.cpu.directSources.size());
+    for (const CpuSetView::DirectSourceView& directSource : task.cpu.directSources) {
+        if (directSource.resource->deviceGeneration() != lease.deviceGeneration) {
+            return UploadResult{.kind = UploadResultKind::Cancelled};
+        }
+        directSources.push_back(UploadSource{
+            .direct = &directSource,
+        });
+    }
 
     HRESULT result = S_OK;
     for (UploadSource& upload : uploadSources) {
         result = createUploadSource(lease.device.Get(), *upload.cpu, upload);
         if (FAILED(result)) {
             break;
+        }
+    }
+    if (SUCCEEDED(result)) {
+        for (UploadSource& upload : directSources) {
+            result = createDirectSource(lease.device.Get(), *upload.direct, upload);
+            if (FAILED(result)) {
+                break;
+            }
         }
     }
     if (FAILED(result)) {
@@ -620,7 +810,9 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         source.y.staging.Reset();
         source.uv.staging.Reset();
     }
-    stagingReservation->reset();
+    if (stagingReservation) {
+        stagingReservation->reset();
+    }
 
     std::vector<GpuFrameSlot> slots;
     slots.reserve(uploadSources.size());
@@ -632,6 +824,17 @@ makeGpuResource(const std::shared_ptr<GpuTransferState>& state,
         }
         slots.push_back(GpuFrameSlot{
             .sourceId = uploadSources[index].cpu->sourceId,
+            .frame = std::move(frame),
+        });
+    }
+    for (UploadSource& direct : directSources) {
+        std::shared_ptr<const GpuFrameResource> frame =
+            makeGpuResource(state, task, direct, direct.direct->sourceId);
+        if (!frame) {
+            return UploadResult{.kind = UploadResultKind::Failed};
+        }
+        slots.push_back(GpuFrameSlot{
+            .sourceId = direct.direct->sourceId,
             .frame = std::move(frame),
         });
     }
@@ -830,9 +1033,15 @@ void runActor(const std::shared_ptr<GpuTransferState>& state) noexcept {
         }
 
         UploadResult result{.kind = UploadResultKind::Cancelled};
+        const bool directOnly = task->cpu.sources.empty() && !task->cpu.directSources.empty();
+        const auto transferStarted = std::chrono::steady_clock::now();
         if (acquireLease(state, task->context)) {
             result = performUpload(state, *state->deviceLease, *task);
         }
+        const auto transferMicroseconds =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                           std::chrono::steady_clock::now() - transferStarted)
+                                           .count());
         task.reset();
         if (result.kind == UploadResultKind::DeviceLost) {
             reportLoss(state, result.deviceLossReason);
@@ -840,6 +1049,18 @@ void runActor(const std::shared_ptr<GpuTransferState>& state) noexcept {
 
         {
             const std::lock_guard lock{state->mutex};
+            if (result.kind == UploadResultKind::Failed) {
+                ++state->statistics.failedSets;
+            } else if (result.kind == UploadResultKind::Cancelled) {
+                ++state->statistics.cancelledSets;
+            }
+            ++state->statistics.completedTransfers;
+            state->statistics.totalTransferMicroseconds += transferMicroseconds;
+            state->statistics.maximumTransferMicroseconds =
+                (std::max)(state->statistics.maximumTransferMicroseconds, transferMicroseconds);
+            if (result.kind == UploadResultKind::Published && directOnly) {
+                ++state->statistics.zeroCopySets;
+            }
             state->active = false;
             state->idle.notify_all();
         }

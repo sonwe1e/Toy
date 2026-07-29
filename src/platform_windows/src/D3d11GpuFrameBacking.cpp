@@ -9,9 +9,11 @@ D3d11GpuFrameBacking::D3d11GpuFrameBacking(Microsoft::WRL::ComPtr<ID3D11Texture2
                                            const D3d11PlaneDimensions yDimensions,
                                            Microsoft::WRL::ComPtr<ID3D11Texture2D> uvTexture,
                                            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> uvView,
-                                           const D3d11PlaneDimensions uvDimensions) noexcept
+                                           const D3d11PlaneDimensions uvDimensions,
+                                           std::shared_ptr<const void> lifetimeAnchor) noexcept
     : yTexture_(std::move(yTexture)), yView_(std::move(yView)), yDimensions_(yDimensions),
-      uvTexture_(std::move(uvTexture)), uvView_(std::move(uvView)), uvDimensions_(uvDimensions) {}
+      uvTexture_(std::move(uvTexture)), uvView_(std::move(uvView)), uvDimensions_(uvDimensions),
+      lifetimeAnchor_(std::move(lifetimeAnchor)) {}
 
 ID3D11Texture2D* D3d11GpuFrameBacking::yTexture() const noexcept {
     return yTexture_.Get();

@@ -65,6 +65,22 @@ using namespace std::chrono_literals;
     return QColor{channel(rgb[0U]), channel(rgb[1U]), channel(rgb[2U])};
 }
 
+[[nodiscard]] QColor expectedP010Color(const domain::ColorMetadata& metadata,
+                                       const std::uint16_t y,
+                                       const std::uint16_t u,
+                                       const std::uint16_t v) {
+    constexpr float kStorageMaximum = 65535.0F;
+    const auto normalized = [](const std::uint16_t code) {
+        return static_cast<float>(static_cast<std::uint16_t>(code << 6U)) / kStorageMaximum;
+    };
+    const std::array<float, 3U> rgb = applyColorTransform(
+        platform::nv12ColorTransform(metadata, 10U), normalized(y), normalized(u), normalized(v));
+    const auto channel = [](const float value) {
+        return static_cast<int>(std::lround(std::clamp(value, 0.0F, 1.0F) * 255.0F));
+    };
+    return QColor{channel(rgb[0U]), channel(rgb[1U]), channel(rgb[2U])};
+}
+
 [[nodiscard]] float differenceGainValue(const ComparisonSurface::DifferenceGain gain) {
     switch (gain) {
     case ComparisonSurface::Gain1x:
@@ -245,8 +261,43 @@ TEST(ComparisonSurfaceGeometryTests, RejectsUnknownPresentationOptions) {
     state.differenceFilter = static_cast<platform::SurfaceDifferenceFilter>(255U);
     EXPECT_FALSE(state.isValid());
     state.differenceFilter = platform::SurfaceDifferenceFilter::Bilinear;
+    state.thresholdPolicy = static_cast<platform::SurfaceThresholdPolicy>(255U);
+    EXPECT_FALSE(state.isValid());
+    state.thresholdPolicy = platform::SurfaceThresholdPolicy::AnyChannel;
+    state.threshold = 1.1F;
+    EXPECT_FALSE(state.isValid());
+    state.threshold = 0.0F;
+    state.viewTransform.scale = 0.5F;
+    EXPECT_FALSE(state.isValid());
+    state.viewTransform.scale = 1.0F;
+    state.roiEnabled = true;
+    state.roi.right = 0.0F;
+    EXPECT_FALSE(state.isValid());
+    state.roi = {};
+    state.roiEnabled = false;
     state.referenceSlot = 3U;
     EXPECT_FALSE(state.isValid());
+}
+
+TEST(ComparisonSurfaceGeometryTests, ComposesOneSynchronizedViewportInsideTheRoi) {
+    const platform::SurfaceNormalizedRect sample = platform::effectiveSurfaceSampleRect(
+        platform::SurfaceViewTransform{
+            .centerX = 0.5F,
+            .centerY = 0.25F,
+            .scale = 2.0F,
+        },
+        true,
+        platform::SurfaceNormalizedRect{
+            .left = 0.2F,
+            .top = 0.1F,
+            .right = 0.8F,
+            .bottom = 0.9F,
+        });
+
+    EXPECT_FLOAT_EQ(sample.left, 0.35F);
+    EXPECT_FLOAT_EQ(sample.right, 0.65F);
+    EXPECT_FLOAT_EQ(sample.top, 0.1F);
+    EXPECT_FLOAT_EQ(sample.bottom, 0.5F);
 }
 
 TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
@@ -266,12 +317,14 @@ TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMat
     const std::array<float, 3U> rgb709 =
         applyColorTransform(platform::nv12ColorTransform(bt709), 0.5F, 0.25F, 0.75F);
 
-    EXPECT_NEAR(rgb601[0U], 0.8505F, 0.0002F);
-    EXPECT_NEAR(rgb601[1U], 0.4075F, 0.0003F);
-    EXPECT_NEAR(rgb601[2U], 0.0570F, 0.0002F);
-    EXPECT_NEAR(rgb709[0U], 0.8937F, 0.0002F);
-    EXPECT_NEAR(rgb709[1U], 0.4298F, 0.0003F);
-    EXPECT_NEAR(rgb709[2U], 0.0361F, 0.0002F);
+    // Full-range digital chroma remains centred on code 128, not the mathematical
+    // midpoint 127.5. These values therefore include the 128 / 255 offset.
+    EXPECT_NEAR(rgb601[0U], 0.847751F, 0.0002F);
+    EXPECT_NEAR(rgb601[1U], 0.409575F, 0.0003F);
+    EXPECT_NEAR(rgb601[2U], 0.053525F, 0.0002F);
+    EXPECT_NEAR(rgb709[0U], 0.890612F, 0.0002F);
+    EXPECT_NEAR(rgb709[1U], 0.431085F, 0.0003F);
+    EXPECT_NEAR(rgb709[2U], 0.032461F, 0.0002F);
 }
 
 TEST(ComparisonSurfaceColorTests, NormalizesLimitedRangeBlackAndWhiteForBothMatrices) {
@@ -356,18 +409,60 @@ TEST(ComparisonSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOn
     EXPECT_EQ(referenceSlotChanges, 1);
 }
 
+TEST(ComparisonSurfacePropertyTests, ValidatesThresholdAndSynchronizedViewportMutations) {
+    ComparisonSurface surface;
+    int thresholdChanges = 0;
+    int viewportChanges = 0;
+    QObject::connect(&surface, &ComparisonSurface::thresholdChanged, [&] { ++thresholdChanges; });
+    QObject::connect(&surface, &ComparisonSurface::viewportChanged, [&] { ++viewportChanges; });
+
+    surface.setThresholdEnabled(true);
+    surface.setThreshold(64.0 / 255.0);
+    surface.setThresholdPolicy(ComparisonSurface::ThresholdAllChannels);
+    EXPECT_TRUE(surface.thresholdEnabled());
+    EXPECT_NEAR(surface.threshold(), 64.0 / 255.0, 0.000001);
+    EXPECT_EQ(surface.thresholdPolicy(), ComparisonSurface::ThresholdAllChannels);
+    EXPECT_EQ(thresholdChanges, 3);
+
+    surface.zoomAt(0.25, 0.75, 4.0);
+    EXPECT_DOUBLE_EQ(surface.viewScale(), 4.0);
+    const qreal zoomedCenterX = surface.viewCenterX();
+    surface.panBy(0.1, -0.1);
+    EXPECT_NE(surface.viewCenterX(), zoomedCenterX);
+    surface.setRoiNormalized(0.8, 0.7, 0.2, 0.1);
+    EXPECT_TRUE(surface.roiEnabled());
+    EXPECT_DOUBLE_EQ(surface.roiLeft(), 0.2);
+    EXPECT_DOUBLE_EQ(surface.roiTop(), 0.1);
+    EXPECT_DOUBLE_EQ(surface.roiRight(), 0.8);
+    EXPECT_DOUBLE_EQ(surface.roiBottom(), 0.7);
+    EXPECT_DOUBLE_EQ(surface.viewScale(), 1.0);
+    surface.clearRoi();
+    EXPECT_FALSE(surface.roiEnabled());
+    EXPECT_GE(viewportChanges, 4);
+}
+
 class CountingActivitySink final : public platform::IRenderActivitySink {
 public:
     void notifyFramePublished() noexcept override {
         frameNotifications.fetch_add(1U, std::memory_order_relaxed);
     }
 
+    void notifyFrameRenderStarted() noexcept override {
+        frameRenderStartedNotifications.fetch_add(1U, std::memory_order_relaxed);
+    }
+
     void notifyAckPublished() noexcept override {
         acknowledgementNotifications.fetch_add(1U, std::memory_order_relaxed);
     }
 
+    void notifyAckBackpressured() noexcept override {
+        acknowledgementBackpressureNotifications.fetch_add(1U, std::memory_order_relaxed);
+    }
+
     std::atomic<std::uint64_t> frameNotifications{0U};
+    std::atomic<std::uint64_t> frameRenderStartedNotifications{0U};
     std::atomic<std::uint64_t> acknowledgementNotifications{0U};
+    std::atomic<std::uint64_t> acknowledgementBackpressureNotifications{0U};
 };
 
 [[nodiscard]] application::FrameRequestContext
@@ -412,6 +507,75 @@ makeSolidFrame(platform::FrameResourceFactory& factory,
 }
 
 [[nodiscard]] std::optional<application::FrameHandle>
+makeSolidP010Frame(platform::FrameResourceFactory& factory,
+                   const std::uint32_t width,
+                   const std::uint32_t height,
+                   const std::uint16_t y,
+                   const std::uint16_t u,
+                   const std::uint16_t v,
+                   const domain::ColorMetadata color) {
+    const std::uint32_t yRowBytes = width * 2U;
+    const std::uint32_t uvRowBytes = ((width + 1U) / 2U) * 4U;
+    const platform::P010FrameLayout layout{
+        .width = width,
+        .height = height,
+        .yStride = yRowBytes,
+        .uvStride = uvRowBytes,
+    };
+    std::vector<std::uint8_t> yPlane(static_cast<std::size_t>(yRowBytes) * height);
+    std::vector<std::uint8_t> uvPlane(static_cast<std::size_t>(uvRowBytes) * ((height + 1U) / 2U));
+    const auto store =
+        [](std::span<std::uint8_t> bytes, const std::size_t offset, const std::uint16_t code) {
+            const std::uint16_t packed = static_cast<std::uint16_t>(code << 6U);
+            bytes[offset] = static_cast<std::uint8_t>(packed & 0x00FFU);
+            bytes[offset + 1U] = static_cast<std::uint8_t>(packed >> 8U);
+        };
+    for (std::size_t offset = 0U; offset < yPlane.size(); offset += 2U) {
+        store(yPlane, offset, y);
+    }
+    for (std::size_t offset = 0U; offset < uvPlane.size(); offset += 4U) {
+        store(uvPlane, offset, u);
+        store(uvPlane, offset + 2U, v);
+    }
+    return factory.createCpuP010(layout, color, yPlane, uvPlane);
+}
+
+[[nodiscard]] std::optional<application::FrameSet>
+makeSolidP010Set(platform::FrameBudget& budget,
+                 const domain::FrameId frameId,
+                 const std::uint16_t leftY,
+                 const std::uint16_t rightY,
+                 const domain::ColorMetadata metadata) {
+    platform::FrameResourceFactory factory{budget};
+    const std::optional<application::FrameHandle> left =
+        makeSolidP010Frame(factory, 16U, 10U, leftY, 512U, 512U, metadata);
+    const std::optional<application::FrameHandle> right =
+        makeSolidP010Frame(factory, 16U, 10U, rightY, 512U, 512U, metadata);
+    if (!left || !right) {
+        return std::nullopt;
+    }
+    return application::FrameSet::create(
+        frameId,
+        domain::MediaTime{0},
+        {
+            application::MappedSourceFrame{
+                .sourceId = 0U,
+                .sourceFrameId = frameId,
+                .frame = *left,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+            application::MappedSourceFrame{
+                .sourceId = 1U,
+                .sourceFrameId = frameId,
+                .frame = *right,
+                .presentationTime = domain::MediaTime{0},
+                .matchKind = application::FrameMatchKind::ExactIndex,
+            },
+        });
+}
+
+[[nodiscard]] std::optional<application::FrameHandle>
 makeHorizontalLumaFrame(platform::FrameResourceFactory& factory,
                         const std::span<const std::uint8_t> columns,
                         const std::uint32_t height,
@@ -443,7 +607,8 @@ makeHorizontalLumaFrame(platform::FrameResourceFactory& factory,
 makeHorizontalLumaSet(platform::FrameBudget& budget,
                       const domain::FrameId frameId,
                       const std::span<const std::uint8_t> columnsA,
-                      const std::span<const std::uint8_t> columnsB) {
+                      const std::span<const std::uint8_t> columnsB,
+                      const application::FramePresentation presentation = {}) {
     if (columnsA.size() != columnsB.size()) {
         return std::nullopt;
     }
@@ -452,7 +617,7 @@ makeHorizontalLumaSet(platform::FrameBudget& budget,
         .range = domain::ColorRange::kFull,
         .matrixInferred = false,
     };
-    platform::FrameResourceFactory factory{budget};
+    platform::FrameResourceFactory factory{budget, presentation};
     const std::optional<application::FrameHandle> frameA =
         makeHorizontalLumaFrame(factory, columnsA, 8U, metadata);
     const std::optional<application::FrameHandle> frameB =
@@ -491,8 +656,9 @@ makeSolidSetWithMetadata(platform::FrameBudget& budget,
                          const std::uint8_t rightY,
                          const std::uint8_t rightU,
                          const std::uint8_t rightV,
-                         const domain::ColorMetadata& rightColor) {
-    platform::FrameResourceFactory factory{budget};
+                         const domain::ColorMetadata& rightColor,
+                         const application::FramePresentation presentation = {}) {
+    platform::FrameResourceFactory factory{budget, presentation};
     const std::optional<application::FrameHandle> left =
         makeSolidFrame(factory, 16U, 9U, leftY, leftU, leftV, leftColor);
     const std::optional<application::FrameHandle> right =
@@ -819,6 +985,126 @@ TEST(ComparisonSurfaceWarpTests, CoversTheEntireBackgroundWithBlack) {
     harness.releaseRenderer();
 }
 
+TEST(ComparisonSurfaceWarpTests, UploadsAndRendersP010WithoutReducingItToEightBit) {
+    SurfaceWarpHarness harness;
+    ASSERT_TRUE(harness.start());
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> pair =
+        makeSolidP010Set(*budget, domain::FrameId{8}, 257U, 769U, metadata);
+    ASSERT_TRUE(pair.has_value());
+    ASSERT_EQ(actor.submit(makeContext(8U), std::move(*pair)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    expectColorNear(image.pixelColor(image.width() / 4, image.height() / 2),
+                    expectedP010Color(metadata, 257U, 512U, 512U),
+                    2);
+    expectColorNear(image.pixelColor(image.width() * 3 / 4, image.height() / 2),
+                    expectedP010Color(metadata, 769U, 512U, 512U),
+                    2);
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, AppliesRotationBeforeAspectFitAndSampling) {
+    SurfaceWarpHarness harness;
+    ASSERT_TRUE(harness.start());
+    constexpr std::array<std::uint8_t, 16U> kColumns{
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+    };
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> pair =
+        makeHorizontalLumaSet(*budget,
+                              domain::FrameId{9},
+                              kColumns,
+                              kColumns,
+                              application::FramePresentation{.rotationDegrees = 90U});
+    ASSERT_TRUE(pair.has_value());
+    ASSERT_EQ(actor.submit(makeContext(9U), std::move(*pair)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    const int leftCenter = image.width() / 4;
+    const QColor upper = image.pixelColor(leftCenter, image.height() / 4);
+    const QColor lower = image.pixelColor(leftCenter, image.height() * 3 / 4);
+    EXPECT_GT(upper.red(), 225);
+    EXPECT_LT(lower.red(), 25);
+    // 16x8 rotated content is portrait and therefore leaves horizontal letterbox bars in the
+    // wider half-panel.
+    expectColorNear(image.pixelColor(2, image.height() / 2), QColor{0, 0, 0}, 2);
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, UsesSampleAspectRatioForDisplayGeometry) {
+    SurfaceWarpHarness harness;
+    ASSERT_TRUE(harness.start());
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> pair =
+        makeSolidSetWithMetadata(*budget,
+                                 domain::FrameId{10},
+                                 235U,
+                                 128U,
+                                 128U,
+                                 metadata,
+                                 235U,
+                                 128U,
+                                 128U,
+                                 metadata,
+                                 application::FramePresentation{
+                                     .sampleAspectNumerator = 2U,
+                                     .sampleAspectDenominator = 1U,
+                                 });
+    ASSERT_TRUE(pair.has_value());
+    ASSERT_EQ(actor.submit(makeContext(10U), std::move(*pair)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    const int centerX = image.width() / 4;
+    const int centerY = image.height() / 2;
+    EXPECT_GT(image.pixelColor(centerX, centerY).red(), 225);
+    expectColorNear(image.pixelColor(centerX, centerY - (image.height() / 4)), QColor{0, 0, 0}, 2);
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
 TEST(ComparisonSurfaceWarpTests, AppliesEveryMatrixAndRangeCombinationInThePixelShader) {
     SurfaceWarpHarness harness;
     ASSERT_TRUE(harness.start());
@@ -1065,6 +1351,131 @@ TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedPairwiseDifferenc
         largeDifference.pixelColor(largeDifference.width() / 2, largeDifference.height() / 2)
             .red());
     EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedDiffInOneAnalysisGrid) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::AnalysisGrid);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And2);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSet(*budget, domain::FrameId{43}, {32U, 96U, 224U});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(43U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage grid = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(grid.isNull());
+    const QColor first = grid.pixelColor(grid.width() / 4, grid.height() / 4);
+    const QColor second = grid.pixelColor(grid.width() * 3 / 4, grid.height() / 4);
+    const QColor third = grid.pixelColor(grid.width() / 4, grid.height() * 3 / 4);
+    const QColor difference = grid.pixelColor(grid.width() * 3 / 4, grid.height() * 3 / 4);
+    EXPECT_LT(first.red(), second.red());
+    EXPECT_LT(second.red(), third.red());
+    EXPECT_GT(difference.red() + difference.green() + difference.blue(), 20);
+    ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
+    EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, ThresholdMaskBlacksDifferencesBelowTheSelectedPolicy) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setThresholdEnabled(true);
+    harness.surface.setThresholdPolicy(ComparisonSurface::ThresholdAnyChannel);
+    harness.surface.setThreshold(1.0);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSet(*budget, domain::FrameId{44}, {32U, 96U, 224U});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(44U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage masked = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(masked.isNull());
+    expectColorNear(masked.pixelColor(masked.width() / 2, masked.height() / 2), QColor{0, 0, 0}, 2);
+    harness.surface.setThreshold(0.0);
+    const QImage visible = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(visible.isNull());
+    const QColor visibleDifference = visible.pixelColor(visible.width() / 2, visible.height() / 2);
+    EXPECT_GT(visibleDifference.red() + visibleDifference.green() + visibleDifference.blue(), 20);
+    ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
+    EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, ExactPlaneDiffFailsClosedAndComparesRawNv12Codes) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceMetric(ComparisonSurface::ExactPlanes);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And2);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSet(*budget, domain::FrameId{45}, {32U, 96U, 224U});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(45U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage unavailable = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(unavailable.isNull());
+    expectColorNear(unavailable.pixelColor(unavailable.width() / 2, unavailable.height() / 2),
+                    QColor{0, 0, 0},
+                    2);
+    harness.surface.setExactPlaneAvailable(true);
+    const QImage exact = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(exact.isNull());
+    expectColorNear(exact.pixelColor(exact.width() / 2, exact.height() / 2), QColor{192, 0, 0}, 3);
+    ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
+    EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, ExactPlaneDiffRetainsOneCodeP010Differences) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceMetric(ComparisonSurface::ExactPlanes);
+    harness.surface.setDifferenceGain(ComparisonSurface::Gain16x);
+    harness.surface.setExactPlaneAvailable(true);
+    ASSERT_TRUE(harness.start());
+
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeSolidP010Set(*budget, domain::FrameId{46}, 512U, 513U, metadata);
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(46U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage exact = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(exact.isNull());
+    expectColorNear(exact.pixelColor(exact.width() / 2, exact.height() / 2), QColor{4, 0, 0}, 1);
 
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));

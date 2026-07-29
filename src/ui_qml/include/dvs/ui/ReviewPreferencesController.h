@@ -29,6 +29,7 @@ public:
         ThreeUp,
         ReferenceFocus,
         Difference,
+        AnalysisGrid,
     };
     Q_ENUM(ViewMode)
 
@@ -37,6 +38,7 @@ public:
         Luma,
         Chroma,
         Heatmap,
+        ExactPlanes,
     };
     Q_ENUM(DifferenceMetric)
 

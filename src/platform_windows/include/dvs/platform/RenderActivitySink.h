@@ -9,7 +9,9 @@ public:
     virtual ~IRenderActivitySink() = default;
 
     virtual void notifyFramePublished() noexcept = 0;
+    virtual void notifyFrameRenderStarted() noexcept = 0;
     virtual void notifyAckPublished() noexcept = 0;
+    virtual void notifyAckBackpressured() noexcept = 0;
 };
 
 } // namespace dvs::platform

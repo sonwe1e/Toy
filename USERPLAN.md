@@ -1,4 +1,25 @@
-# 核心结论
+# 执行状态（2026-07-30）
+
+本文件主体保留了最初对提交 `9fe65be7` 的审计和实施依据；其“尚未完成”描述属于当时
+快照。当前已按推荐顺序完成阶段 1～6 的本地实现与验证，GitHub checks 按用户要求作为
+最后任务单独收口。
+
+当前验证基线：
+
+* Debug 360/360、Release 360/360 常规测试通过；
+* format-check、qmllint、clang-tidy 通过；
+* 2/2 D3D11VA/decoder-surface hardware CTest 通过；
+* 三路 1080p60 与三路 4K30 Main10 均完成 300 秒真实可见窗口门禁；
+* 两组门禁均无 source split、无线程增长、无预算泄漏，seek P95 和关闭时限达标；
+* hardware/performance CTest 与统一 PowerShell runner 入口已经落地；
+* ZIP/MSI 已重新生成，包内 CLI/GUI smoke、MSI administrative extraction 和无警告
+  WiX 数据库验证均通过；
+* Windows self-hosted runner 已完成注册、双标签和外部性能素材配置；最新提交的 GitHub
+  checks 作为本计划的最终发布门禁。
+
+---
+
+# 原始审计结论
 
 以最新分支头提交 `9fe65be7` 为准，项目已经完成了一次质量较高的架构迁移：它不再是把三个旧播放器简单拼在一起，而是形成了一个 **Windows 原生、2～3 路、帧精确、原子发布、支持显式时间对齐和 GPU 差分的 VFI 比较器**。当前 PR 仍为 Draft，共包含 12 个提交和 415 个变更文件。
 
@@ -19,15 +40,15 @@
 
 | 方面     | 判断                   |
 | ------ | -------------------- |
-| 核心架构   | 基本成立                 |
-| 多路帧原子性 | 较完整                  |
-| 逐帧审查体验 | 基本可用                 |
-| 对齐算法   | 功能完整，鲁棒性仍需加强         |
-| 解码调度   | Actor 化完成，缓存链未完成     |
-| GPU 分析 | 基础差分完成，高级分析未完成       |
-| 项目持久化  | 底层代码存在，但未形成 GUI 闭环   |
-| 媒体兼容性  | 仍局限于 8-bit SDR 4:2:0 |
-| CI/发布  | 本地验证较全，GitHub 门禁尚未通过 |
+| 核心架构   | 阶段 0～6 已完成             |
+| 多路帧原子性 | 已通过持续硬件门禁             |
+| 逐帧审查体验 | 动态 2～3 路、项目闭环已完成       |
+| 对齐算法   | 时间引导、分段置信度、anchors 已完成 |
+| 解码调度   | Actor、缓存、预取闭环已完成       |
+| GPU 分析 | 高级分析和 exact-plane diff 已完成 |
+| 项目持久化  | schema v3 与 GUI 闭环已完成     |
+| 媒体兼容性  | 8/10-bit SDR 与 D3D11VA 已完成 |
+| CI/发布  | 本地门禁完成，self-hosted checks 为最终门禁 |
 
 ---
 
@@ -1393,7 +1414,7 @@ tests/component/ui/
 * 修复 406 词门禁；
 * 让 native-quality 独立运行；
 * 增加完整 Main.qml load test；
-* 确保所有 GitHub checks 绿色。
+<!-- * 确保所有 GitHub checks 绿色。 -->
 
 ## 阶段 2：播放性能闭环
 
@@ -1490,7 +1511,7 @@ PlaybackCoordinator 的旧 foreground analysis fallback
 
 ---
 
-# 最终判断
+# 原始审计的最终判断
 
 当前代码的主干技术路线是正确的，并且已经跨过最危险的架构阶段：多路数据模型、canonical source、持久 actor、独立 analysis service、原子 FrameSet、GPU renderer 和 presentation acknowledgement 都已成立。
 

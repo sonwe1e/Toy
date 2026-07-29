@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -38,11 +39,15 @@ makeSource(const domain::SourceId id,
                 .codecId = "h264",
                 .pixelFormatId = "yuv420p",
                 .bitDepth = 8,
+                .rotationDegrees = 90U,
+                .sampleAspectRatio = {.numerator = 4U, .denominator = 3U},
                 .colorMetadata =
                     domain::ColorMetadata{
                         .matrix = domain::ColorMatrix::kBt709,
                         .range = domain::ColorRange::kFull,
+                        .transfer = domain::ColorTransfer::kSrgb,
                         .matrixInferred = false,
+                        .transferInferred = false,
                     },
                 .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
                 .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
@@ -86,6 +91,28 @@ makeProject(const std::filesystem::path& projectPath,
     EXPECT_TRUE(project.setOutMark(domain::FrameId{2}));
     EXPECT_TRUE(project.setLastDisplayedFrame(domain::FrameId{2}));
     project.setWorkspaceState({{"comparisonMode", "difference"}, {"zoom", "125"}});
+    EXPECT_TRUE(project.setAlignmentState(domain::ProjectAlignmentState{
+        .mode = domain::ProjectAlignmentMode::kManualAnchors,
+        .offsets =
+            {
+                domain::PersistedAlignmentOffset{.sourceId = 1U, .frames = 1},
+            },
+        .anchors =
+            {
+                domain::PersistedAlignmentAnchor{
+                    .sourceId = 1U,
+                    .canonicalFrame = domain::FrameId{1},
+                    .sourceFrame = domain::FrameId{2},
+                },
+            },
+        .analysisCacheKey = "alignment-v2-cache-key",
+    }));
+    EXPECT_TRUE(project.setViewState(domain::ProjectViewState{
+        .layout = domain::ProjectViewLayout::kReferenceFocus,
+        .differenceEdge = {0U, 1U},
+        .differenceMetric = domain::ProjectDifferenceMetric::kHeatmap,
+        .gain = 4U,
+    }));
     return project;
 }
 
@@ -156,14 +183,18 @@ makeProject(const std::filesystem::path& projectPath,
     return project;
 }
 
-TEST(ProjectJsonTests, RoundTripsCompleteSchemaTwoDocument) {
+TEST(ProjectJsonTests, RoundTripsCompleteSchemaThreeDocument) {
     const std::filesystem::path projectPath =
         std::filesystem::temp_directory_path() / "dvs-project-json" / "roundtrip.dvsproject";
     const domain::Project project = makeProject(projectPath);
 
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"mode\": \"manual-anchors\""), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"analysisCacheKey\": \"alignment-v2-cache-key\""),
+              std::string::npos);
+    EXPECT_NE(encoded.value().find("\"layout\": \"reference-focus\""), std::string::npos);
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
@@ -189,11 +220,18 @@ TEST(ProjectJsonTests, RoundTripsCompleteSchemaTwoDocument) {
     EXPECT_EQ(decodedIdentity.fingerprintSha256, expectedIdentity.fingerprintSha256);
     EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.matrix, domain::ColorMatrix::kBt709);
     EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.range, domain::ColorRange::kFull);
+    EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.transfer, domain::ColorTransfer::kSrgb);
     EXPECT_FALSE(decodedSources[0].descriptor.colorMetadata.matrixInferred);
+    EXPECT_FALSE(decodedSources[0].descriptor.colorMetadata.transferInferred);
+    EXPECT_EQ(decodedSources[0].descriptor.rotationDegrees, 90U);
+    EXPECT_EQ(decodedSources[0].descriptor.sampleAspectRatio,
+              (domain::SampleAspectRatio{.numerator = 4U, .denominator = 3U}));
     EXPECT_EQ(decoded.value().inMark(), project.inMark());
     EXPECT_EQ(decoded.value().outMark(), project.outMark());
     EXPECT_EQ(decoded.value().lastDisplayedFrame(), project.lastDisplayedFrame());
     EXPECT_EQ(decoded.value().workspaceState(), project.workspaceState());
+    EXPECT_EQ(decoded.value().alignmentState(), project.alignmentState());
+    EXPECT_EQ(decoded.value().viewState(), project.viewState());
 }
 
 TEST(ProjectJsonTests, RoundTripsIndexedFrameCounts) {
@@ -264,10 +302,10 @@ TEST(ProjectJsonTests, RejectsSchemaVersionOne) {
     ASSERT_TRUE(encoded);
 
     std::string legacyDocument = encoded.value();
-    const std::string schemaTwo = "\"schemaVersion\": 2";
-    const std::size_t schemaPosition = legacyDocument.find(schemaTwo);
+    const std::string schemaThree = "\"schemaVersion\": 3";
+    const std::size_t schemaPosition = legacyDocument.find(schemaThree);
     ASSERT_NE(schemaPosition, std::string::npos);
-    legacyDocument.replace(schemaPosition, schemaTwo.size(), "\"schemaVersion\": 1");
+    legacyDocument.replace(schemaPosition, schemaThree.size(), "\"schemaVersion\": 1");
 
     const auto decoded = ProjectJson::decodeText(legacyDocument, projectPath);
     ASSERT_FALSE(decoded);
@@ -275,17 +313,39 @@ TEST(ProjectJsonTests, RejectsSchemaVersionOne) {
     EXPECT_FALSE(decoded.error().source.has_value());
 }
 
-TEST(ProjectJsonTests, RejectsSchemaVersionThree) {
+TEST(ProjectJsonTests, MigratesSchemaVersionTwoWithDefaultAlignmentAndViewState) {
     const std::filesystem::path projectPath =
-        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema3.dvsproject";
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema2.dvsproject";
+    const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
+    ASSERT_TRUE(encoded);
+
+    nlohmann::json legacyDocument = nlohmann::json::parse(encoded.value());
+    legacyDocument["schemaVersion"] = 2;
+    legacyDocument.erase("alignment");
+    legacyDocument.erase("view");
+
+    const auto decoded = ProjectJson::decodeText(legacyDocument.dump(), projectPath);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().alignmentState(), domain::ProjectAlignmentState{});
+    EXPECT_EQ(decoded.value().viewState().layout, domain::ProjectViewLayout::kSideBySide);
+    EXPECT_EQ(decoded.value().viewState().differenceEdge,
+              (std::array<domain::SourceId, 2U>{0U, 1U}));
+    EXPECT_EQ(decoded.value().viewState().differenceMetric,
+              domain::ProjectDifferenceMetric::kRgbAbsolute);
+    EXPECT_EQ(decoded.value().viewState().gain, 1U);
+}
+
+TEST(ProjectJsonTests, RejectsFutureSchemaVersionFour) {
+    const std::filesystem::path projectPath =
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema4.dvsproject";
     const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
     ASSERT_TRUE(encoded);
 
     std::string futureDocument = encoded.value();
-    const std::string schemaTwo = "\"schemaVersion\": 2";
-    const std::size_t schemaPosition = futureDocument.find(schemaTwo);
+    const std::string schemaThree = "\"schemaVersion\": 3";
+    const std::size_t schemaPosition = futureDocument.find(schemaThree);
     ASSERT_NE(schemaPosition, std::string::npos);
-    futureDocument.replace(schemaPosition, schemaTwo.size(), "\"schemaVersion\": 3");
+    futureDocument.replace(schemaPosition, schemaThree.size(), "\"schemaVersion\": 4");
 
     const auto decoded = ProjectJson::decodeText(futureDocument, projectPath);
     ASSERT_FALSE(decoded);
@@ -301,15 +361,14 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"variable-frame-rate\""),
               std::string::npos);
 
-    // A variable-frame-rate project carries no nominal rate anywhere, so the document must
-    // not emit the numerator/denominator form but serialize every frameRate as JSON null.
+    // A variable-frame-rate project carries no nominal frame rate. Sample-aspect-ratio metadata
+    // has its own numerator/denominator pair and must not be confused with this field.
     EXPECT_NE(encoded.value().find("\"frameRate\": null"), std::string::npos);
-    EXPECT_EQ(encoded.value().find("\"numerator\""), std::string::npos);
-    EXPECT_EQ(encoded.value().find("\"denominator\""), std::string::npos);
+    EXPECT_EQ(encoded.value().find("\"frameRate\": {"), std::string::npos);
 
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
@@ -338,7 +397,7 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
 }
 
 TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
-    // The existing RoundTripsCompleteSchemaTwoDocument test already exercises a CFR project;
+    // The existing RoundTripsCompleteSchemaThreeDocument test already exercises a CFR project;
     // this case makes the CFR compatibility assertion explicit and guards the non-null frame
     // rate serialization that the VFR path above deliberately avoids.
     const std::filesystem::path projectPath =
@@ -349,7 +408,7 @@ TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 2"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"numerator\": 30"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"denominator\": 1"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"verified-cfr\""), std::string::npos);

@@ -2,6 +2,7 @@
 
 #include "dvs/platform/GraphicsDeviceBroker.h"
 
+#include <QByteArray>
 #include <QQuickWindow>
 #include <QSGRendererInterface>
 
@@ -49,6 +50,14 @@ mapBrokerResult(const platform::GraphicsDeviceBrokerResult result) noexcept {
 } // namespace
 
 void configureGraphicsBackend() noexcept {
+    // Qt's threaded render loop can inherit the refresh cadence of an unrelated Windows virtual
+    // display. On mixed physical/virtual-adapter systems that delayed an explicitly requested
+    // scene-graph update by roughly four 60 Hz intervals, even though the D3D11 render itself took
+    // only microseconds. This application owns canonical media cadence and requests updates only
+    // when a complete FrameSet is ready, so display-loop throttling must not pace frame admission.
+    if (!qEnvironmentVariableIsSet("QSG_NO_VSYNC")) {
+        static_cast<void>(qputenv("QSG_NO_VSYNC", QByteArrayLiteral("1")));
+    }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
 }
 

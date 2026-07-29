@@ -4,6 +4,7 @@
 #include "dvs/domain/Result.h"
 
 #include "SoftwareDecoder.h"
+#include "SourceFrameCache.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -18,7 +19,8 @@
 
 namespace dvs::platform {
 class FrameBudget;
-}
+class GraphicsDeviceBroker;
+} // namespace dvs::platform
 
 namespace dvs::media::internal {
 
@@ -26,13 +28,13 @@ enum class SourceDecodePriority {
     Exact,
     Sequential,
     Prefetch,
-    Analysis,
 };
 
 struct SourceDecodeRequest final {
     domain::FrameId frameId{0};
     SourceDecodePriority priority = SourceDecodePriority::Exact;
     bool continueSequentially = false;
+    std::uint8_t readAheadCount = 0U;
     const std::atomic<bool>* cancellationRequested = nullptr;
     std::optional<application::FrameRequestContext> context;
 };
@@ -50,7 +52,9 @@ public:
                       domain::MediaDescriptor descriptor,
                       platform::FrameBudget& frameBudget,
                       const std::atomic<bool>* externalInterrupt,
-                      bool lowPriority = false);
+                      bool lowPriority = false,
+                      std::size_t cacheCapacityBytes = 0U,
+                      std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker = {});
     ~SourceDecodeActor();
 
     SourceDecodeActor(const SourceDecodeActor&) = delete;
@@ -68,6 +72,7 @@ public:
     [[nodiscard]] std::thread::id workerThreadId() const noexcept;
     [[nodiscard]] std::thread::id lastDecodeThreadId() const noexcept;
     [[nodiscard]] std::uint64_t completedDecodeCount() const noexcept;
+    [[nodiscard]] media::DecoderBackendStatus backendStatus() const;
 
 private:
     enum class ControlKind {
@@ -94,6 +99,7 @@ private:
     void completeCanceled(DecodeJob job) noexcept;
 
     domain::SourceId sourceId_;
+    std::int64_t sourceFrameCount_ = 0;
     std::unique_ptr<SoftwareDecoder> decoder_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
@@ -101,7 +107,6 @@ private:
     std::deque<DecodeJob> exactQueue_;
     std::deque<DecodeJob> sequentialQueue_;
     std::deque<DecodeJob> prefetchQueue_;
-    std::deque<DecodeJob> analysisQueue_;
     std::optional<application::FrameRequestContext> latestContext_;
     bool stopping_ = false;
     bool started_ = false;
@@ -109,6 +114,12 @@ private:
     std::thread::id workerThreadId_;
     std::thread::id lastDecodeThreadId_;
     std::uint64_t completedDecodeCount_ = 0U;
+    std::uint64_t cacheHitCount_ = 0U;
+    std::uint64_t totalDecodeMicroseconds_ = 0U;
+    std::uint64_t maximumDecodeMicroseconds_ = 0U;
+    media::DecoderBackendStatus backendStatus_;
+    SourceFrameCache cache_;
+    SourceFrameCacheKey cacheKey_;
 };
 
 } // namespace dvs::media::internal

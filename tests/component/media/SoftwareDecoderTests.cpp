@@ -1,6 +1,13 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include "dvs/media/MediaProbe.h"
 #include "dvs/platform/CpuNv12FrameResource.h"
+#include "dvs/platform/CpuP010FrameResource.h"
+#include "dvs/platform/D3d11DecodedFrameResource.h"
 #include "dvs/platform/FrameBudget.h"
+#include "dvs/platform/GraphicsDeviceBroker.h"
 
 #include "SoftwareDecoder.h"
 
@@ -16,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <wrl/client.h>
 
 namespace dvs::media::internal {
 namespace {
@@ -315,6 +323,76 @@ TEST(SoftwareDecoderTests, DecodesExactHevcFramesByIndexedDisplayTimestamp) {
     EXPECT_EQ(frameHash(first.value()), frameHash(firstAgain.value()));
 }
 
+TEST(SoftwareDecoderTests, DecodesTenBitHevcIntoBudgetedP010WithoutReducingBitDepth) {
+    platform::FrameBudget budget{2U * 1024U * 1024U};
+    const domain::MediaDescriptor descriptor =
+        probeDescriptor(fixture("h265_10bit_320x180_30fps_12.mp4"), 0U);
+    ASSERT_EQ(descriptor.bitDepth, 10U);
+    SoftwareDecoder decoder{0U, descriptor, budget};
+    std::atomic<bool> canceled = false;
+
+    ASSERT_TRUE(decoder.open(canceled));
+    const auto decoded = decoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(decoded) << decoded.error().technicalDetail;
+    const auto resource = std::dynamic_pointer_cast<const platform::CpuP010FrameResource>(
+        decoded.value().handle.resource());
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->layout().width, 320U);
+    EXPECT_EQ(resource->layout().height, 180U);
+    EXPECT_EQ(resource->layout().yStride, 640U);
+    ASSERT_GE(resource->yPlane().size(), 2U);
+    const std::uint16_t firstSample = static_cast<std::uint16_t>(resource->yPlane()[0U]) |
+                                      (static_cast<std::uint16_t>(resource->yPlane()[1U]) << 8U);
+    EXPECT_EQ(firstSample & 0x003FU, 0U);
+    EXPECT_NE(firstSample, 0U);
+}
+
+TEST(SoftwareDecoderTests, NormalizesYuv422Yuv444AndRgbInputsIntoNv12VisualFrames) {
+    constexpr std::array<const char*, 3U> kFixtures{
+        "h264_yuv422p_64x48_30fps_12.mkv",
+        "h264_yuv444p_64x48_30fps_12.mkv",
+        "h264_gbrp_64x48_30fps_12.mkv",
+    };
+    for (std::size_t index = 0U; index < kFixtures.size(); ++index) {
+        platform::FrameBudget budget{1024U * 1024U};
+        SoftwareDecoder decoder{
+            static_cast<domain::SourceId>(index),
+            probeDescriptor(fixture(kFixtures[index]), static_cast<domain::SourceId>(index)),
+            budget};
+        std::atomic<bool> canceled = false;
+        ASSERT_TRUE(decoder.open(canceled)) << kFixtures[index];
+        const auto decoded = decoder.decodeExact(domain::FrameId{0}, canceled);
+        ASSERT_TRUE(decoded) << kFixtures[index] << ": " << decoded.error().technicalDetail;
+        const auto resource = std::dynamic_pointer_cast<const platform::CpuNv12FrameResource>(
+            decoded.value().handle.resource());
+        ASSERT_NE(resource, nullptr) << kFixtures[index];
+        EXPECT_EQ(resource->layout().width, 64U);
+        EXPECT_EQ(resource->layout().height, 48U);
+        EXPECT_NE(frameHash(decoded.value()), 0U);
+    }
+}
+
+TEST(SoftwareDecoderTests, CarriesRotationAndSampleAspectRatioIntoFrameGeometry) {
+    const auto verify = [](const char* const filename,
+                           const application::FramePresentation expectedPresentation) {
+        platform::FrameBudget budget{1024U * 1024U};
+        SoftwareDecoder decoder{0U, probeDescriptor(fixture(filename), 0U), budget};
+        std::atomic<bool> canceled = false;
+        ASSERT_TRUE(decoder.open(canceled));
+        const auto decoded = decoder.decodeExact(domain::FrameId{0}, canceled);
+        ASSERT_TRUE(decoded) << decoded.error().technicalDetail;
+        EXPECT_EQ(decoded.value().handle.geometry().presentation, expectedPresentation);
+    };
+
+    verify("h264_rot90_320x180_30fps_12.mp4",
+           application::FramePresentation{.rotationDegrees = 90U});
+    verify("h264_sar4x3_64x48_30fps_12.mkv",
+           application::FramePresentation{
+               .sampleAspectNumerator = 4U,
+               .sampleAspectDenominator = 3U,
+           });
+}
+
 TEST(SoftwareDecoderTests, RejectsOutOfRangeFramesAndReleasesAFailedBudgetReservation) {
     std::atomic<bool> canceled = false;
     const auto descriptor = probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
@@ -589,6 +667,87 @@ TEST(SoftwareDecoderTests, PreservesDisplayOrdinalsForANonZeroStreamStart) {
     ASSERT_TRUE(last);
     EXPECT_EQ(first.value().presentationTime, domain::MediaTime{1'000'000});
     EXPECT_EQ(last.value().presentationTime, domain::MediaTime{1'366'667});
+}
+
+TEST(SoftwareDecoderTests, ReportsWhySoftwareFallbackIsActiveWithoutASharedDevice) {
+    platform::FrameBudget budget{1024U * 1024U};
+    SoftwareDecoder decoder{
+        0U, probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U), budget};
+    std::atomic<bool> canceled = false;
+
+    ASSERT_TRUE(decoder.open(canceled));
+    EXPECT_EQ(decoder.backend(), DecoderBackend::Software);
+    EXPECT_EQ(decoder.deviceGeneration(), domain::DeviceGeneration{0U});
+    EXPECT_FALSE(decoder.fallbackReason().empty());
+    const auto decoded = decoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(decoded);
+    EXPECT_NE(std::dynamic_pointer_cast<const platform::CpuNv12FrameResource>(
+                  decoded.value().handle.resource()),
+              nullptr);
+}
+
+TEST(SoftwareDecoderHardwareTests, RetainsNv12AndP010D3d11VaSurfacesOnTheSharedDevice) {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL featureLevel{};
+    const HRESULT created =
+        D3D11CreateDevice(nullptr,
+                          D3D_DRIVER_TYPE_HARDWARE,
+                          nullptr,
+                          D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                          nullptr,
+                          0U,
+                          D3D11_SDK_VERSION,
+                          device.GetAddressOf(),
+                          &featureLevel,
+                          context.GetAddressOf());
+    if (FAILED(created)) {
+        GTEST_SKIP() << "No hardware D3D11 video device is available.";
+    }
+
+    auto broker = std::make_shared<platform::GraphicsDeviceBroker>();
+    ASSERT_EQ(broker->adoptQtDevice(device.Get(), context.Get()),
+              platform::GraphicsDeviceBrokerResult::Ready);
+    platform::FrameBudget budget{8U * 1024U * 1024U};
+    SoftwareDecoder decoder{
+        0U,
+        probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U),
+        budget,
+        nullptr,
+        broker,
+    };
+    std::atomic<bool> canceled = false;
+
+    ASSERT_TRUE(decoder.open(canceled)) << decoder.fallbackReason();
+    const auto decoded = decoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(decoded) << (decoded ? "" : decoded.error().technicalDetail);
+    EXPECT_EQ(decoder.backend(), DecoderBackend::D3d11Va) << decoder.fallbackReason();
+    const auto resource = std::dynamic_pointer_cast<const platform::D3d11DecodedFrameResource>(
+        decoded.value().handle.resource());
+    ASSERT_NE(resource, nullptr);
+    EXPECT_EQ(resource->format(), application::NormalizedFrameFormat::Nv12_8);
+    EXPECT_EQ(resource->deviceGeneration(), broker->currentGeneration());
+    EXPECT_NE(resource->texture(), nullptr);
+    EXPECT_GT(resource->byteCount(), 0U);
+    EXPECT_EQ(decoded.value().handle.geometry().width, 320U);
+    EXPECT_EQ(decoded.value().handle.geometry().height, 180U);
+
+    SoftwareDecoder tenBitDecoder{
+        1U,
+        probeDescriptor(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U),
+        budget,
+        nullptr,
+        broker,
+    };
+    ASSERT_TRUE(tenBitDecoder.open(canceled)) << tenBitDecoder.fallbackReason();
+    const auto tenBitDecoded = tenBitDecoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(tenBitDecoded) << (tenBitDecoded ? "" : tenBitDecoded.error().technicalDetail);
+    EXPECT_EQ(tenBitDecoder.backend(), DecoderBackend::D3d11Va) << tenBitDecoder.fallbackReason();
+    const auto p010Resource = std::dynamic_pointer_cast<const platform::D3d11DecodedFrameResource>(
+        tenBitDecoded.value().handle.resource());
+    ASSERT_NE(p010Resource, nullptr);
+    EXPECT_EQ(p010Resource->format(), application::NormalizedFrameFormat::P010_10);
+    EXPECT_EQ(p010Resource->deviceGeneration(), broker->currentGeneration());
 }
 
 } // namespace

@@ -189,6 +189,19 @@ TEST(ContractCompileTests, SnapshotCarriesIndependentGraphicsReadiness) {
         .displayedFrame = domain::FrameId{0},
         .requestedFrame = std::nullopt,
         .canonicalFrameCount = 1U,
+        .sources =
+            {
+                SessionSourceView{
+                    .sourceId = 0U,
+                    .role = domain::ComparisonRole::kReference,
+                    .displayName = "A",
+                },
+                SessionSourceView{
+                    .sourceId = 1U,
+                    .role = domain::ComparisonRole::kPrediction,
+                    .displayName = "B",
+                },
+            },
         .lastError = std::nullopt,
     };
     EXPECT_FALSE(ready.graphicsReady);

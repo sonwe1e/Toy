@@ -2,9 +2,11 @@
 
 #include "dvs/application/Commands.h"
 #include "dvs/application/PlaybackCoordinator.h"
+#include "dvs/application/WorkspaceCoordinator.h"
 #include "dvs/media/AlignmentAnalysisService.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
+#include "dvs/persistence/ProjectRepository.h"
 #include "dvs/persistence/SettingsRepository.h"
 #include "dvs/platform/D3d11RenderChannel.h"
 #include "dvs/platform/FrameBudget.h"
@@ -18,6 +20,7 @@
 #include "dvs/ui/RenderAckRelay.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
+#include "dvs/ui/WorkspaceController.h"
 
 #include <QMetaObject>
 #include <QObject>
@@ -42,7 +45,6 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr std::size_t kPlaybackFrameBudgetBytes = 224U * 1024U * 1024U;
-constexpr std::size_t kAnalysisFrameBudgetBytes = 32U * 1024U * 1024U;
 constexpr auto kGraphicsPollInterval = 2ms;
 constexpr auto kAdapterShutdownTimeout = 2s;
 constexpr auto kTotalShutdownTimeout = 7s;
@@ -65,10 +67,24 @@ public:
         }
     }
 
+    void notifyFrameRenderStarted() noexcept override {
+        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
+                sink_.load(std::memory_order_acquire)) {
+            sink->notifyFrameRenderStarted();
+        }
+    }
+
     void notifyAckPublished() noexcept override {
         if (const std::shared_ptr<platform::IRenderActivitySink> sink =
                 sink_.load(std::memory_order_acquire)) {
             sink->notifyAckPublished();
+        }
+    }
+
+    void notifyAckBackpressured() noexcept override {
+        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
+                sink_.load(std::memory_order_acquire)) {
+            sink->notifyAckBackpressured();
         }
     }
 
@@ -180,6 +196,11 @@ public:
     void run() noexcept {
         graphicsPump.reset();
 
+        if (workspaceCoordinator) {
+            workspaceCoordinator->shutdown();
+        }
+        workspaceCoordinator.reset();
+
         if (coordinator) {
             coordinator->shutdown();
         }
@@ -194,6 +215,7 @@ public:
         frameProvider.reset();
         mediaProbe.reset();
         settingsRepository.reset();
+        projectRepository.reset();
         clock.reset();
         renderChannel.reset();
 
@@ -216,7 +238,6 @@ public:
         frameMailbox.reset();
         acknowledgementMailbox.reset();
         deviceBroker.reset();
-        analysisFrameBudget.reset();
         frameBudget.reset();
 
         {
@@ -242,6 +263,7 @@ public:
     bool relayStopped = false;
 
     std::unique_ptr<GraphicsNotificationPump> graphicsPump;
+    std::unique_ptr<application::WorkspaceCoordinator> workspaceCoordinator;
     std::shared_ptr<application::PlaybackCoordinator> coordinator;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler;
@@ -249,6 +271,7 @@ public:
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider;
     std::shared_ptr<media::MediaProbe> mediaProbe;
     std::shared_ptr<application::ISettingsRepository> settingsRepository;
+    std::shared_ptr<application::IProjectRepository> projectRepository;
     std::shared_ptr<platform::SystemSteadyClock> clock;
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel;
     std::shared_ptr<platform::GpuTransferActor> transferActor;
@@ -256,7 +279,6 @@ public:
     std::shared_ptr<platform::FrameMailbox> frameMailbox;
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox;
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker;
-    std::shared_ptr<platform::FrameBudget> analysisFrameBudget;
     std::shared_ptr<platform::FrameBudget> frameBudget;
 
 private:
@@ -275,7 +297,6 @@ public:
         : shutdownWork_(std::make_shared<ShutdownWork>()),
           abandonedWork_(std::make_unique<std::shared_ptr<ShutdownWork>>()) {
         frameBudget_ = std::make_shared<platform::FrameBudget>(kPlaybackFrameBudgetBytes);
-        analysisFrameBudget_ = std::make_shared<platform::FrameBudget>(kAnalysisFrameBudgetBytes);
         deviceBroker_ = std::make_shared<platform::GraphicsDeviceBroker>();
         frameMailbox_ =
             std::make_shared<platform::FrameMailbox>(deviceBroker_->currentGeneration());
@@ -286,9 +307,10 @@ public:
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
         mediaProbe_ = std::make_shared<media::MediaProbe>();
         settingsRepository_ = std::make_shared<persistence::SettingsRepository>();
-        frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(*frameBudget_);
-        alignmentAnalysisService_ =
-            std::make_shared<media::AlignmentAnalysisService>(*analysisFrameBudget_);
+        projectRepository_ = std::make_shared<persistence::ProjectRepository>();
+        frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(
+            *frameBudget_, 16U, false, deviceBroker_);
+        alignmentAnalysisService_ = std::make_shared<media::AlignmentAnalysisService>();
         deadlineScheduler_ = std::make_shared<platform::SteadyDeadlineScheduler>();
         clock_ = std::make_shared<platform::SystemSteadyClock>();
         coordinator_ = application::PlaybackCoordinator::create(
@@ -305,39 +327,68 @@ public:
             throw std::runtime_error{"The playback coordinator could not be created."};
         }
         coordinatorEventSink_ = coordinator_->eventSink();
+        const std::weak_ptr<application::PlaybackCoordinator> weakCoordinator = coordinator_;
+        workspaceCoordinator_ = application::WorkspaceCoordinator::create(
+            application::WorkspaceCoordinator::Dependencies{
+                .projectRepository = projectRepository_,
+                .submitPlayback =
+                    [weakCoordinator](application::PlaybackCommand command) {
+                        if (const auto coordinator = weakCoordinator.lock()) {
+                            return coordinator->submit(std::move(command));
+                        }
+                        return application::PortSubmitResult::Closed;
+                    },
+                .playbackSnapshot =
+                    [weakCoordinator] {
+                        if (const auto coordinator = weakCoordinator.lock()) {
+                            return coordinator->snapshot();
+                        }
+                        return std::shared_ptr<const application::SessionSnapshot>{};
+                    },
+                .takePlaybackTerminals =
+                    [weakCoordinator] {
+                        if (const auto coordinator = weakCoordinator.lock()) {
+                            return coordinator->takeCompletedCommands();
+                        }
+                        return std::vector<application::CommandTerminal>{};
+                    },
+                .acceptedSequenceAlignments =
+                    [weakCoordinator] {
+                        if (const auto coordinator = weakCoordinator.lock()) {
+                            return coordinator->acceptedSequenceAlignments();
+                        }
+                        return std::shared_ptr<
+                            const std::vector<application::SequenceAlignmentResult>>{};
+                    },
+                .createProjectId =
+                    [] {
+                        static std::atomic<std::uint64_t> nextProjectId{1U};
+                        return domain::ProjectId{"project-" +
+                                                 std::to_string(nextProjectId.fetch_add(1U))};
+                    },
+            });
+        if (!workspaceCoordinator_) {
+            throw std::runtime_error{"The workspace coordinator could not be created."};
+        }
 
         acknowledgementRelay_ = std::make_shared<ui::RenderAckRelay>(
             acknowledgementMailbox_,
             std::weak_ptr<application::IApplicationEventSink>{coordinatorEventSink_});
         activityBridge_->bind(acknowledgementRelay_);
 
-        const std::weak_ptr<application::PlaybackCoordinator> weakCoordinator = coordinator_;
+        application::WorkspaceCoordinator* const workspace = workspaceCoordinator_.get();
         controller_ = std::make_unique<ui::ReviewController>(ui::ReviewController::Dependencies{
             .submit =
-                [weakCoordinator](application::PlaybackCommand command) {
-                    if (const std::shared_ptr<application::PlaybackCoordinator> coordinator =
-                            weakCoordinator.lock()) {
-                        return coordinator->submit(std::move(command));
-                    }
-                    return application::PortSubmitResult::Closed;
+                [workspace](application::PlaybackCommand command) {
+                    return workspace->submitPlayback(std::move(command));
                 },
-            .snapshot = [weakCoordinator]() -> std::shared_ptr<const application::SessionSnapshot> {
-                if (const std::shared_ptr<application::PlaybackCoordinator> coordinator =
-                        weakCoordinator.lock()) {
-                    return coordinator->snapshot();
-                }
-                return {};
-            },
+            .snapshot = [workspace] { return workspace->playbackSnapshot(); },
             .takeCompletedCommands =
-                [weakCoordinator] {
-                    if (const std::shared_ptr<application::PlaybackCoordinator> coordinator =
-                            weakCoordinator.lock()) {
-                        return coordinator->takeCompletedCommands();
-                    }
-                    return std::vector<application::CommandTerminal>{};
-                },
+                [workspace] { return workspace->takeCompletedPlaybackCommands(); },
         });
         preferences_ = std::make_unique<ui::ReviewPreferencesController>(settingsRepository_);
+        workspaceController_ =
+            std::make_unique<ui::WorkspaceController>(*workspaceCoordinator_, *preferences_);
         graphicsPump_ = std::make_unique<GraphicsNotificationPump>(
             deviceBroker_,
             frameMailbox_,
@@ -355,6 +406,42 @@ public:
 
     [[nodiscard]] ui::ReviewPreferencesController* preferences() noexcept {
         return preferences_.get();
+    }
+
+    [[nodiscard]] ui::WorkspaceController* workspace() noexcept {
+        return workspaceController_.get();
+    }
+
+    [[nodiscard]] std::vector<media::DecoderBackendStatus> decoderBackendStatuses() const {
+        return frameProvider_ ? frameProvider_->decoderBackendStatuses()
+                              : std::vector<media::DecoderBackendStatus>{};
+    }
+
+    [[nodiscard]] media::MediaProbeStatistics mediaProbeStatistics() const noexcept {
+        return mediaProbe_ ? mediaProbe_->statistics() : media::MediaProbeStatistics{};
+    }
+
+    [[nodiscard]] media::FrameProviderStatistics frameProviderStatistics() const noexcept {
+        return frameProvider_ ? frameProvider_->statistics() : media::FrameProviderStatistics{};
+    }
+
+    [[nodiscard]] std::uint64_t decodedSignatureCount() const noexcept {
+        return alignmentAnalysisService_
+                   ? alignmentAnalysisService_->decodedSignatureCountForTesting()
+                   : 0U;
+    }
+
+    [[nodiscard]] platform::GpuTransferStatistics transferStatistics() const noexcept {
+        return transferActor_ ? transferActor_->statistics() : platform::GpuTransferStatistics{};
+    }
+
+    [[nodiscard]] ui::RenderAckRelayStatistics renderRelayStatistics() const noexcept {
+        return acknowledgementRelay_ ? acknowledgementRelay_->statistics()
+                                     : ui::RenderAckRelayStatistics{};
+    }
+
+    [[nodiscard]] std::size_t reservedFrameBytes() const noexcept {
+        return frameBudget_ ? frameBudget_->reservedBytes() : 0U;
     }
 
     [[nodiscard]] bool attachSurface(ui::ComparisonSurface& surface) noexcept {
@@ -391,6 +478,9 @@ public:
 
         if (controller_) {
             controller_->stop();
+        }
+        if (workspaceController_) {
+            workspaceController_->stop();
         }
         if (preferences_) {
             preferences_->stop();
@@ -439,6 +529,7 @@ public:
         work->deadline = shutdownDeadline;
         work->relayStopped = relayStopped;
         work->graphicsPump = std::move(graphicsPump_);
+        work->workspaceCoordinator = std::move(workspaceCoordinator_);
         work->coordinator = std::move(coordinator_);
         work->coordinatorEventSink = std::move(coordinatorEventSink_);
         work->deadlineScheduler = std::move(deadlineScheduler_);
@@ -446,6 +537,7 @@ public:
         work->frameProvider = std::move(frameProvider_);
         work->mediaProbe = std::move(mediaProbe_);
         work->settingsRepository = std::move(settingsRepository_);
+        work->projectRepository = std::move(projectRepository_);
         work->clock = std::move(clock_);
         work->renderChannel = std::move(renderChannel_);
         work->transferActor = std::move(transferActor_);
@@ -453,7 +545,6 @@ public:
         work->frameMailbox = std::move(frameMailbox_);
         work->acknowledgementMailbox = std::move(acknowledgementMailbox_);
         work->deviceBroker = std::move(deviceBroker_);
-        work->analysisFrameBudget = std::move(analysisFrameBudget_);
         work->frameBudget = std::move(frameBudget_);
 
         // Reserve the failure keepalive before thread creation. If the OS rejects the new thread,
@@ -487,7 +578,6 @@ private:
     std::shared_ptr<ShutdownWork> shutdownWork_;
     std::unique_ptr<std::shared_ptr<ShutdownWork>> abandonedWork_;
     std::shared_ptr<platform::FrameBudget> frameBudget_;
-    std::shared_ptr<platform::FrameBudget> analysisFrameBudget_;
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker_;
     std::shared_ptr<platform::FrameMailbox> frameMailbox_;
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox_;
@@ -496,16 +586,19 @@ private:
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;
     std::shared_ptr<application::ISettingsRepository> settingsRepository_;
+    std::shared_ptr<application::IProjectRepository> projectRepository_;
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider_;
     std::shared_ptr<media::AlignmentAnalysisService> alignmentAnalysisService_;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;
     std::shared_ptr<platform::SystemSteadyClock> clock_;
     std::shared_ptr<application::PlaybackCoordinator> coordinator_;
+    std::unique_ptr<application::WorkspaceCoordinator> workspaceCoordinator_;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink_;
     std::shared_ptr<ui::RenderAckRelay> acknowledgementRelay_;
     std::unique_ptr<GraphicsNotificationPump> graphicsPump_;
     std::unique_ptr<ui::ReviewController> controller_;
     std::unique_ptr<ui::ReviewPreferencesController> preferences_;
+    std::unique_ptr<ui::WorkspaceController> workspaceController_;
     ui::ComparisonSurface* surface_ = nullptr;
     QMetaObject::Connection surfaceDestroyedConnection_;
     bool prepared_ = false;
@@ -533,8 +626,40 @@ ui::ReviewPreferencesController* ReviewRuntime::preferences() noexcept {
     return impl_ ? impl_->preferences() : nullptr;
 }
 
+ui::WorkspaceController* ReviewRuntime::workspace() noexcept {
+    return impl_ ? impl_->workspace() : nullptr;
+}
+
 bool ReviewRuntime::attachSurface(ui::ComparisonSurface& surface) noexcept {
     return impl_ && impl_->attachSurface(surface);
+}
+
+std::vector<media::DecoderBackendStatus> ReviewRuntime::decoderBackendStatuses() const {
+    return impl_ ? impl_->decoderBackendStatuses() : std::vector<media::DecoderBackendStatus>{};
+}
+
+media::MediaProbeStatistics ReviewRuntime::mediaProbeStatistics() const noexcept {
+    return impl_ ? impl_->mediaProbeStatistics() : media::MediaProbeStatistics{};
+}
+
+media::FrameProviderStatistics ReviewRuntime::frameProviderStatistics() const noexcept {
+    return impl_ ? impl_->frameProviderStatistics() : media::FrameProviderStatistics{};
+}
+
+std::uint64_t ReviewRuntime::decodedSignatureCount() const noexcept {
+    return impl_ ? impl_->decodedSignatureCount() : 0U;
+}
+
+platform::GpuTransferStatistics ReviewRuntime::transferStatistics() const noexcept {
+    return impl_ ? impl_->transferStatistics() : platform::GpuTransferStatistics{};
+}
+
+ui::RenderAckRelayStatistics ReviewRuntime::renderRelayStatistics() const noexcept {
+    return impl_ ? impl_->renderRelayStatistics() : ui::RenderAckRelayStatistics{};
+}
+
+std::size_t ReviewRuntime::reservedFrameBytes() const noexcept {
+    return impl_ ? impl_->reservedFrameBytes() : 0U;
 }
 
 void ReviewRuntime::prepareForSceneGraphRelease() noexcept {

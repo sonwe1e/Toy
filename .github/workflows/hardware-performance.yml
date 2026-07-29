@@ -1,11 +1,8 @@
 name: Hardware and Performance
 
-# Kept separate from Build and Test on purpose: these suites need a GPU-equipped
-# self-hosted runner and real playback load (paired 1080p60/4K30, D3D11VA), so they
-# run on demand instead of on every pull request. The test layers exist in
-# cmake/Testing.cmake ("hardware", "performance"); concrete suites land with
-# USERPLAN Phase 6 (three-source 1080p60 decoding, long-video indexing). Until then
-# this job configures, builds, and reports zero matching tests.
+# Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
+# interactively logged-in self-hosted runner and six external five-minute fixtures.
+# They run on demand instead of accepting pull-request code on the workstation.
 
 on:
   workflow_dispatch:
@@ -22,6 +19,8 @@ jobs:
     name: Hardware and performance suites
     runs-on: [self-hosted, Windows, X64, dvs-gpu]
     timeout-minutes: 180
+    env:
+      DVS_PERFORMANCE_FIXTURE_ROOT: ${{ vars.DVS_PERFORMANCE_FIXTURE_ROOT }}
 
     steps:
       - name: Check out repository
@@ -54,6 +53,30 @@ jobs:
           "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Get-Command cl.exe, ninja.exe -ErrorAction Stop
 
+      - name: Verify hardware fixtures
+        shell: pwsh
+        run: |
+          if (-not $env:DVS_PERFORMANCE_FIXTURE_ROOT) {
+            throw 'Set the repository variable DVS_PERFORMANCE_FIXTURE_ROOT.'
+          }
+          $required = @(
+            'gate-1080p60-a.mp4',
+            'gate-1080p60-b.mp4',
+            'gate-1080p60-c.mp4',
+            'gate-4k30-main10-a.mp4',
+            'gate-4k30-main10-b.mp4',
+            'gate-4k30-main10-c.mp4'
+          )
+          foreach ($name in $required) {
+            $path = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT $name
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Missing performance fixture: $path"
+            }
+          }
+          Get-CimInstance Win32_VideoController |
+            Select-Object Name, DriverVersion, Status |
+            Format-Table -AutoSize
+
       - name: Configure
         shell: pwsh
         run: cmake --preset release
@@ -62,8 +85,31 @@ jobs:
         shell: pwsh
         run: cmake --build --preset release
 
-      - name: Hardware and performance tests
+      - name: D3D11VA and zero-copy tests
         shell: pwsh
-        run: >-
-          ctest --preset release
-          -L "hardware|performance" --output-on-failure
+        run: ctest --preset hardware-d3d11 --output-on-failure
+
+      - name: Five-minute performance gates
+        shell: pwsh
+        run: ctest --preset performance-d3d11 --output-on-failure
+
+      - name: Collect performance logs
+        if: always()
+        shell: pwsh
+        run: |
+          $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'out\performance-results'
+          New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          $resultRoot = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT 'results'
+          if (Test-Path -LiteralPath $resultRoot) {
+            Get-ChildItem -LiteralPath $resultRoot -File |
+              Copy-Item -Destination $artifactRoot -Force
+          }
+
+      - name: Upload performance logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-performance-logs
+          path: out/performance-results
+          if-no-files-found: warn
+          retention-days: 14

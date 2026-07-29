@@ -1,3 +1,4 @@
+#include "dvs/application/AlignmentCacheIdentity.h"
 #include "dvs/domain/ComparisonValidator.h"
 #include "dvs/persistence/FingerprintService.h"
 #include "dvs/persistence/ProjectRepository.h"
@@ -414,6 +415,86 @@ TEST_F(ProjectRepositoryTests, SavesThenLoadsWithPayloadBeforeTerminal) {
     const auto* loadContext = std::get_if<application::RequestContext>(&loadSucceeded->context);
     ASSERT_NE(loadContext, nullptr);
     EXPECT_EQ(*loadContext, loadRequest.context);
+}
+
+TEST_F(ProjectRepositoryTests, SavesAndRevalidatesAutomaticAlignmentSidecar) {
+    const std::filesystem::path sourceAPath = path("automatic-a.mp4");
+    const std::filesystem::path sourceBPath = path("automatic-b.mp4");
+    const std::filesystem::path projectPath = path("automatic.dvsproj");
+    writeFile(sourceAPath, "automatic-source-a");
+    writeFile(sourceBPath, "automatic-source-b");
+    const auto identityA = FingerprintService::fingerprint(sourceAPath, 0U);
+    const auto identityB = FingerprintService::fingerprint(sourceBPath, 1U);
+    ASSERT_TRUE(identityA);
+    ASSERT_TRUE(identityB);
+    auto project = makeProject(sourceAPath, identityA.value(), sourceBPath, identityB.value());
+    ASSERT_TRUE(project);
+
+    application::SequenceAlignmentResult result{
+        .sourceId = 1U,
+        .segments =
+            {
+                application::SequenceAlignmentSegment{
+                    .firstCanonicalFrame = domain::FrameId{0},
+                    .lastCanonicalFrame = domain::FrameId{4},
+                    .state = application::AlignmentSegmentState::Accepted,
+                    .meanConfidence = 0.9F,
+                    .p10Confidence = 0.8F,
+                    .mappingSlope = 1.0F,
+                },
+            },
+        .totalCost = 0.1F,
+        .meanMatchCost = 0.1F,
+        .confidence = 0.9F,
+        .autoApplicable = true,
+    };
+    for (std::int64_t frame = 0; frame < 5; ++frame) {
+        result.entries.push_back(application::SequenceAlignmentEntry{
+            .canonicalFrameId = domain::FrameId{frame},
+            .sourceFrameId = domain::FrameId{frame},
+            .matchKind = application::FrameMatchKind::AutoAligned,
+            .confidence = 0.9F,
+        });
+    }
+    const auto results = std::make_shared<const std::vector<application::SequenceAlignmentResult>>(
+        std::vector<application::SequenceAlignmentResult>{std::move(result)});
+    const std::string key =
+        application::makeDerivedAlignmentCacheKey(project.value().sources(), *results);
+    ASSERT_TRUE(project.value().setAlignmentState(domain::ProjectAlignmentState{
+        .mode = domain::ProjectAlignmentMode::kAutomaticSequence,
+        .analysisCacheKey = key,
+    }));
+
+    ProjectRepository repository{16U, path("alignment-cache")};
+    const auto saveEvents = std::make_shared<RecordingEventSink>();
+    const application::ProjectSaveRequest saveRequest{
+        .context =
+            application::SaveRequestContext{
+                .request = requestContext(30U),
+                .projectRevision = domain::ProjectRevision{1U},
+            },
+        .projectPath = projectPath,
+        .project = project.value(),
+        .derivedAlignmentResults = results,
+    };
+    ASSERT_EQ(repository.submit(saveRequest, saveEvents), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(saveEvents->waitForTerminal(saveRequest.context, std::chrono::seconds{2}));
+    EXPECT_TRUE(isSucceededTerminal(saveEvents->criticalEvents().back()));
+
+    const auto loadEvents = std::make_shared<RecordingEventSink>();
+    const application::ProjectLoadRequest loadRequest{
+        .context = requestContext(31U),
+        .projectPath = projectPath,
+    };
+    ASSERT_EQ(repository.submit(loadRequest, loadEvents), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(loadEvents->waitForTerminal(loadRequest.context, std::chrono::seconds{2}));
+    const auto events = loadEvents->criticalEvents();
+    ASSERT_EQ(events.size(), 2U);
+    const auto* loaded = std::get_if<application::ProjectLoaded>(&events.front());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_FALSE(loaded->alignmentCacheError.has_value());
+    ASSERT_NE(loaded->derivedAlignmentResults, nullptr);
+    EXPECT_EQ(*loaded->derivedAlignmentResults, *results);
 }
 
 TEST_F(ProjectRepositoryTests, StructuralLoadFailureIncludesItsAsynchronousRequestId) {

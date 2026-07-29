@@ -39,6 +39,17 @@ struct MediaExtent final {
     [[nodiscard]] constexpr bool operator==(const MediaExtent&) const noexcept = default;
 };
 
+struct SampleAspectRatio final {
+    std::uint32_t numerator = 1U;
+    std::uint32_t denominator = 1U;
+
+    [[nodiscard]] constexpr bool isValid() const noexcept {
+        return numerator != 0U && denominator != 0U;
+    }
+
+    [[nodiscard]] constexpr bool operator==(const SampleAspectRatio&) const noexcept = default;
+};
+
 struct DecodeCapabilities final {
     bool softwareDecode = false;
     bool d3d11VaDecode = false;
@@ -56,14 +67,24 @@ enum class ColorRange {
     kFull,
 };
 
+enum class ColorTransfer {
+    kBt709,
+    kSrgb,
+    kLinear,
+};
+
 struct ColorMetadata final {
     ColorMatrix matrix = ColorMatrix::kBt601;
     ColorRange range = ColorRange::kLimited;
+    ColorTransfer transfer = ColorTransfer::kBt709;
     bool matrixInferred = false;
+    bool transferInferred = true;
 
     [[nodiscard]] constexpr bool isValid() const noexcept {
         return (matrix == ColorMatrix::kBt601 || matrix == ColorMatrix::kBt709) &&
-               (range == ColorRange::kLimited || range == ColorRange::kFull);
+               (range == ColorRange::kLimited || range == ColorRange::kFull) &&
+               (transfer == ColorTransfer::kBt709 || transfer == ColorTransfer::kSrgb ||
+                transfer == ColorTransfer::kLinear);
     }
 };
 
@@ -88,6 +109,8 @@ struct MediaDescriptor final {
     std::string codecId;
     std::string pixelFormatId;
     std::uint8_t bitDepth = 0;
+    std::uint16_t rotationDegrees = 0U;
+    SampleAspectRatio sampleAspectRatio;
     ColorMetadata colorMetadata;
     DecodeCapabilities decodeCapabilities;
     TimingConfidence timingConfidence = TimingConfidence::kDeclaredCfr;

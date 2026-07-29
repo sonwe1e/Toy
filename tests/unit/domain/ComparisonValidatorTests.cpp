@@ -46,9 +46,11 @@ makeDescriptor(const std::int64_t frameCount = 90,
     };
 }
 
-[[nodiscard]] bool hasFinding(const CompatibilityReport& report, const MediaErrorCode code) {
+[[nodiscard]] bool hasFinding(const CompatibilityReport& report,
+                              const MediaErrorCode code,
+                              const CompatibilitySeverity severity) {
     for (const CompatibilityFinding& finding : report.findings()) {
-        if (finding.code == code) {
+        if (finding.code == code && finding.severity == severity) {
             return true;
         }
     }
@@ -130,25 +132,31 @@ TEST(ComparisonValidatorTests, RejectsTwoReferenceRoles) {
     EXPECT_EQ(result.error().code, MediaErrorCode::kInvalidArgument);
 }
 
-TEST(ComparisonValidatorTests, WarnsOnFrameCountMismatchWithoutBlocking) {
+TEST(ComparisonValidatorTests, RequiresAlignmentForFrameCountMismatchWithoutBlocking) {
     const auto result = ComparisonValidator::validate(
         {makeSource(0, ComparisonRole::kReference, makeDescriptor(90)),
          makeSource(1, ComparisonRole::kPrediction, makeDescriptor(89))});
 
     ASSERT_TRUE(result.hasValue());
     EXPECT_EQ(result.value().set.canonicalFrameCount(), 90);
-    EXPECT_TRUE(hasFinding(result.value().report, MediaErrorCode::kSourceFrameCountMismatch));
+    EXPECT_TRUE(hasFinding(result.value().report,
+                           MediaErrorCode::kSourceFrameCountMismatch,
+                           CompatibilitySeverity::kAlignmentRequired));
+    EXPECT_TRUE(result.value().report.hasAlignmentRequired());
     EXPECT_FALSE(result.value().report.hasFatal());
 }
 
-TEST(ComparisonValidatorTests, WarnsOnRateDurationResolutionAndColorMismatches) {
+TEST(ComparisonValidatorTests, RequiresAlignmentForTimingButWarnsForVisualMismatches) {
     const auto rateMismatch =
         makeDescriptor(90, makeRate(60), MediaExtent{.width = 1'920, .height = 1'080});
     const auto result = ComparisonValidator::validate(
         {makeSource(0), makeSource(1, ComparisonRole::kPrediction, rateMismatch)});
 
     ASSERT_TRUE(result.hasValue());
-    EXPECT_TRUE(hasFinding(result.value().report, MediaErrorCode::kSourceFrameRateMismatch));
+    EXPECT_TRUE(hasFinding(result.value().report,
+                           MediaErrorCode::kSourceFrameRateMismatch,
+                           CompatibilitySeverity::kAlignmentRequired));
+    EXPECT_TRUE(result.value().report.hasAlignmentRequired());
 
     const auto durationMismatch = makeDescriptor(90,
                                                  makeRate(),
@@ -158,15 +166,18 @@ TEST(ComparisonValidatorTests, WarnsOnRateDurationResolutionAndColorMismatches) 
     const auto durationResult = ComparisonValidator::validate(
         {makeSource(0), makeSource(1, ComparisonRole::kPrediction, durationMismatch)});
     ASSERT_TRUE(durationResult.hasValue());
-    EXPECT_TRUE(hasFinding(durationResult.value().report, MediaErrorCode::kSourceDurationMismatch));
+    EXPECT_TRUE(hasFinding(durationResult.value().report,
+                           MediaErrorCode::kSourceDurationMismatch,
+                           CompatibilitySeverity::kAlignmentRequired));
 
     const auto resolutionMismatch =
         makeDescriptor(90, makeRate(), MediaExtent{.width = 1'280, .height = 720});
     const auto resolutionResult = ComparisonValidator::validate(
         {makeSource(0), makeSource(1, ComparisonRole::kPrediction, resolutionMismatch)});
     ASSERT_TRUE(resolutionResult.hasValue());
-    EXPECT_TRUE(
-        hasFinding(resolutionResult.value().report, MediaErrorCode::kSourceResolutionMismatch));
+    EXPECT_TRUE(hasFinding(resolutionResult.value().report,
+                           MediaErrorCode::kSourceResolutionMismatch,
+                           CompatibilitySeverity::kWarning));
 
     const auto colorMismatch =
         makeDescriptor(90,
@@ -176,8 +187,9 @@ TEST(ComparisonValidatorTests, WarnsOnRateDurationResolutionAndColorMismatches) 
     const auto colorResult = ComparisonValidator::validate(
         {makeSource(0), makeSource(1, ComparisonRole::kPrediction, colorMismatch)});
     ASSERT_TRUE(colorResult.hasValue());
-    EXPECT_TRUE(
-        hasFinding(colorResult.value().report, MediaErrorCode::kSourceColorMetadataMismatch));
+    EXPECT_TRUE(hasFinding(colorResult.value().report,
+                           MediaErrorCode::kSourceColorMetadataMismatch,
+                           CompatibilitySeverity::kWarning));
 }
 
 TEST(ComparisonValidatorTests, ReportsEstimatedFrameCountFromAnySource) {

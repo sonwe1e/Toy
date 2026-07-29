@@ -1,6 +1,7 @@
 #include "FrameTimelineIndex.h"
 
 #include "AvRaii.h"
+#include "PresentationIndexCache.h"
 
 extern "C" {
 #include <libavutil/error.h>
@@ -218,8 +219,8 @@ validatePresentationTimestamps(std::vector<std::int64_t> packetTimestamps,
     return domain::Result<std::vector<std::int64_t>>::success(std::move(packetTimestamps));
 }
 
-domain::Result<std::vector<std::int64_t>>
-buildPresentationTimestampIndex(const TimestampIndexRequest& request) {
+[[nodiscard]] domain::Result<std::vector<std::int64_t>>
+scanPresentationTimestampIndex(const TimestampIndexRequest& request) {
     if (request.cancellation.requested()) {
         return domain::Result<std::vector<std::int64_t>>::failure(cancellationError(request));
     }
@@ -324,6 +325,25 @@ buildPresentationTimestampIndex(const TimestampIndexRequest& request) {
                                           request.expectedFrameCount,
                                           request.sourceId,
                                           request.operation);
+}
+
+domain::Result<std::shared_ptr<const std::vector<std::int64_t>>>
+buildPresentationTimestampIndex(const TimestampIndexRequest& request) {
+    if (request.cancellation.requested()) {
+        return domain::Result<PresentationTimestampIndex>::failure(cancellationError(request));
+    }
+    if (std::optional<PresentationTimestampIndex> cached = PresentationIndexCache::load(request)) {
+        return domain::Result<PresentationTimestampIndex>::success(std::move(*cached));
+    }
+
+    domain::Result<std::vector<std::int64_t>> scanned = scanPresentationTimestampIndex(request);
+    if (!scanned) {
+        return domain::Result<PresentationTimestampIndex>::failure(scanned.error());
+    }
+    PresentationTimestampIndex index =
+        std::make_shared<const std::vector<std::int64_t>>(std::move(scanned).value());
+    PresentationIndexCache::store(request, index);
+    return domain::Result<PresentationTimestampIndex>::success(std::move(index));
 }
 
 domain::Result<VerifiedCfrTiming> verifyConstantFrameRate(const CfrVerificationRequest& request) {

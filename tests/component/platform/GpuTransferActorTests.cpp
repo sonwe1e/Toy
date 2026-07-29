@@ -1,3 +1,4 @@
+#include "dvs/platform/D3d11DecodedFrameResource.h"
 #include "dvs/platform/D3d11RenderChannel.h"
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/FrameMailbox.h"
@@ -662,6 +663,104 @@ TEST(GpuTransferActorTests, UploadsThreeSourceFrameSetsAtomically) {
     EXPECT_TRUE(mailbox->clear(context.playback));
     publication.reset();
     EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(GpuTransferActorTests, PublishesDecoderOwnedNv12ArraySlicesWithoutACopy) {
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> immediateContext;
+    D3D_FEATURE_LEVEL featureLevel{};
+    const HRESULT created =
+        D3D11CreateDevice(nullptr,
+                          D3D_DRIVER_TYPE_HARDWARE,
+                          nullptr,
+                          D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                          nullptr,
+                          0U,
+                          D3D11_SDK_VERSION,
+                          device.GetAddressOf(),
+                          &featureLevel,
+                          immediateContext.GetAddressOf());
+    if (FAILED(created)) {
+        GTEST_SKIP() << "No hardware D3D11 video device is available.";
+    }
+
+    auto broker = std::make_shared<GraphicsDeviceBroker>();
+    ASSERT_EQ(broker->adoptQtDevice(device.Get(), immediateContext.Get()),
+              GraphicsDeviceBrokerResult::Ready);
+    auto budget = std::make_shared<FrameBudget>(8U * 1024U * 1024U);
+    auto mailbox = std::make_shared<FrameMailbox>(domain::DeviceGeneration{1U});
+    GpuTransferActor actor{budget, broker, mailbox};
+
+    D3D11_TEXTURE2D_DESC description{};
+    description.Width = 320U;
+    description.Height = 180U;
+    description.MipLevels = 1U;
+    description.ArraySize = 2U;
+    description.Format = DXGI_FORMAT_NV12;
+    description.SampleDesc.Count = 1U;
+    description.Usage = D3D11_USAGE_DEFAULT;
+    description.BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> decodedTexture;
+    ASSERT_TRUE(
+        SUCCEEDED(device->CreateTexture2D(&description, nullptr, decodedTexture.GetAddressOf())));
+
+    const domain::ColorMetadata color{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kLimited,
+        .matrixInferred = false,
+    };
+    std::vector<application::MappedSourceFrame> sources;
+    for (std::uint32_t slice = 0U; slice < 2U; ++slice) {
+        auto anchor = std::make_shared<const std::uint32_t>(slice);
+        const auto frame =
+            D3d11DecodedFrameResource::create(decodedTexture,
+                                              slice,
+                                              description.Width,
+                                              description.Height,
+                                              domain::DeviceGeneration{1U},
+                                              application::NormalizedFrameFormat::Nv12_8,
+                                              color,
+                                              application::FramePresentation{},
+                                              anchor,
+                                              *budget);
+        ASSERT_TRUE(frame.has_value());
+        sources.push_back(application::MappedSourceFrame{
+            .sourceId = slice,
+            .sourceFrameId = domain::FrameId{3},
+            .frame = *frame,
+            .presentationTime = domain::MediaTime{100'000},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+            .alignmentConfidence = 1.0F,
+        });
+    }
+    auto set = application::FrameSet::create(
+        domain::FrameId{3}, domain::MediaTime{100'000}, std::move(sources));
+    ASSERT_TRUE(set.has_value());
+    const std::size_t decodedBytes =
+        static_cast<std::size_t>(description.Width) * description.Height * 3U / 2U;
+    ASSERT_EQ(budget->reservedBytes(), decodedBytes * 2U);
+
+    const application::FrameRequestContext context = makeContext();
+    ASSERT_EQ(actor.submit(context, std::move(*set)), GpuTransferSubmitResult::Accepted);
+    auto publication = waitForPublication(*mailbox, context.deviceGeneration);
+    ASSERT_TRUE(publication.has_value());
+    for (domain::SourceId sourceId = 0U; sourceId < 2U; ++sourceId) {
+        const GpuFrameSlot* const slot = publication->set->find(sourceId);
+        ASSERT_NE(slot, nullptr);
+        const auto* const backing =
+            dynamic_cast<const D3d11GpuFrameBacking*>(&slot->frame->backing());
+        ASSERT_NE(backing, nullptr);
+        EXPECT_EQ(backing->yTexture(), decodedTexture.Get());
+        EXPECT_EQ(backing->uvTexture(), decodedTexture.Get());
+        EXPECT_NE(backing->yView(), nullptr);
+        EXPECT_NE(backing->uvView(), nullptr);
+    }
+    EXPECT_EQ(budget->reservedBytes(), decodedBytes * 2U);
+
+    EXPECT_TRUE(mailbox->clear(context.playback));
+    publication.reset();
+    EXPECT_TRUE(actor.shutdown(2s));
+    EXPECT_EQ(budget->reservedBytes(), 0U);
 }
 
 } // namespace

@@ -3,6 +3,7 @@
 #include "dvs/application/Ports.h"
 
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 
 namespace dvs::persistence {
@@ -11,7 +12,8 @@ namespace dvs::persistence {
 // supply the project revision and destination in every save request.
 class ProjectRepository final : public application::IProjectRepository {
 public:
-    explicit ProjectRepository(std::size_t queueCapacity = 16);
+    explicit ProjectRepository(std::size_t queueCapacity = 16,
+                               std::filesystem::path alignmentCacheDirectory = {});
     ~ProjectRepository() override;
 
     ProjectRepository(const ProjectRepository&) = delete;

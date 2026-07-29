@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace dvs::application {
@@ -22,10 +23,30 @@ enum class AlignmentAnalysisKind {
     Sequence,
 };
 
+enum class AlignmentAnalysisPhase {
+    CollectingSignatures,
+    ComputingAlignment,
+};
+
+struct AlignmentWorkEstimate final {
+    std::uint64_t totalUnits = 0U;
+    std::string unitName;
+
+    [[nodiscard]] bool operator==(const AlignmentWorkEstimate&) const = default;
+};
+
 inline constexpr std::size_t kAlignmentSignatureWidth = 16U;
 inline constexpr std::size_t kAlignmentSignatureHeight = 9U;
 inline constexpr std::size_t kAlignmentSignaturePixels =
     kAlignmentSignatureWidth * kAlignmentSignatureHeight;
+inline constexpr std::size_t kAlignmentDetailWidth = 64U;
+inline constexpr std::size_t kAlignmentDetailHeight = 36U;
+inline constexpr std::size_t kAlignmentDetailPixels =
+    kAlignmentDetailWidth * kAlignmentDetailHeight;
+inline constexpr std::size_t kAlignmentFeatureGridWidth = 8U;
+inline constexpr std::size_t kAlignmentFeatureGridHeight = 8U;
+inline constexpr std::size_t kAlignmentFeatureGridCells =
+    kAlignmentFeatureGridWidth * kAlignmentFeatureGridHeight;
 
 // How a source's frame was mapped to the canonical frame position. The UI presents this state so
 // auto-aligned views are never mistaken for strict same-frame comparisons.
@@ -53,7 +74,15 @@ struct SourceFrameOffset final {
 // into this fixed value before invoking the application algorithm.
 struct FrameLumaSignature final {
     domain::FrameId frameId{0};
+    // Normalized source display time. Legacy/synthetic callers may omit it; sequence alignment
+    // then falls back to ordinal guidance.
+    std::optional<domain::MediaTime> displayTime;
     std::array<std::uint8_t, kAlignmentSignaturePixels> luma{};
+    // Compact descriptors extracted from a 64x36 luma level. Keeping statistics instead of the
+    // full plane bounds a 50,000-frame signature cache while retaining local structure.
+    std::array<std::uint8_t, kAlignmentFeatureGridCells> detailBlocks{};
+    std::array<std::uint8_t, kAlignmentFeatureGridCells> sobelBlocks{};
+    float normalizedVariance = 0.0F;
     std::uint64_t perceptualHash = 0;
 
     [[nodiscard]] bool isValid() const noexcept;
@@ -113,14 +142,40 @@ struct SequenceAlignmentOptions final {
     float duplicateDistance = 0.08F;
     float minimumConfidence = 0.30F;
     float maximumMeanMatchCost = 0.35F;
+    float sceneCutDistance = 0.42F;
+    std::size_t segmentLength = 120U;
+    std::size_t maximumLowConfidenceRun = 12U;
+    float minimumSegmentP10Confidence = 0.12F;
+    float maximumSegmentAnomalyDensity = 0.15F;
 
     [[nodiscard]] bool isValid() const noexcept;
+};
+
+enum class AlignmentSegmentState {
+    Accepted,
+    ReviewRequired,
+    Rejected,
+};
+
+struct SequenceAlignmentSegment final {
+    domain::FrameId firstCanonicalFrame{0};
+    domain::FrameId lastCanonicalFrame{0};
+    AlignmentSegmentState state = AlignmentSegmentState::ReviewRequired;
+    float meanConfidence = 0.0F;
+    float p10Confidence = 0.0F;
+    std::size_t maximumLowConfidenceRun = 0U;
+    float anomalyDensity = 0.0F;
+    bool sceneCutProximity = false;
+    float mappingSlope = 1.0F;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentSegment&) const = default;
 };
 
 struct SequenceAlignmentResult final {
     domain::SourceId sourceId = 0;
     std::vector<SequenceAlignmentEntry> entries;
     std::vector<SequenceAlignmentAnomaly> anomalies;
+    std::vector<SequenceAlignmentSegment> segments;
     float totalCost = 0.0F;
     float meanMatchCost = 1.0F;
     float confidence = 0.0F;
@@ -145,6 +200,7 @@ struct SequenceAlignmentSummary final {
     std::vector<SequenceAlignmentAnomaly> anomalies;
     std::size_t anomalyCount = 0U;
     std::vector<SequenceAlignmentLowConfidenceRun> lowConfidenceRuns;
+    std::vector<SequenceAlignmentSegment> segments;
     float totalCost = 0.0F;
     float meanMatchCost = 1.0F;
     float confidence = 0.0F;
@@ -172,6 +228,11 @@ struct SourceAlignmentAnchors final {
 makeFrameLumaSignature(domain::FrameId frameId,
                        std::span<const std::uint8_t, kAlignmentSignaturePixels> luma) noexcept;
 
+[[nodiscard]] FrameLumaSignature makeMultiScaleFrameLumaSignature(
+    domain::FrameId frameId,
+    std::span<const std::uint8_t, kAlignmentDetailPixels> detailLuma,
+    std::optional<domain::MediaTime> displayTime = std::nullopt) noexcept;
+
 // Returns no estimate for malformed inputs. Ambiguous but otherwise valid evidence returns a
 // result with autoApplicable=false so the UI can offer the best candidate without silently
 // changing the mapping.
@@ -188,7 +249,8 @@ estimateGlobalOffset(domain::SourceId targetSourceId,
 alignFrameSequences(domain::SourceId targetSourceId,
                     std::span<const FrameLumaSignature> reference,
                     std::span<const FrameLumaSignature> target,
-                    const SequenceAlignmentOptions& options = {}) noexcept;
+                    const SequenceAlignmentOptions& options = {},
+                    std::span<const ManualAlignmentAnchor> anchors = {}) noexcept;
 
 // Outside the first/last anchor, the nearest anchor's offset is extended. Between anchors, the
 // source position is interpolated monotonically and rounded to the nearest frame.

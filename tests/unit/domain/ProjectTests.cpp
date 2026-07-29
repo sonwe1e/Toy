@@ -102,6 +102,30 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
         .outMark = FrameId{1},
         .lastDisplayedFrame = FrameId{0},
         .workspaceState = WorkspaceState{{"inspector-visible", "true"}},
+        .alignmentState =
+            ProjectAlignmentState{
+                .mode = ProjectAlignmentMode::kManualAnchors,
+                .offsets =
+                    {
+                        PersistedAlignmentOffset{.sourceId = 1U, .frames = 1},
+                    },
+                .anchors =
+                    {
+                        PersistedAlignmentAnchor{
+                            .sourceId = 1U,
+                            .canonicalFrame = FrameId{0},
+                            .sourceFrame = FrameId{1},
+                        },
+                    },
+                .analysisCacheKey = "alignment-cache-key",
+            },
+        .viewState =
+            ProjectViewState{
+                .layout = ProjectViewLayout::kReferenceFocus,
+                .differenceEdge = {0U, 1U},
+                .differenceMetric = ProjectDifferenceMetric::kHeatmap,
+                .gain = 4U,
+            },
     };
 
     const auto restored = Project::restorePersisted(std::move(persisted));
@@ -112,6 +136,14 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
     EXPECT_EQ(*restored.value().outMark(), FrameId{1});
     EXPECT_EQ(restored.value().lastDisplayedFrame(), FrameId{0});
     EXPECT_EQ(restored.value().workspaceState().at("inspector-visible"), "true");
+    EXPECT_EQ(restored.value().alignmentState().mode, ProjectAlignmentMode::kManualAnchors);
+    EXPECT_EQ(restored.value().alignmentState().offsets,
+              std::vector<PersistedAlignmentOffset>({
+                  PersistedAlignmentOffset{.sourceId = 1U, .frames = 1},
+              }));
+    EXPECT_EQ(restored.value().viewState().layout, ProjectViewLayout::kReferenceFocus);
+    EXPECT_EQ(restored.value().viewState().differenceMetric, ProjectDifferenceMetric::kHeatmap);
+    EXPECT_EQ(restored.value().viewState().gain, 4U);
 
     Project liveProject = makeProject();
     ASSERT_TRUE(liveProject.setInMark(FrameId{0}));
@@ -121,6 +153,8 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
     ASSERT_TRUE(replacement.value().inMark().has_value());
     EXPECT_EQ(*replacement.value().inMark(), FrameId{0});
     EXPECT_EQ(*replacement.value().outMark(), FrameId{1});
+    EXPECT_EQ(replacement.value().alignmentState(), liveProject.alignmentState());
+    EXPECT_EQ(replacement.value().viewState(), liveProject.viewState());
     EXPECT_EQ(liveProject.sources().canonicalFrameCount(), 5);
 }
 
@@ -164,6 +198,70 @@ TEST(ProjectTests, RejectsInvalidCreationAndSupportsMarkAndWorkspaceMutations) {
     WorkspaceState workspace{{"inspector-visible", "true"}};
     project.setWorkspaceState(std::move(workspace));
     EXPECT_EQ(project.workspaceState().at("inspector-visible"), "true");
+}
+
+TEST(ProjectTests, ValidatesAlignmentAndViewStateTransactionally) {
+    Project project = makeProject();
+    const ProjectAlignmentState validAlignment{
+        .mode = ProjectAlignmentMode::kManualAnchors,
+        .offsets =
+            {
+                PersistedAlignmentOffset{.sourceId = 1U, .frames = 1},
+            },
+        .anchors =
+            {
+                PersistedAlignmentAnchor{
+                    .sourceId = 1U,
+                    .canonicalFrame = FrameId{0},
+                    .sourceFrame = FrameId{1},
+                },
+                PersistedAlignmentAnchor{
+                    .sourceId = 1U,
+                    .canonicalFrame = FrameId{2},
+                    .sourceFrame = FrameId{3},
+                },
+            },
+        .analysisCacheKey = "alignment-cache-key",
+    };
+    ASSERT_TRUE(project.setAlignmentState(validAlignment));
+    EXPECT_EQ(project.alignmentState(), validAlignment);
+
+    ProjectAlignmentState crossing = validAlignment;
+    crossing.anchors[1].sourceFrame = FrameId{0};
+    const auto rejectedAnchors = project.setAlignmentState(std::move(crossing));
+    ASSERT_FALSE(rejectedAnchors);
+    EXPECT_EQ(rejectedAnchors.error().code, MediaErrorCode::kInvalidArgument);
+    EXPECT_EQ(project.alignmentState(), validAlignment);
+
+    ProjectAlignmentState canonicalOffset{
+        .mode = ProjectAlignmentMode::kGlobalOffsets,
+        .offsets =
+            {
+                PersistedAlignmentOffset{.sourceId = 0U, .frames = 1},
+            },
+    };
+    const auto rejectedOffset = project.setAlignmentState(std::move(canonicalOffset));
+    ASSERT_FALSE(rejectedOffset);
+    EXPECT_EQ(project.alignmentState(), validAlignment);
+
+    const ProjectViewState validView{
+        .layout = ProjectViewLayout::kDifference,
+        .differenceEdge = {0U, 1U},
+        .differenceMetric = ProjectDifferenceMetric::kLuma,
+        .gain = 8U,
+    };
+    ASSERT_TRUE(project.setViewState(validView));
+    EXPECT_EQ(project.viewState(), validView);
+
+    ProjectViewState invalidView = validView;
+    invalidView.differenceEdge = {0U, 2U};
+    ASSERT_FALSE(project.setViewState(invalidView));
+    EXPECT_EQ(project.viewState(), validView);
+
+    invalidView = validView;
+    invalidView.gain = 3U;
+    ASSERT_FALSE(project.setViewState(invalidView));
+    EXPECT_EQ(project.viewState(), validView);
 }
 
 } // namespace dvs::domain

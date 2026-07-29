@@ -1,5 +1,7 @@
 #include "dvs/application/PlaybackCoordinator.h"
 
+#include "dvs/application/AlignmentCacheIdentity.h"
+#include "dvs/application/PrefetchScheduler.h"
 #include "dvs/domain/ComparisonValidator.h"
 
 #include <algorithm>
@@ -29,6 +31,11 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr auto kExactFrameDeadline = 5s;
+// Decode/transfer/render are prepared shortly before the canonical boundary. Without this lead,
+// requesting only at the boundary makes every presentation round-trip permanently late and turns
+// ordinary scheduler jitter into whole-FrameSet catch-up drops.
+constexpr auto kPlaybackPresentationLead = 14ms;
+constexpr auto kMinimumPlaybackPreparationDelay = 1ms;
 constexpr float kLowAlignmentConfidence = 0.30F;
 constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
 
@@ -46,6 +53,10 @@ summarizeSequenceAlignment(const SequenceAlignmentResult& result) {
         std::min(result.anomalies.size(), kMaximumSnapshotAlignmentMarkers);
     summary.anomalies.assign(result.anomalies.begin(),
                              result.anomalies.begin() + static_cast<std::ptrdiff_t>(anomalyLimit));
+    const std::size_t segmentLimit =
+        std::min(result.segments.size(), kMaximumSnapshotAlignmentMarkers);
+    summary.segments.assign(result.segments.begin(),
+                            result.segments.begin() + static_cast<std::ptrdiff_t>(segmentLimit));
 
     bool inRun = false;
     SequenceAlignmentLowConfidenceRun run;
@@ -88,8 +99,6 @@ enum class PendingPhase {
     kOpeningProvider,
     kOpeningFirstFrame,
     kSeekingFrame,
-    kEstimatingAlignment,
-    kAnalyzingSequence,
     kClosingProvider,
 };
 
@@ -337,6 +346,12 @@ public:
         return terminals;
     }
 
+    [[nodiscard]] std::shared_ptr<const std::vector<SequenceAlignmentResult>>
+    acceptedSequenceAlignments() const {
+        std::scoped_lock lock(publicationMutex_);
+        return publishedSequenceAlignmentMaps_;
+    }
+
     [[nodiscard]] EventPostResult postCritical(ApplicationEvent event) noexcept override {
         {
             std::unique_lock lock(ingressMutex_);
@@ -389,8 +404,6 @@ private:
         PlaybackRequestContext providerContext;
         std::optional<FrameRequestContext> frameContext;
         std::optional<FrameSet> set;
-        std::optional<std::vector<GlobalOffsetEstimate>> alignmentEstimates;
-        std::optional<std::vector<SequenceAlignmentResult>> sequenceAlignments;
         std::optional<domain::FrameId> expectedFrame;
         std::optional<std::uint64_t> presentationTimerId;
         bool framePublished = false;
@@ -406,6 +419,18 @@ private:
         std::optional<std::vector<GlobalOffsetEstimate>> estimates;
         std::optional<std::vector<SequenceAlignmentResult>> sequenceResults;
         bool completed = false;
+    };
+
+    struct AutomaticAlignmentProposal final {
+        AlignmentAnalysisKind kind = AlignmentAnalysisKind::GlobalOffset;
+        std::vector<GlobalOffsetEstimate> estimates;
+        std::vector<SequenceAlignmentResult> sequenceResults;
+    };
+
+    struct AutomaticAlignmentUndoState final {
+        std::vector<SourceFrameOffset> offsets;
+        std::vector<SequenceAlignmentResult> sequenceMaps;
+        bool alignmentRequired = false;
     };
 
     struct PendingProbeSlot final {
@@ -456,6 +481,22 @@ private:
 
     [[nodiscard]] static domain::SessionEpoch increment(const domain::SessionEpoch value) noexcept {
         return domain::SessionEpoch{value.value() + 1U};
+    }
+
+    void clearAutomaticProposal() noexcept {
+        automaticAlignmentProposal_.reset();
+        state_.automaticAlignmentPending = false;
+        state_.canConfirmAutomaticAlignment = false;
+    }
+
+    void clearAutomaticUndo() noexcept {
+        automaticAlignmentUndo_.reset();
+        state_.canUndoAutomaticAlignment = false;
+    }
+
+    void invalidateAutomaticAlignmentHistory() noexcept {
+        clearAutomaticProposal();
+        clearAutomaticUndo();
     }
 
     [[nodiscard]] static domain::PlaybackGeneration
@@ -511,6 +552,17 @@ private:
                 static_cast<std::size_t>(canonicalFrame.value()) >= map.entries.size()) {
                 continue;
             }
+            const auto segment =
+                std::find_if(map.segments.begin(),
+                             map.segments.end(),
+                             [canonicalFrame](const SequenceAlignmentSegment& value) {
+                                 return value.firstCanonicalFrame <= canonicalFrame &&
+                                        canonicalFrame <= value.lastCanonicalFrame;
+                             });
+            if (segment != map.segments.end() &&
+                segment->state != AlignmentSegmentState::Accepted) {
+                continue;
+            }
             const SequenceAlignmentEntry& entry =
                 map.entries[static_cast<std::size_t>(canonicalFrame.value())];
             if (entry.canonicalFrameId != canonicalFrame) {
@@ -562,9 +614,42 @@ private:
         return mappings;
     }
 
+    void submitPrefetch(const std::vector<domain::FrameId>& targets) {
+        if (!sources_.has_value()) {
+            return;
+        }
+        for (const domain::FrameId target : targets) {
+            const FrameRequest request{
+                .context =
+                    FrameRequestContext{
+                        .playback = makePlaybackContext(),
+                        .deviceGeneration = state_.deviceGeneration,
+                    },
+                .frameId = target,
+                .priority = FrameRequestPriority::Prefetch,
+                .sourceOffsets = sourceMappingsFor(target),
+                .alignmentRevision = state_.alignmentRevision,
+            };
+            if (dependencies_.directFrameProvider->submit(request, eventSink_) !=
+                PortSubmitResult::Accepted) {
+                break;
+            }
+        }
+    }
+
     void publishSnapshot() {
+        state_.alignmentOffsets = alignmentOffsets_;
         auto snapshot = std::make_shared<const SessionSnapshot>(state_);
+        std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceMaps;
+        if (publishedSequenceAlignmentRevision_ != state_.alignmentRevision) {
+            sequenceMaps = std::make_shared<const std::vector<SequenceAlignmentResult>>(
+                sequenceAlignmentMaps_);
+        }
         std::scoped_lock lock(publicationMutex_);
+        if (sequenceMaps) {
+            publishedSequenceAlignmentMaps_ = std::move(sequenceMaps);
+            publishedSequenceAlignmentRevision_ = state_.alignmentRevision;
+        }
         publishedSnapshot_ = std::move(snapshot);
     }
 
@@ -607,22 +692,28 @@ private:
         state_.displayedFrame.reset();
         state_.requestedFrame.reset();
         state_.canonicalFrameCount = 0U;
+        state_.sources.clear();
+        state_.validatedComparison.reset();
         state_.presentedSources.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
         state_.alignmentRevision = 0U;
         state_.alignmentAnalysisJobId.reset();
         state_.alignmentAnalysisKind.reset();
-        state_.alignmentAnalysisCompletedFrames = 0U;
-        state_.alignmentAnalysisTotalFrames = 0U;
+        state_.alignmentAnalysisPhase.reset();
+        state_.alignmentAnalysisCompletedUnits = 0U;
+        state_.alignmentAnalysisWork = {};
         state_.manualAlignmentAnchors.clear();
-        state_.compatibilityWarnings.clear();
+        state_.compatibilityFindings.clear();
+        state_.alignmentRequired = false;
+        invalidateAutomaticAlignmentHistory();
         state_.lastError.reset();
         sources_.reset();
         compatibilityReport_.reset();
         alignmentOffsets_.clear();
         sequenceAlignmentMaps_.clear();
         canonicalTimeline_.reset();
+        prefetchScheduler_.reset();
     }
 
     void failPending(domain::MediaError error, const CommandOutcome outcome) {
@@ -647,6 +738,7 @@ private:
             failed.phase == PendingPhase::kOpeningFirstFrame ||
             failed.phase == PendingPhase::kClosingProvider) {
             sources_.reset();
+            state_.validatedComparison.reset();
             compatibilityReport_.reset();
             alignmentOffsets_.clear();
             state_.alignmentEstimates.clear();
@@ -654,6 +746,7 @@ private:
             state_.alignmentRevision = 0U;
             state_.manualAlignmentAnchors.clear();
             sequenceAlignmentMaps_.clear();
+            invalidateAutomaticAlignmentHistory();
             canonicalTimeline_.reset();
             state_.sessionState = domain::SessionState::kError;
             state_.playbackState = domain::PlaybackState::kPaused;
@@ -661,7 +754,9 @@ private:
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
             state_.presentedSources.clear();
-            state_.compatibilityWarnings.clear();
+            state_.sources.clear();
+            state_.compatibilityFindings.clear();
+            state_.alignmentRequired = false;
         } else {
             state_.sessionState = domain::SessionState::kReady;
             state_.playbackState = domain::PlaybackState::kPaused;
@@ -803,6 +898,7 @@ private:
             .frameId = target,
             .priority = FrameRequestPriority::Sequential,
             .sourceOffsets = sourceMappingsFor(target),
+            .alignmentRevision = state_.alignmentRevision,
         };
         const PortSubmitResult providerResult =
             dependencies_.directFrameProvider->submit(request, eventSink_);
@@ -829,12 +925,28 @@ private:
                                           "The playback frame boundary could not be represented."));
             return false;
         }
-        if (*due <= dependencies_.clock->now()) {
-            const domain::FrameId dueTarget = playbackRun_->restartFromEnd
-                                                  ? playbackRun_->firstTarget
-                                                  : playbackTargetAt(dependencies_.clock->now());
+        const auto now = dependencies_.clock->now();
+        if (*due <= now) {
+            const domain::FrameId dueTarget =
+                playbackRun_->restartFromEnd ? playbackRun_->firstTarget : playbackTargetAt(now);
             return submitPlaybackFrame(dueTarget);
         }
+        const auto earliestRequestDue =
+            addDurationSafe(now,
+                            std::chrono::duration_cast<std::chrono::microseconds>(
+                                kMinimumPlaybackPreparationDelay));
+        const auto preferredRequestDue = addDurationSafe(
+            *due,
+            -std::chrono::duration_cast<std::chrono::microseconds>(kPlaybackPresentationLead));
+        if (!earliestRequestDue.has_value() || !preferredRequestDue.has_value()) {
+            stopPlayback(coordinatorError(domain::MediaErrorCode::kArithmeticOverflow,
+                                          "The playback preparation deadline overflowed."));
+            return false;
+        }
+        // Short VFR intervals may be smaller than the normal preparation lead. Keep at least one
+        // millisecond between scheduling and dispatch while never moving the request beyond its
+        // canonical frame boundary.
+        const auto requestDue = std::min(*due, std::max(*preferredRequestDue, *earliestRequestDue));
 
         const std::uint64_t timerId = nextTimerId_++;
         playbackRun_->cadenceTimerId = timerId;
@@ -842,7 +954,7 @@ private:
         const DeadlineRequest deadline{
             .context = playbackRun_->cadenceContext,
             .timerId = timerId,
-            .due = *due,
+            .due = requestDue,
         };
         const PortSubmitResult result =
             dependencies_.deadlineScheduler->schedule(deadline, eventSink_);
@@ -955,6 +1067,7 @@ private:
             .frameId = frameId,
             .priority = FrameRequestPriority::Exact,
             .sourceOffsets = sourceMappingsFor(frameId),
+            .alignmentRevision = state_.alignmentRevision,
         };
         const std::uint64_t timerId = nextTimerId_++;
         const DeadlineRequest deadline{
@@ -994,6 +1107,7 @@ private:
         state_.sessionEpoch = increment(state_.sessionEpoch);
         state_.playbackGeneration = increment(state_.playbackGeneration);
         sources_ = std::move(set);
+        state_.validatedComparison.reset();
         compatibilityReport_ = std::move(report);
         alignmentOffsets_.clear();
         state_.alignmentEstimates.clear();
@@ -1001,20 +1115,41 @@ private:
         state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
         sequenceAlignmentMaps_.clear();
+        invalidateAutomaticAlignmentHistory();
         canonicalTimeline_ = std::move(timeline);
+        prefetchScheduler_.reset();
         state_.sessionState = domain::SessionState::kLoading;
         state_.playbackState = domain::PlaybackState::kSeeking;
         state_.displayedFrame.reset();
         state_.requestedFrame = domain::FrameId{0};
         state_.canonicalFrameCount = static_cast<std::uint64_t>(sources_->canonicalFrameCount());
+        state_.sources.clear();
+        state_.sources.reserve(sources_->sourceCount());
+        for (const domain::ComparisonSource& source : sources_->sources()) {
+            state_.sources.push_back(SessionSourceView{
+                .sourceId = source.id,
+                .role = source.role,
+                .displayName = source.displayName,
+            });
+        }
         state_.presentedSources.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
         state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
-        state_.compatibilityWarnings.clear();
+        state_.compatibilityFindings.clear();
+        state_.compatibilityFindings.reserve(
+            std::min(compatibilityReport_->findings().size(), kMaximumCompatibilityFindings));
+        state_.alignmentRequired = compatibilityReport_->hasAlignmentRequired();
         for (const domain::CompatibilityFinding& finding : compatibilityReport_->findings()) {
-            state_.compatibilityWarnings.push_back(finding.code);
+            if (state_.compatibilityFindings.size() == kMaximumCompatibilityFindings) {
+                break;
+            }
+            state_.compatibilityFindings.push_back(CompatibilityFindingView{
+                .severity = finding.severity,
+                .code = finding.code,
+                .sources = finding.sources,
+            });
         }
         state_.lastError.reset();
 
@@ -1140,7 +1275,10 @@ private:
             state_.requestedFrame.reset();
             state_.canonicalFrameCount = 0U;
             state_.presentedSources.clear();
-            state_.compatibilityWarnings.clear();
+            state_.sources.clear();
+            state_.validatedComparison.reset();
+            state_.compatibilityFindings.clear();
+            state_.alignmentRequired = false;
             state_.lastError = error;
         }
         publishSnapshot();
@@ -1472,14 +1610,29 @@ private:
             }
         }
 
-        alignmentOffsets_.clear();
+        std::vector<SourceFrameOffset> nextOffsets;
         std::copy_if(command.sourceOffsets.begin(),
                      command.sourceOffsets.end(),
-                     std::back_inserter(alignmentOffsets_),
+                     std::back_inserter(nextOffsets),
                      [](const SourceFrameOffset& offset) { return offset.frames != 0; });
+        const auto bySource = [](const SourceFrameOffset& left, const SourceFrameOffset& right) {
+            return left.sourceId < right.sourceId;
+        };
+        std::sort(nextOffsets.begin(), nextOffsets.end(), bySource);
+        std::vector<SourceFrameOffset> previousOffsets = alignmentOffsets_;
+        std::sort(previousOffsets.begin(), previousOffsets.end(), bySource);
+        const bool mappingChanged = nextOffsets != previousOffsets ||
+                                    !state_.manualAlignmentAnchors.empty() ||
+                                    !sequenceAlignmentMaps_.empty();
+        invalidateAutomaticAlignmentHistory();
+        alignmentOffsets_ = std::move(nextOffsets);
+        sequenceAlignmentMaps_.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
-        state_.alignmentRevision = 0U;
+        if (mappingChanged) {
+            state_.alignmentRevision = increment(state_.alignmentRevision);
+            prefetchScheduler_.reset();
+        }
         state_.manualAlignmentAnchors.clear();
         sequenceAlignmentMaps_.clear();
         beginSeek(command.context, *state_.displayedFrame);
@@ -1496,69 +1649,45 @@ private:
             return;
         }
 
-        if (dependencies_.alignmentAnalysisService) {
-            if (analysisJob_.has_value() || !canonicalTimeline_.has_value()) {
-                completeCommand(command.context, CommandOutcome::Busy);
-                return;
-            }
-            const PlaybackRequestContext context = makePlaybackContext();
-            const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
-            const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
-            const AlignmentEstimateRequest request{
-                .context = context,
-                .canonicalSourceId = sources_->canonicalSourceId(),
-                .jobId = jobId,
-                .sources = std::vector<domain::ComparisonSource>{activeSources.begin(),
-                                                                 activeSources.end()},
-                .timeline = canonicalTimeline_,
-            };
-            if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
-                PortSubmitResult::Accepted) {
-                completeCommand(
-                    command.context,
-                    CommandOutcome::Busy,
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "The alignment analysis service did not accept the job."));
-                return;
-            }
-            analysisJob_ = BackgroundAnalysis{
-                .jobId = jobId,
-                .kind = AlignmentAnalysisKind::GlobalOffset,
-                .command = command.context,
-                .context = context,
-            };
-            state_.lastError.reset();
-            state_.alignmentAnalysisJobId = jobId;
-            state_.alignmentAnalysisKind = AlignmentAnalysisKind::GlobalOffset;
-            state_.alignmentAnalysisCompletedFrames = 0U;
-            state_.alignmentAnalysisTotalFrames = 0U;
-            publishSnapshot();
+        if (!dependencies_.alignmentAnalysisService || analysisJob_.has_value() ||
+            !canonicalTimeline_.has_value()) {
+            completeCommand(command.context, CommandOutcome::Busy);
             return;
         }
-
-        const PlaybackRequestContext context = currentPlaybackScope();
-        pending_ = PendingCommand{
-            .phase = PendingPhase::kEstimatingAlignment,
-            .command = command.context,
-            .providerContext = context,
-            .frameContext = std::nullopt,
-            .set = std::nullopt,
-            .alignmentEstimates = std::nullopt,
-        };
-        state_.lastError.reset();
-        publishSnapshot();
-
+        const PlaybackRequestContext context = makePlaybackContext();
+        const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
+        const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
         const AlignmentEstimateRequest request{
             .context = context,
             .canonicalSourceId = sources_->canonicalSourceId(),
+            .jobId = jobId,
+            .sources =
+                std::vector<domain::ComparisonSource>{activeSources.begin(), activeSources.end()},
+            .timeline = canonicalTimeline_,
         };
-        if (dependencies_.directFrameProvider->submit(request, eventSink_) !=
+        if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
             PortSubmitResult::Accepted) {
-            failPending(
+            completeCommand(
+                command.context,
+                CommandOutcome::Busy,
                 coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                 "The direct frame provider did not accept alignment estimation."),
-                CommandOutcome::Busy);
+                                 "The alignment analysis service did not accept the job."));
+            return;
         }
+        clearAutomaticProposal();
+        analysisJob_ = BackgroundAnalysis{
+            .jobId = jobId,
+            .kind = AlignmentAnalysisKind::GlobalOffset,
+            .command = command.context,
+            .context = context,
+        };
+        state_.lastError.reset();
+        state_.alignmentAnalysisJobId = jobId;
+        state_.alignmentAnalysisKind = AlignmentAnalysisKind::GlobalOffset;
+        state_.alignmentAnalysisPhase.reset();
+        state_.alignmentAnalysisCompletedUnits = 0U;
+        state_.alignmentAnalysisWork = {};
+        publishSnapshot();
     }
 
     void beginAnalyzeSequence(const AnalyzeSequenceAlignmentCommand& command) {
@@ -1572,79 +1701,51 @@ private:
             return;
         }
 
-        if (dependencies_.alignmentAnalysisService) {
-            if (analysisJob_.has_value() || !canonicalTimeline_.has_value()) {
-                completeCommand(command.context, CommandOutcome::Busy);
-                return;
-            }
-            const PlaybackRequestContext context = makePlaybackContext();
-            const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
-            const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
-            const SequenceAlignmentRequest request{
-                .context = context,
-                .canonicalSourceId = sources_->canonicalSourceId(),
-                .expectedOffsets = alignmentOffsets_,
-                .options =
-                    SequenceAlignmentOptions{
-                        .bandWidth = 16U,
-                    },
-                .jobId = jobId,
-                .sources = std::vector<domain::ComparisonSource>{activeSources.begin(),
-                                                                 activeSources.end()},
-                .timeline = canonicalTimeline_,
-            };
-            if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
-                PortSubmitResult::Accepted) {
-                completeCommand(
-                    command.context,
-                    CommandOutcome::Busy,
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "The alignment analysis service did not accept the job."));
-                return;
-            }
-            analysisJob_ = BackgroundAnalysis{
-                .jobId = jobId,
-                .kind = AlignmentAnalysisKind::Sequence,
-                .command = command.context,
-                .context = context,
-            };
-            state_.lastError.reset();
-            state_.alignmentAnalysisJobId = jobId;
-            state_.alignmentAnalysisKind = AlignmentAnalysisKind::Sequence;
-            state_.alignmentAnalysisCompletedFrames = 0U;
-            state_.alignmentAnalysisTotalFrames = 0U;
-            publishSnapshot();
+        if (!dependencies_.alignmentAnalysisService || analysisJob_.has_value() ||
+            !canonicalTimeline_.has_value()) {
+            completeCommand(command.context, CommandOutcome::Busy);
             return;
         }
-
-        const PlaybackRequestContext context = currentPlaybackScope();
-        pending_ = PendingCommand{
-            .phase = PendingPhase::kAnalyzingSequence,
-            .command = command.context,
-            .providerContext = context,
-            .frameContext = std::nullopt,
-            .set = std::nullopt,
-            .sequenceAlignments = std::nullopt,
-        };
-        state_.lastError.reset();
-        publishSnapshot();
-
+        const PlaybackRequestContext context = makePlaybackContext();
+        const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
+        const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
         const SequenceAlignmentRequest request{
             .context = context,
             .canonicalSourceId = sources_->canonicalSourceId(),
             .expectedOffsets = alignmentOffsets_,
+            .manualAnchors = state_.manualAlignmentAnchors,
             .options =
                 SequenceAlignmentOptions{
                     .bandWidth = 16U,
                 },
+            .jobId = jobId,
+            .sources =
+                std::vector<domain::ComparisonSource>{activeSources.begin(), activeSources.end()},
+            .timeline = canonicalTimeline_,
         };
-        if (dependencies_.directFrameProvider->submit(request, eventSink_) !=
+        if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
             PortSubmitResult::Accepted) {
-            failPending(
+            completeCommand(
+                command.context,
+                CommandOutcome::Busy,
                 coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                 "The direct frame provider did not accept sequence analysis."),
-                CommandOutcome::Busy);
+                                 "The alignment analysis service did not accept the job."));
+            return;
         }
+        clearAutomaticProposal();
+        analysisJob_ = BackgroundAnalysis{
+            .jobId = jobId,
+            .kind = AlignmentAnalysisKind::Sequence,
+            .command = command.context,
+            .context = context,
+        };
+        state_.lastError.reset();
+        state_.alignmentAnalysisJobId = jobId;
+        state_.alignmentAnalysisKind = AlignmentAnalysisKind::Sequence;
+        state_.alignmentAnalysisPhase.reset();
+        state_.alignmentAnalysisCompletedUnits = 0U;
+        state_.alignmentAnalysisWork = {};
+        publishSnapshot();
     }
 
     void beginCancelAlignmentAnalysis(const CancelAlignmentAnalysisCommand& command) {
@@ -1735,7 +1836,13 @@ private:
                 return;
             }
         }
+        const bool mappingChanged = next != state_.manualAlignmentAnchors;
+        invalidateAutomaticAlignmentHistory();
         state_.manualAlignmentAnchors = std::move(next);
+        if (mappingChanged) {
+            state_.alignmentRevision = increment(state_.alignmentRevision);
+            prefetchScheduler_.reset();
+        }
         beginSeek(command.context, *state_.displayedFrame);
     }
 
@@ -1753,7 +1860,10 @@ private:
                                            false));
             return;
         }
+        invalidateAutomaticAlignmentHistory();
         state_.manualAlignmentAnchors.clear();
+        state_.alignmentRevision = increment(state_.alignmentRevision);
+        prefetchScheduler_.reset();
         beginSeek(command.context, *state_.displayedFrame);
     }
 
@@ -1774,12 +1884,17 @@ private:
         state_.requestedFrame.reset();
         state_.displayedFrame.reset();
         state_.presentedSources.clear();
+        state_.sources.clear();
+        state_.validatedComparison.reset();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
         state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
+        alignmentOffsets_.clear();
         sequenceAlignmentMaps_.clear();
-        state_.compatibilityWarnings.clear();
+        invalidateAutomaticAlignmentHistory();
+        state_.compatibilityFindings.clear();
+        state_.alignmentRequired = false;
         pending_ = PendingCommand{
             .phase = PendingPhase::kClosingProvider,
             .command = command.context,
@@ -1847,6 +1962,9 @@ private:
             std::holds_alternative<SetAlignmentOffsetsCommand>(command) ||
             std::holds_alternative<EstimateAlignmentCommand>(command) ||
             std::holds_alternative<AnalyzeSequenceAlignmentCommand>(command) ||
+            std::holds_alternative<ConfirmAutomaticAlignmentCommand>(command) ||
+            std::holds_alternative<UndoAutomaticAlignmentCommand>(command) ||
+            std::holds_alternative<RestoreSequenceAlignmentCommand>(command) ||
             std::holds_alternative<SetManualAlignmentAnchorCommand>(command) ||
             std::holds_alternative<ClearManualAlignmentAnchorsCommand>(command);
         if (isNavigationCommand) {
@@ -1911,6 +2029,12 @@ private:
                     beginAnalyzeSequence(value);
                 } else if constexpr (std::is_same_v<Value, CancelAlignmentAnalysisCommand>) {
                     // Cancellation is handled before the foreground admission gate.
+                } else if constexpr (std::is_same_v<Value, ConfirmAutomaticAlignmentCommand>) {
+                    beginConfirmAutomaticAlignment(value);
+                } else if constexpr (std::is_same_v<Value, UndoAutomaticAlignmentCommand>) {
+                    beginUndoAutomaticAlignment(value);
+                } else if constexpr (std::is_same_v<Value, RestoreSequenceAlignmentCommand>) {
+                    beginRestoreSequenceAlignment(value);
                 } else if constexpr (std::is_same_v<Value, SetManualAlignmentAnchorCommand>) {
                     beginSetManualAnchor(value);
                 } else if constexpr (std::is_same_v<Value, ClearManualAlignmentAnchorsCommand>) {
@@ -1927,8 +2051,6 @@ private:
             return false;
         }
         if (pending_->phase == PendingPhase::kOpeningProvider ||
-            pending_->phase == PendingPhase::kEstimatingAlignment ||
-            pending_->phase == PendingPhase::kAnalyzingSequence ||
             pending_->phase == PendingPhase::kClosingProvider) {
             return matchesContext(context, pending_->providerContext);
         }
@@ -1950,102 +2072,6 @@ private:
             commitPresentedFrameIfComplete();
             return;
         }
-        if (phase == PendingPhase::kEstimatingAlignment) {
-            if (!pending_->alignmentEstimates.has_value() || !state_.displayedFrame.has_value()) {
-                failPending(coordinatorError(
-                                domain::MediaErrorCode::kMediaDecodeFailed,
-                                "Alignment estimation completed without a valid result payload."),
-                            CommandOutcome::Failed);
-                return;
-            }
-
-            const CommandContext command = pending_->command;
-            const domain::FrameId displayedFrame = *state_.displayedFrame;
-            state_.alignmentEstimates = std::move(*pending_->alignmentEstimates);
-            state_.sequenceAlignments.clear();
-            state_.alignmentRevision = 0U;
-            sequenceAlignmentMaps_.clear();
-            std::vector<SourceFrameOffset> nextOffsets = alignmentOffsets_;
-            for (const GlobalOffsetEstimate& estimate : state_.alignmentEstimates) {
-                if (!estimate.autoApplicable) {
-                    continue;
-                }
-                const auto existing = std::find_if(nextOffsets.begin(),
-                                                   nextOffsets.end(),
-                                                   [&estimate](const SourceFrameOffset& offset) {
-                                                       return offset.sourceId == estimate.sourceId;
-                                                   });
-                if (estimate.bestOffset == 0) {
-                    if (existing != nextOffsets.end()) {
-                        nextOffsets.erase(existing);
-                    }
-                    continue;
-                }
-                const SourceFrameOffset accepted{
-                    .sourceId = estimate.sourceId,
-                    .frames = estimate.bestOffset,
-                    .matchKind = FrameMatchKind::AutoAligned,
-                    .confidence = estimate.confidence,
-                };
-                if (existing == nextOffsets.end()) {
-                    nextOffsets.push_back(accepted);
-                } else {
-                    *existing = accepted;
-                }
-            }
-            const auto bySource = [](const SourceFrameOffset& left,
-                                     const SourceFrameOffset& right) {
-                return left.sourceId < right.sourceId;
-            };
-            std::sort(alignmentOffsets_.begin(), alignmentOffsets_.end(), bySource);
-            std::sort(nextOffsets.begin(), nextOffsets.end(), bySource);
-            const bool mappingChanged = nextOffsets != alignmentOffsets_;
-            alignmentOffsets_ = std::move(nextOffsets);
-            pending_.reset();
-            if (mappingChanged) {
-                beginSeek(command, displayedFrame);
-            } else {
-                publishSnapshot();
-                completeCommand(command, CommandOutcome::Succeeded);
-            }
-            return;
-        }
-        if (phase == PendingPhase::kAnalyzingSequence) {
-            if (!pending_->sequenceAlignments.has_value() || !state_.displayedFrame.has_value()) {
-                failPending(
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "Sequence analysis completed without a valid result payload."),
-                    CommandOutcome::Failed);
-                return;
-            }
-            const CommandContext command = pending_->command;
-            const domain::FrameId displayedFrame = *state_.displayedFrame;
-            std::vector<SequenceAlignmentResult> analyzed =
-                std::move(*pending_->sequenceAlignments);
-            std::vector<SequenceAlignmentSummary> summaries;
-            summaries.reserve(analyzed.size());
-            std::vector<SequenceAlignmentResult> accepted;
-            accepted.reserve(analyzed.size());
-            for (SequenceAlignmentResult& result : analyzed) {
-                summaries.push_back(summarizeSequenceAlignment(result));
-                if (result.autoApplicable) {
-                    accepted.push_back(std::move(result));
-                }
-            }
-            const bool mappingChanged = accepted != sequenceAlignmentMaps_;
-            state_.sequenceAlignments = std::move(summaries);
-            state_.alignmentRevision = increment(state_.alignmentRevision);
-            sequenceAlignmentMaps_ = std::move(accepted);
-            pending_.reset();
-            if (mappingChanged) {
-                beginSeek(command, displayedFrame);
-            } else {
-                publishSnapshot();
-                completeCommand(command, CommandOutcome::Succeeded);
-            }
-            return;
-        }
-
         const CommandContext command = pending_->command;
         pending_.reset();
         resetToEmpty();
@@ -2075,6 +2101,10 @@ private:
             });
         }
         pending_.reset();
+        if (!state_.validatedComparison && sources_) {
+            state_.validatedComparison =
+                std::make_shared<const domain::ValidatedComparisonSet>(*sources_);
+        }
         state_.sessionState = domain::SessionState::kReady;
         state_.playbackState = domain::PlaybackState::kPaused;
         state_.displayedFrame = displayedFrame;
@@ -2082,6 +2112,7 @@ private:
         state_.lastError.reset();
         publishSnapshot();
         completeCommand(command, CommandOutcome::Succeeded);
+        submitPrefetch(prefetchScheduler_.afterExact(displayedFrame, state_.canonicalFrameCount));
     }
 
     [[nodiscard]] bool matchesPlaybackFrame(const EventContext& context) const noexcept {
@@ -2119,7 +2150,7 @@ private:
         state_.displayedFrame = displayedFrame;
         state_.requestedFrame.reset();
         state_.lastError.reset();
-
+        publishSnapshot();
         if (pauseRequested || reachedEnd) {
             playbackRun_.reset();
             state_.playbackState = domain::PlaybackState::kPaused;
@@ -2343,97 +2374,6 @@ private:
         commitPresentedFrameIfComplete();
     }
 
-    void handleAlignmentEstimated(AlignmentEstimated estimated) {
-        if (!pending_.has_value() || pending_->phase != PendingPhase::kEstimatingAlignment ||
-            estimated.context != pending_->providerContext || !sources_.has_value() ||
-            pending_->alignmentEstimates.has_value()) {
-            return;
-        }
-        if (estimated.estimates.size() + 1U != sources_->sources().size()) {
-            failPending(
-                coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                 "Alignment estimation omitted or added a comparison source."),
-                CommandOutcome::Failed);
-            return;
-        }
-        for (std::size_t index = 0U; index < estimated.estimates.size(); ++index) {
-            const GlobalOffsetEstimate& estimate = estimated.estimates[index];
-            const bool duplicate =
-                std::any_of(estimated.estimates.begin() + static_cast<std::ptrdiff_t>(index + 1U),
-                            estimated.estimates.end(),
-                            [&estimate](const GlobalOffsetEstimate& other) {
-                                return other.sourceId == estimate.sourceId;
-                            });
-            const bool confidenceValid =
-                estimate.confidence >= 0.0F && estimate.confidence <= 1.0F &&
-                estimate.bestCost >= 0.0F && estimate.bestCost <= 1.0F &&
-                estimate.runnerUpCost >= 0.0F && estimate.runnerUpCost <= 1.0F;
-            if (duplicate || sources_->find(estimate.sourceId) == nullptr ||
-                estimate.sourceId == sources_->canonicalSourceId() || estimate.bestOffset < -64 ||
-                estimate.bestOffset > 64 || estimate.evidenceCount == 0U || !confidenceValid) {
-                failPending(
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "Alignment estimation published an invalid source result."),
-                    CommandOutcome::Failed);
-                return;
-            }
-        }
-        pending_->alignmentEstimates = std::move(estimated.estimates);
-    }
-
-    void handleSequenceAlignmentAnalyzed(SequenceAlignmentAnalyzed analyzed) {
-        if (!pending_.has_value() || pending_->phase != PendingPhase::kAnalyzingSequence ||
-            analyzed.context != pending_->providerContext || !sources_.has_value() ||
-            pending_->sequenceAlignments.has_value()) {
-            return;
-        }
-        if (analyzed.results.size() + 1U != sources_->sources().size()) {
-            failPending(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                         "Sequence analysis omitted or added a comparison source."),
-                        CommandOutcome::Failed);
-            return;
-        }
-        for (std::size_t index = 0U; index < analyzed.results.size(); ++index) {
-            const SequenceAlignmentResult& result = analyzed.results[index];
-            const domain::ComparisonSource* const source = sources_->find(result.sourceId);
-            const bool duplicate =
-                std::any_of(analyzed.results.begin() + static_cast<std::ptrdiff_t>(index + 1U),
-                            analyzed.results.end(),
-                            [&result](const SequenceAlignmentResult& other) {
-                                return other.sourceId == result.sourceId;
-                            });
-            const bool summaryValid = result.totalCost >= 0.0F && result.meanMatchCost >= 0.0F &&
-                                      result.meanMatchCost <= 1.0F && result.confidence >= 0.0F &&
-                                      result.confidence <= 1.0F;
-            if (source == nullptr || duplicate ||
-                result.sourceId == sources_->canonicalSourceId() || !summaryValid ||
-                result.entries.size() != state_.canonicalFrameCount) {
-                failPending(
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "Sequence analysis published an invalid source result."),
-                    CommandOutcome::Failed);
-                return;
-            }
-            for (std::size_t frame = 0U; frame < result.entries.size(); ++frame) {
-                const SequenceAlignmentEntry& entry = result.entries[frame];
-                const bool confidenceValid = entry.confidence >= 0.0F && entry.confidence <= 1.0F;
-                const bool missing = !entry.sourceFrameId.has_value();
-                if (entry.canonicalFrameId.value() != static_cast<std::int64_t>(frame) ||
-                    !confidenceValid || missing != (entry.matchKind == FrameMatchKind::Missing) ||
-                    (entry.sourceFrameId.has_value() &&
-                     (!entry.sourceFrameId->isValid() ||
-                      entry.sourceFrameId->value() >= source->descriptor.frameCount.value))) {
-                    failPending(
-                        coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                         "Sequence analysis published an invalid frame mapping."),
-                        CommandOutcome::Failed);
-                    return;
-                }
-            }
-        }
-        pending_->sequenceAlignments = std::move(analyzed.results);
-    }
-
     [[nodiscard]] bool matchesAnalysis(const AlignmentAnalysisJobId jobId,
                                        const PlaybackRequestContext& context,
                                        const AlignmentAnalysisKind kind) const noexcept {
@@ -2444,8 +2384,9 @@ private:
     void clearAnalysisProgress() {
         state_.alignmentAnalysisJobId.reset();
         state_.alignmentAnalysisKind.reset();
-        state_.alignmentAnalysisCompletedFrames = 0U;
-        state_.alignmentAnalysisTotalFrames = 0U;
+        state_.alignmentAnalysisPhase.reset();
+        state_.alignmentAnalysisCompletedUnits = 0U;
+        state_.alignmentAnalysisWork = {};
     }
 
     void failAnalysis(domain::MediaError error, const CommandOutcome outcome) {
@@ -2464,19 +2405,21 @@ private:
         if (!matchesAnalysis(started.jobId, started.context, started.kind)) {
             return;
         }
-        state_.alignmentAnalysisCompletedFrames = 0U;
-        state_.alignmentAnalysisTotalFrames = started.totalFrames;
+        state_.alignmentAnalysisPhase = AlignmentAnalysisPhase::CollectingSignatures;
+        state_.alignmentAnalysisCompletedUnits = 0U;
+        state_.alignmentAnalysisWork = started.work;
         publishSnapshot();
     }
 
     void handleAnalysisProgress(const AlignmentAnalysisProgress& progress) {
         if (!matchesAnalysis(progress.jobId, progress.context, progress.kind) ||
-            progress.completedFrames > progress.totalFrames ||
-            progress.completedFrames < state_.alignmentAnalysisCompletedFrames) {
+            progress.work != state_.alignmentAnalysisWork ||
+            progress.completedUnits > progress.work.totalUnits ||
+            progress.completedUnits < state_.alignmentAnalysisCompletedUnits) {
             return;
         }
-        state_.alignmentAnalysisCompletedFrames = progress.completedFrames;
-        state_.alignmentAnalysisTotalFrames = progress.totalFrames;
+        state_.alignmentAnalysisPhase = progress.phase;
+        state_.alignmentAnalysisCompletedUnits = progress.completedUnits;
         publishSnapshot();
     }
 
@@ -2565,10 +2508,43 @@ private:
                         return;
                     }
                 }
+                std::size_t nextSegmentFrame = 0U;
+                for (const SequenceAlignmentSegment& segment : result.segments) {
+                    const bool metricsValid =
+                        segment.meanConfidence >= 0.0F && segment.meanConfidence <= 1.0F &&
+                        segment.p10Confidence >= 0.0F && segment.p10Confidence <= 1.0F &&
+                        segment.anomalyDensity >= 0.0F && segment.anomalyDensity <= 1.0F &&
+                        segment.mappingSlope >= 0.0F && segment.mappingSlope <= 4.0F;
+                    if (!segment.firstCanonicalFrame.isValid() ||
+                        !segment.lastCanonicalFrame.isValid() ||
+                        segment.firstCanonicalFrame.value() !=
+                            static_cast<std::int64_t>(nextSegmentFrame) ||
+                        segment.lastCanonicalFrame < segment.firstCanonicalFrame ||
+                        static_cast<std::size_t>(segment.lastCanonicalFrame.value()) >=
+                            result.entries.size() ||
+                        !metricsValid) {
+                        failAnalysis(
+                            coordinatorError(
+                                domain::MediaErrorCode::kMediaDecodeFailed,
+                                "Sequence analysis published an invalid confidence segment."),
+                            CommandOutcome::Failed);
+                        return;
+                    }
+                    nextSegmentFrame =
+                        static_cast<std::size_t>(segment.lastCanonicalFrame.value()) + 1U;
+                }
+                if (!result.segments.empty() && nextSegmentFrame != result.entries.size()) {
+                    failAnalysis(
+                        coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                         "Sequence confidence segments do not cover the timeline."),
+                        CommandOutcome::Failed);
+                    return;
+                }
             }
             analysisJob_->sequenceResults = std::move(completed.sequenceResults);
         }
-        state_.alignmentAnalysisCompletedFrames = state_.alignmentAnalysisTotalFrames;
+        state_.alignmentAnalysisPhase = AlignmentAnalysisPhase::ComputingAlignment;
+        state_.alignmentAnalysisCompletedUnits = state_.alignmentAnalysisWork.totalUnits;
         analysisJob_->completed = true;
     }
 
@@ -2598,13 +2574,85 @@ private:
         }
 
         const CommandContext command = analysisJob_->command;
-        const domain::FrameId displayedFrame = *state_.displayedFrame;
-        bool mappingChanged = false;
         if (analysisJob_->kind == AlignmentAnalysisKind::GlobalOffset &&
             analysisJob_->estimates.has_value()) {
             state_.alignmentEstimates = std::move(*analysisJob_->estimates);
             state_.sequenceAlignments.clear();
-            state_.alignmentRevision = 0U;
+            const bool hasApplicableEstimate = std::any_of(
+                state_.alignmentEstimates.begin(),
+                state_.alignmentEstimates.end(),
+                [](const GlobalOffsetEstimate& estimate) { return estimate.autoApplicable; });
+            automaticAlignmentProposal_ = AutomaticAlignmentProposal{
+                .kind = AlignmentAnalysisKind::GlobalOffset,
+                .estimates = state_.alignmentEstimates,
+            };
+            state_.automaticAlignmentPending = true;
+            state_.canConfirmAutomaticAlignment =
+                hasApplicableEstimate && !state_.alignmentRequired;
+        } else if (analysisJob_->kind == AlignmentAnalysisKind::Sequence &&
+                   analysisJob_->sequenceResults.has_value()) {
+            std::vector<SequenceAlignmentResult> analyzed =
+                std::move(*analysisJob_->sequenceResults);
+            state_.sequenceAlignments.clear();
+            state_.sequenceAlignments.reserve(analyzed.size());
+            bool hasReviewableSegment = false;
+            for (const SequenceAlignmentResult& result : analyzed) {
+                state_.sequenceAlignments.push_back(summarizeSequenceAlignment(result));
+                hasReviewableSegment =
+                    hasReviewableSegment ||
+                    std::any_of(result.segments.begin(),
+                                result.segments.end(),
+                                [](const SequenceAlignmentSegment& segment) {
+                                    return segment.state != AlignmentSegmentState::Rejected;
+                                }) ||
+                    (result.segments.empty() && result.autoApplicable);
+            }
+            automaticAlignmentProposal_ = AutomaticAlignmentProposal{
+                .kind = AlignmentAnalysisKind::Sequence,
+                .sequenceResults = std::move(analyzed),
+            };
+            state_.automaticAlignmentPending = true;
+            state_.canConfirmAutomaticAlignment = hasReviewableSegment;
+        } else {
+            failAnalysis(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                          "Analysis completed without the expected payload."),
+                         CommandOutcome::Failed);
+            return;
+        }
+
+        analysisJob_.reset();
+        clearAnalysisProgress();
+        publishSnapshot();
+        completeCommand(command, CommandOutcome::Succeeded);
+    }
+
+    void beginConfirmAutomaticAlignment(const ConfirmAutomaticAlignmentCommand& command) {
+        if (!sources_.has_value() || state_.sessionState != domain::SessionState::kReady ||
+            !state_.displayedFrame.has_value() || !automaticAlignmentProposal_.has_value() ||
+            !state_.canConfirmAutomaticAlignment || analysisJob_.has_value()) {
+            rejectCommand(
+                command.context,
+                CommandOutcome::Failed,
+                coordinatorError(
+                    domain::MediaErrorCode::kInvalidArgument,
+                    state_.alignmentRequired && automaticAlignmentProposal_.has_value() &&
+                            automaticAlignmentProposal_->kind == AlignmentAnalysisKind::GlobalOffset
+                        ? "Timing mismatches require sequence analysis before "
+                          "automatic alignment can be confirmed."
+                        : "There is no confirmable automatic alignment proposal.",
+                    false));
+            return;
+        }
+
+        automaticAlignmentUndo_ = AutomaticAlignmentUndoState{
+            .offsets = alignmentOffsets_,
+            .sequenceMaps = sequenceAlignmentMaps_,
+            .alignmentRequired = state_.alignmentRequired,
+        };
+        const AutomaticAlignmentProposal proposal = std::move(*automaticAlignmentProposal_);
+        bool mappingChanged = false;
+        if (proposal.kind == AlignmentAnalysisKind::GlobalOffset) {
+            const bool hadSequenceMappings = !sequenceAlignmentMaps_.empty();
             sequenceAlignmentMaps_.clear();
             std::vector<SourceFrameOffset> nextOffsets = alignmentOffsets_;
             for (const GlobalOffsetEstimate& estimate : state_.alignmentEstimates) {
@@ -2639,41 +2687,116 @@ private:
             };
             std::sort(alignmentOffsets_.begin(), alignmentOffsets_.end(), bySource);
             std::sort(nextOffsets.begin(), nextOffsets.end(), bySource);
-            mappingChanged = nextOffsets != alignmentOffsets_;
+            mappingChanged = hadSequenceMappings || nextOffsets != alignmentOffsets_;
             alignmentOffsets_ = std::move(nextOffsets);
-        } else if (analysisJob_->kind == AlignmentAnalysisKind::Sequence &&
-                   analysisJob_->sequenceResults.has_value()) {
-            std::vector<SequenceAlignmentResult> analyzed =
-                std::move(*analysisJob_->sequenceResults);
+        } else {
             std::vector<SequenceAlignmentSummary> summaries;
             std::vector<SequenceAlignmentResult> accepted;
-            summaries.reserve(analyzed.size());
-            accepted.reserve(analyzed.size());
-            for (SequenceAlignmentResult& result : analyzed) {
+            summaries.reserve(proposal.sequenceResults.size());
+            accepted.reserve(proposal.sequenceResults.size());
+            bool hasRejectedSegment = false;
+            for (SequenceAlignmentResult result : proposal.sequenceResults) {
+                for (SequenceAlignmentSegment& segment : result.segments) {
+                    if (segment.state == AlignmentSegmentState::ReviewRequired) {
+                        segment.state = AlignmentSegmentState::Accepted;
+                    } else if (segment.state == AlignmentSegmentState::Rejected) {
+                        hasRejectedSegment = true;
+                    }
+                }
+                const bool hasAcceptedSegment =
+                    result.segments.empty()
+                        ? result.autoApplicable
+                        : std::any_of(result.segments.begin(),
+                                      result.segments.end(),
+                                      [](const SequenceAlignmentSegment& segment) {
+                                          return segment.state == AlignmentSegmentState::Accepted;
+                                      });
+                result.autoApplicable = hasAcceptedSegment;
                 summaries.push_back(summarizeSequenceAlignment(result));
-                if (result.autoApplicable) {
+                if (hasAcceptedSegment) {
                     accepted.push_back(std::move(result));
                 }
             }
             mappingChanged = accepted != sequenceAlignmentMaps_;
             state_.sequenceAlignments = std::move(summaries);
-            state_.alignmentRevision = increment(state_.alignmentRevision);
             sequenceAlignmentMaps_ = std::move(accepted);
+            state_.alignmentRequired = hasRejectedSegment;
+        }
+
+        clearAutomaticProposal();
+        state_.canUndoAutomaticAlignment = true;
+        if (mappingChanged) {
+            state_.alignmentRevision = increment(state_.alignmentRevision);
+            prefetchScheduler_.reset();
+            beginSeek(command.context, *state_.displayedFrame);
         } else {
-            failAnalysis(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                          "Analysis completed without the expected payload."),
-                         CommandOutcome::Failed);
+            publishSnapshot();
+            completeCommand(command.context, CommandOutcome::Succeeded);
+        }
+    }
+
+    void beginUndoAutomaticAlignment(const UndoAutomaticAlignmentCommand& command) {
+        if (!sources_.has_value() || state_.sessionState != domain::SessionState::kReady ||
+            !state_.displayedFrame.has_value() || !automaticAlignmentUndo_.has_value() ||
+            analysisJob_.has_value()) {
+            rejectCommand(command.context,
+                          CommandOutcome::Failed,
+                          coordinatorError(domain::MediaErrorCode::kInvalidArgument,
+                                           "There is no automatic alignment change to undo.",
+                                           false));
+            return;
+        }
+        clearAutomaticProposal();
+        const AutomaticAlignmentUndoState previous = std::move(*automaticAlignmentUndo_);
+        automaticAlignmentUndo_.reset();
+        const bool mappingChanged = alignmentOffsets_ != previous.offsets ||
+                                    sequenceAlignmentMaps_ != previous.sequenceMaps;
+        alignmentOffsets_ = previous.offsets;
+        sequenceAlignmentMaps_ = previous.sequenceMaps;
+        state_.alignmentRequired = previous.alignmentRequired;
+        state_.canUndoAutomaticAlignment = false;
+        if (mappingChanged) {
+            state_.alignmentRevision = increment(state_.alignmentRevision);
+            prefetchScheduler_.reset();
+            beginSeek(command.context, *state_.displayedFrame);
+        } else {
+            publishSnapshot();
+            completeCommand(command.context, CommandOutcome::Succeeded);
+        }
+    }
+
+    void beginRestoreSequenceAlignment(const RestoreSequenceAlignmentCommand& command) {
+        if (!sources_.has_value() || state_.sessionState != domain::SessionState::kReady ||
+            !state_.displayedFrame.has_value() || !command.sequenceResults ||
+            analysisJob_.has_value() ||
+            !validateDerivedSequenceAlignments(*sources_, *command.sequenceResults)) {
+            rejectCommand(command.context,
+                          CommandOutcome::Failed,
+                          coordinatorError(
+                              domain::MediaErrorCode::kInvalidArgument,
+                              "The derived sequence-alignment cache is invalid for this session.",
+                              false));
             return;
         }
 
-        analysisJob_.reset();
-        clearAnalysisProgress();
-        if (mappingChanged) {
-            beginSeek(command, displayedFrame);
-        } else {
-            publishSnapshot();
-            completeCommand(command, CommandOutcome::Succeeded);
+        invalidateAutomaticAlignmentHistory();
+        sequenceAlignmentMaps_ = *command.sequenceResults;
+        state_.sequenceAlignments.clear();
+        state_.sequenceAlignments.reserve(sequenceAlignmentMaps_.size());
+        state_.alignmentRequired = false;
+        for (const SequenceAlignmentResult& result : sequenceAlignmentMaps_) {
+            state_.sequenceAlignments.push_back(summarizeSequenceAlignment(result));
+            state_.alignmentRequired =
+                state_.alignmentRequired ||
+                std::any_of(result.segments.begin(),
+                            result.segments.end(),
+                            [](const SequenceAlignmentSegment& segment) {
+                                return segment.state == AlignmentSegmentState::Rejected;
+                            });
         }
+        state_.alignmentRevision = increment(state_.alignmentRevision);
+        prefetchScheduler_.reset();
+        beginSeek(command.context, *state_.displayedFrame);
     }
 
     void handleFramePresented(const FrameSetPresented& presented) {
@@ -2707,7 +2830,7 @@ private:
                 playbackRun_->restartFromEnd
                     ? scheduledTarget
                     : std::max(scheduledTarget, playbackTargetAt(dependencies_.clock->now()));
-            static_cast<void>(schedulePlaybackTarget(dueTarget));
+            static_cast<void>(submitPlaybackFrame(dueTarget));
             return;
         }
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
@@ -2775,10 +2898,6 @@ private:
                     handleFrameSet(value);
                 } else if constexpr (std::is_same_v<Value, FrameSetPresented>) {
                     handleFramePresented(value);
-                } else if constexpr (std::is_same_v<Value, AlignmentEstimated>) {
-                    handleAlignmentEstimated(value);
-                } else if constexpr (std::is_same_v<Value, SequenceAlignmentAnalyzed>) {
-                    handleSequenceAlignmentAnalyzed(value);
                 } else if constexpr (std::is_same_v<Value, AlignmentAnalysisStarted>) {
                     handleAnalysisStarted(value);
                 } else if constexpr (std::is_same_v<Value, AlignmentAnalysisProgress>) {
@@ -2898,6 +3017,9 @@ private:
     std::optional<PendingProbe> pendingProbe_;
     std::optional<PlaybackRun> playbackRun_;
     std::optional<BackgroundAnalysis> analysisJob_;
+    std::optional<AutomaticAlignmentProposal> automaticAlignmentProposal_;
+    std::optional<AutomaticAlignmentUndoState> automaticAlignmentUndo_;
+    PrefetchScheduler prefetchScheduler_;
     std::uint64_t nextRequestId_ = 1U;
     std::uint64_t nextTimerId_ = 1U;
     std::uint64_t nextAnalysisJobId_ = 1U;
@@ -2905,6 +3027,8 @@ private:
 
     mutable std::mutex publicationMutex_;
     std::shared_ptr<const SessionSnapshot> publishedSnapshot_;
+    std::shared_ptr<const std::vector<SequenceAlignmentResult>> publishedSequenceAlignmentMaps_;
+    std::uint64_t publishedSequenceAlignmentRevision_ = std::numeric_limits<std::uint64_t>::max();
     std::vector<CommandTerminal> completedCommands_;
 
     std::mutex ingressMutex_;
@@ -2945,6 +3069,11 @@ std::shared_ptr<const SessionSnapshot> PlaybackCoordinator::snapshot() const {
 
 std::vector<CommandTerminal> PlaybackCoordinator::takeCompletedCommands() {
     return impl_->takeCompletedCommands();
+}
+
+std::shared_ptr<const std::vector<SequenceAlignmentResult>>
+PlaybackCoordinator::acceptedSequenceAlignments() const {
+    return impl_->acceptedSequenceAlignments();
 }
 
 std::shared_ptr<IApplicationEventSink> PlaybackCoordinator::eventSink() const noexcept {

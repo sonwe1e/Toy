@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <variant>
@@ -103,29 +104,20 @@ struct FrameSetPresented final {
     domain::FrameId frameId;
 };
 
-struct AlignmentEstimated final {
-    PlaybackRequestContext context;
-    std::vector<GlobalOffsetEstimate> estimates;
-};
-
-struct SequenceAlignmentAnalyzed final {
-    PlaybackRequestContext context;
-    std::vector<SequenceAlignmentResult> results;
-};
-
 struct AlignmentAnalysisStarted final {
     AlignmentAnalysisJobId jobId;
     PlaybackRequestContext context;
     AlignmentAnalysisKind kind;
-    std::uint64_t totalFrames = 0U;
+    AlignmentWorkEstimate work;
 };
 
 struct AlignmentAnalysisProgress final {
     AlignmentAnalysisJobId jobId;
     PlaybackRequestContext context;
     AlignmentAnalysisKind kind;
-    std::uint64_t completedFrames = 0U;
-    std::uint64_t totalFrames = 0U;
+    AlignmentAnalysisPhase phase = AlignmentAnalysisPhase::CollectingSignatures;
+    std::uint64_t completedUnits = 0U;
+    AlignmentWorkEstimate work;
 };
 
 struct AlignmentAnalysisCompleted final {
@@ -189,6 +181,8 @@ struct ProjectLoaded final {
     RequestContext context;
     domain::Project project;
     SourceRevalidationDiagnostics sourceDiagnostics;
+    std::shared_ptr<const std::vector<SequenceAlignmentResult>> derivedAlignmentResults;
+    std::optional<domain::MediaError> alignmentCacheError;
 };
 
 // This only confirms filesystem path normalization and identity capture. It does not assert
@@ -213,8 +207,6 @@ using ApplicationEvent = std::variant<RequestTerminal,
                                       ProbeCompleted,
                                       FrameSetReady,
                                       FrameSetPresented,
-                                      AlignmentEstimated,
-                                      SequenceAlignmentAnalyzed,
                                       AlignmentAnalysisStarted,
                                       AlignmentAnalysisProgress,
                                       AlignmentAnalysisCompleted,

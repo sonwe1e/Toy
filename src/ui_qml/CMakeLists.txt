@@ -4,6 +4,8 @@ add_library(
         include/dvs/ui/ComparisonSurface.h
         include/dvs/ui/ReviewController.h
         include/dvs/ui/ReviewPreferencesController.h
+        include/dvs/ui/SourceListModel.h
+        include/dvs/ui/WorkspaceController.h
         src/DesktopApplication.cpp
         src/DirectCompare.cpp
         src/ComparisonSurface.cpp
@@ -12,6 +14,8 @@ add_library(
         src/RenderAckRelay.cpp
         src/ReviewController.cpp
         src/ReviewPreferencesController.cpp
+        src/SourceListModel.cpp
+        src/WorkspaceController.cpp
 )
 add_library(dvs::ui_qml ALIAS dvs_ui_qml)
 

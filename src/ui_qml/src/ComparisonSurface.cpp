@@ -47,6 +47,13 @@ struct PresentationOptions final {
     platform::SurfaceDifferenceEdge differenceEdge = platform::SurfaceDifferenceEdge::Between0And1;
     platform::SurfaceDifferenceFilter differenceFilter =
         platform::SurfaceDifferenceFilter::Bilinear;
+    bool exactPlaneAvailable = false;
+    bool thresholdEnabled = false;
+    float threshold = 0.0F;
+    platform::SurfaceThresholdPolicy thresholdPolicy = platform::SurfaceThresholdPolicy::AnyChannel;
+    platform::SurfaceViewTransform viewTransform;
+    bool roiEnabled = false;
+    platform::SurfaceNormalizedRect roi;
     std::uint8_t referenceSlot = 0U;
 };
 
@@ -59,10 +66,25 @@ nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
         return platform::SurfaceViewMode::ThreeUp;
     case ComparisonSurface::ReferenceFocus:
         return platform::SurfaceViewMode::ReferenceFocus;
+    case ComparisonSurface::AnalysisGrid:
+        return platform::SurfaceViewMode::AnalysisGrid;
     case ComparisonSurface::SideBySide:
         break;
     }
     return platform::SurfaceViewMode::SideBySide;
+}
+
+[[nodiscard]] platform::SurfaceThresholdPolicy
+nativeThresholdPolicy(const ComparisonSurface::ThresholdPolicy value) noexcept {
+    switch (value) {
+    case ComparisonSurface::ThresholdLumaOnly:
+        return platform::SurfaceThresholdPolicy::LumaOnly;
+    case ComparisonSurface::ThresholdAllChannels:
+        return platform::SurfaceThresholdPolicy::AllChannels;
+    case ComparisonSurface::ThresholdAnyChannel:
+        break;
+    }
+    return platform::SurfaceThresholdPolicy::AnyChannel;
 }
 
 [[nodiscard]] platform::SurfaceDifferenceMetric
@@ -76,6 +98,8 @@ nativeDifferenceMetric(const ComparisonSurface::DifferenceMetric value) noexcept
         return platform::SurfaceDifferenceMetric::Chroma;
     case ComparisonSurface::Heatmap:
         return platform::SurfaceDifferenceMetric::Heatmap;
+    case ComparisonSurface::ExactPlanes:
+        return platform::SurfaceDifferenceMetric::ExactPlanes;
     }
     return platform::SurfaceDifferenceMetric::RgbAbsolute;
 }
@@ -130,6 +154,24 @@ nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept
         .differenceGain = nativeDifferenceGain(surface.differenceGain()),
         .differenceEdge = nativeDifferenceEdge(surface.differenceEdge()),
         .differenceFilter = nativeDifferenceFilter(surface.differenceFilter()),
+        .exactPlaneAvailable = surface.exactPlaneAvailable(),
+        .thresholdEnabled = surface.thresholdEnabled(),
+        .threshold = static_cast<float>(surface.threshold()),
+        .thresholdPolicy = nativeThresholdPolicy(surface.thresholdPolicy()),
+        .viewTransform =
+            platform::SurfaceViewTransform{
+                .centerX = static_cast<float>(surface.viewCenterX()),
+                .centerY = static_cast<float>(surface.viewCenterY()),
+                .scale = static_cast<float>(surface.viewScale()),
+            },
+        .roiEnabled = surface.roiEnabled(),
+        .roi =
+            platform::SurfaceNormalizedRect{
+                .left = static_cast<float>(surface.roiLeft()),
+                .top = static_cast<float>(surface.roiTop()),
+                .right = static_cast<float>(surface.roiRight()),
+                .bottom = static_cast<float>(surface.roiBottom()),
+            },
         .referenceSlot = static_cast<std::uint8_t>(surface.referenceSlot()),
     };
 }
@@ -213,6 +255,13 @@ public:
             .differenceGain = presentationOptions_.differenceGain,
             .differenceEdge = presentationOptions_.differenceEdge,
             .differenceFilter = presentationOptions_.differenceFilter,
+            .exactPlaneAvailable = presentationOptions_.exactPlaneAvailable,
+            .thresholdEnabled = presentationOptions_.thresholdEnabled,
+            .threshold = presentationOptions_.threshold,
+            .thresholdPolicy = presentationOptions_.thresholdPolicy,
+            .viewTransform = presentationOptions_.viewTransform,
+            .roiEnabled = presentationOptions_.roiEnabled,
+            .roi = presentationOptions_.roi,
             .referenceSlot = presentationOptions_.referenceSlot,
         };
         static_cast<void>(renderer_.render(state));
@@ -255,7 +304,7 @@ ComparisonSurface::ViewMode ComparisonSurface::viewMode() const noexcept {
 
 void ComparisonSurface::setViewMode(const ViewMode value) {
     if ((value != SideBySide && value != ThreeUp && value != ReferenceFocus &&
-         value != Difference) ||
+         value != Difference && value != AnalysisGrid) ||
         viewMode_ == value) {
         return;
     }
@@ -269,7 +318,8 @@ ComparisonSurface::DifferenceMetric ComparisonSurface::differenceMetric() const 
 }
 
 void ComparisonSurface::setDifferenceMetric(const DifferenceMetric value) {
-    if ((value != RgbAbsolute && value != Luma && value != Chroma && value != Heatmap) ||
+    if ((value != RgbAbsolute && value != Luma && value != Chroma && value != Heatmap &&
+         value != ExactPlanes) ||
         differenceMetric_ == value) {
         return;
     }
@@ -317,6 +367,196 @@ void ComparisonSurface::setDifferenceFilter(const DifferenceFilter value) {
     }
     differenceFilter_ = value;
     emit differenceFilterChanged();
+    update();
+}
+
+bool ComparisonSurface::exactPlaneAvailable() const noexcept {
+    return exactPlaneAvailable_;
+}
+
+void ComparisonSurface::setExactPlaneAvailable(const bool value) {
+    if (exactPlaneAvailable_ == value) {
+        return;
+    }
+    exactPlaneAvailable_ = value;
+    emit exactPlaneAvailableChanged();
+    update();
+}
+
+bool ComparisonSurface::thresholdEnabled() const noexcept {
+    return thresholdEnabled_;
+}
+
+void ComparisonSurface::setThresholdEnabled(const bool value) {
+    if (thresholdEnabled_ == value) {
+        return;
+    }
+    thresholdEnabled_ = value;
+    emit thresholdChanged();
+    update();
+}
+
+qreal ComparisonSurface::threshold() const noexcept {
+    return threshold_;
+}
+
+void ComparisonSurface::setThreshold(const qreal value) {
+    if (!std::isfinite(value)) {
+        return;
+    }
+    const qreal normalized = std::clamp(value, 0.0, 1.0);
+    if (qFuzzyCompare(threshold_, normalized)) {
+        return;
+    }
+    threshold_ = normalized;
+    emit thresholdChanged();
+    update();
+}
+
+ComparisonSurface::ThresholdPolicy ComparisonSurface::thresholdPolicy() const noexcept {
+    return thresholdPolicy_;
+}
+
+void ComparisonSurface::setThresholdPolicy(const ThresholdPolicy value) {
+    if ((value != ThresholdLumaOnly && value != ThresholdAnyChannel &&
+         value != ThresholdAllChannels) ||
+        thresholdPolicy_ == value) {
+        return;
+    }
+    thresholdPolicy_ = value;
+    emit thresholdChanged();
+    update();
+}
+
+qreal ComparisonSurface::viewCenterX() const noexcept {
+    return viewCenterX_;
+}
+
+qreal ComparisonSurface::viewCenterY() const noexcept {
+    return viewCenterY_;
+}
+
+qreal ComparisonSurface::viewScale() const noexcept {
+    return viewScale_;
+}
+
+bool ComparisonSurface::roiEnabled() const noexcept {
+    return roiEnabled_;
+}
+
+qreal ComparisonSurface::roiLeft() const noexcept {
+    return roiLeft_;
+}
+
+qreal ComparisonSurface::roiTop() const noexcept {
+    return roiTop_;
+}
+
+qreal ComparisonSurface::roiRight() const noexcept {
+    return roiRight_;
+}
+
+qreal ComparisonSurface::roiBottom() const noexcept {
+    return roiBottom_;
+}
+
+void ComparisonSurface::zoomAt(const qreal normalizedX,
+                               const qreal normalizedY,
+                               const qreal factor) {
+    if (!std::isfinite(normalizedX) || !std::isfinite(normalizedY) || !std::isfinite(factor) ||
+        factor <= 0.0) {
+        return;
+    }
+    const qreal focalX = std::clamp(normalizedX, 0.0, 1.0);
+    const qreal focalY = std::clamp(normalizedY, 0.0, 1.0);
+    const qreal oldVisible = 1.0 / viewScale_;
+    const qreal oldLeft = std::clamp(viewCenterX_ - (oldVisible * 0.5), 0.0, 1.0 - oldVisible);
+    const qreal oldTop = std::clamp(viewCenterY_ - (oldVisible * 0.5), 0.0, 1.0 - oldVisible);
+    const qreal sourceX = oldLeft + (focalX * oldVisible);
+    const qreal sourceY = oldTop + (focalY * oldVisible);
+    const qreal nextScale = std::clamp(viewScale_ * factor, 1.0, 64.0);
+    const qreal nextVisible = 1.0 / nextScale;
+    const qreal nextLeft = std::clamp(sourceX - (focalX * nextVisible), 0.0, 1.0 - nextVisible);
+    const qreal nextTop = std::clamp(sourceY - (focalY * nextVisible), 0.0, 1.0 - nextVisible);
+    viewScale_ = nextScale;
+    viewCenterX_ = nextLeft + (nextVisible * 0.5);
+    viewCenterY_ = nextTop + (nextVisible * 0.5);
+    emit viewportChanged();
+    update();
+}
+
+void ComparisonSurface::panBy(const qreal normalizedDeltaX, const qreal normalizedDeltaY) {
+    if (!std::isfinite(normalizedDeltaX) || !std::isfinite(normalizedDeltaY) || viewScale_ <= 1.0) {
+        return;
+    }
+    const qreal visible = 1.0 / viewScale_;
+    const qreal minimumCenter = visible * 0.5;
+    const qreal maximumCenter = 1.0 - minimumCenter;
+    const qreal nextX =
+        std::clamp(viewCenterX_ - (normalizedDeltaX * visible), minimumCenter, maximumCenter);
+    const qreal nextY =
+        std::clamp(viewCenterY_ - (normalizedDeltaY * visible), minimumCenter, maximumCenter);
+    if (qFuzzyCompare(nextX, viewCenterX_) && qFuzzyCompare(nextY, viewCenterY_)) {
+        return;
+    }
+    viewCenterX_ = nextX;
+    viewCenterY_ = nextY;
+    emit viewportChanged();
+    update();
+}
+
+void ComparisonSurface::resetViewport() {
+    if (qFuzzyCompare(viewCenterX_, 0.5) && qFuzzyCompare(viewCenterY_, 0.5) &&
+        qFuzzyCompare(viewScale_, 1.0)) {
+        return;
+    }
+    viewCenterX_ = 0.5;
+    viewCenterY_ = 0.5;
+    viewScale_ = 1.0;
+    emit viewportChanged();
+    update();
+}
+
+void ComparisonSurface::setRoiNormalized(const qreal left,
+                                         const qreal top,
+                                         const qreal right,
+                                         const qreal bottom) {
+    if (!std::isfinite(left) || !std::isfinite(top) || !std::isfinite(right) ||
+        !std::isfinite(bottom)) {
+        return;
+    }
+    const qreal normalizedLeft = std::clamp((std::min)(left, right), 0.0, 1.0);
+    const qreal normalizedTop = std::clamp((std::min)(top, bottom), 0.0, 1.0);
+    const qreal normalizedRight = std::clamp((std::max)(left, right), 0.0, 1.0);
+    const qreal normalizedBottom = std::clamp((std::max)(top, bottom), 0.0, 1.0);
+    if ((normalizedRight - normalizedLeft) < 0.001 || (normalizedBottom - normalizedTop) < 0.001) {
+        return;
+    }
+    roiEnabled_ = true;
+    roiLeft_ = normalizedLeft;
+    roiTop_ = normalizedTop;
+    roiRight_ = normalizedRight;
+    roiBottom_ = normalizedBottom;
+    viewCenterX_ = 0.5;
+    viewCenterY_ = 0.5;
+    viewScale_ = 1.0;
+    emit viewportChanged();
+    update();
+}
+
+void ComparisonSurface::clearRoi() {
+    if (!roiEnabled_) {
+        return;
+    }
+    roiEnabled_ = false;
+    roiLeft_ = 0.0;
+    roiTop_ = 0.0;
+    roiRight_ = 1.0;
+    roiBottom_ = 1.0;
+    viewCenterX_ = 0.5;
+    viewCenterY_ = 0.5;
+    viewScale_ = 1.0;
+    emit viewportChanged();
     update();
 }
 

@@ -62,14 +62,23 @@ IGpuFrameBacking::~IGpuFrameBacking() = default;
 
 GpuFrameAllocation::GpuFrameAllocation(FrameBudget::Reservation reservation,
                                        std::unique_ptr<const IGpuFrameBacking> backing) noexcept
-    : reservation_(std::move(reservation)), backing_(std::move(backing)) {}
+    : reservation_(std::move(reservation)), accountedBytes_(reservation_.bytes()),
+      backing_(std::move(backing)) {}
+
+GpuFrameAllocation::GpuFrameAllocation(const std::size_t accountedBytes,
+                                       std::shared_ptr<const void> accountingAnchor,
+                                       std::unique_ptr<const IGpuFrameBacking> backing) noexcept
+    : accountedBytes_(accountedBytes), accountingAnchor_(std::move(accountingAnchor)),
+      backing_(std::move(backing)) {}
 
 bool GpuFrameAllocation::isValid() const noexcept {
-    return reservation_ && reservation_.bytes() != 0U && backing_ != nullptr;
+    const bool ownsReservation = reservation_ && reservation_.bytes() == accountedBytes_;
+    return accountedBytes_ != 0U && (ownsReservation || accountingAnchor_ != nullptr) &&
+           backing_ != nullptr;
 }
 
 std::size_t GpuFrameAllocation::accountedBytes() const noexcept {
-    return reservation_.bytes();
+    return accountedBytes_;
 }
 
 const IGpuFrameBacking& GpuFrameAllocation::backing() const noexcept {
@@ -80,7 +89,8 @@ std::shared_ptr<const GpuFrameResource>
 GpuFrameResource::create(GpuFrameIdentity identity,
                          const application::FrameGeometry geometry,
                          const domain::ColorMetadata colorMetadata,
-                         GpuFrameAllocation allocation) noexcept {
+                         GpuFrameAllocation allocation,
+                         const application::NormalizedFrameFormat format) noexcept {
     if (!identity.frameId.isValid() || !geometry.isValid() || !colorMetadata.isValid() ||
         !allocation.isValid()) {
         return {};
@@ -88,25 +98,26 @@ GpuFrameResource::create(GpuFrameIdentity identity,
 
     try {
         return std::shared_ptr<const GpuFrameResource>{new GpuFrameResource(
-            std::move(identity), geometry, colorMetadata, std::move(allocation))};
+            std::move(identity), geometry, colorMetadata, std::move(allocation), format)};
     } catch (...) {
         return {};
     }
 }
 
-std::shared_ptr<const GpuFrameResource> GpuFrameResource::createDeferred(
-    GpuFrameIdentity identity,
-    const application::FrameGeometry geometry,
-    const domain::ColorMetadata colorMetadata,
-    GpuFrameAllocation allocation,
-    std::shared_ptr<GpuFrameRetirementDomain> retirementDomain) noexcept {
+std::shared_ptr<const GpuFrameResource>
+GpuFrameResource::createDeferred(GpuFrameIdentity identity,
+                                 const application::FrameGeometry geometry,
+                                 const domain::ColorMetadata colorMetadata,
+                                 GpuFrameAllocation allocation,
+                                 std::shared_ptr<GpuFrameRetirementDomain> retirementDomain,
+                                 const application::NormalizedFrameFormat format) noexcept {
     if (!identity.frameId.isValid() || !geometry.isValid() || !colorMetadata.isValid() ||
         !allocation.isValid() || !retirementDomain) {
         return {};
     }
 
-    auto* const resource = new (std::nothrow)
-        GpuFrameResource(std::move(identity), geometry, colorMetadata, std::move(allocation));
+    auto* const resource = new (std::nothrow) GpuFrameResource(
+        std::move(identity), geometry, colorMetadata, std::move(allocation), format);
     if (resource == nullptr) {
         return {};
     }
@@ -129,9 +140,10 @@ std::shared_ptr<const GpuFrameResource> GpuFrameResource::createDeferred(
 GpuFrameResource::GpuFrameResource(GpuFrameIdentity identity,
                                    const application::FrameGeometry geometry,
                                    const domain::ColorMetadata colorMetadata,
-                                   GpuFrameAllocation&& allocation) noexcept
+                                   GpuFrameAllocation&& allocation,
+                                   const application::NormalizedFrameFormat format) noexcept
     : identity_(std::move(identity)), geometry_(geometry), colorMetadata_(colorMetadata),
-      allocation_(std::move(allocation)) {}
+      allocation_(std::move(allocation)), format_(format) {}
 
 const GpuFrameIdentity& GpuFrameResource::identity() const noexcept {
     return identity_;
@@ -155,6 +167,10 @@ const application::FrameGeometry& GpuFrameResource::geometry() const noexcept {
 
 const domain::ColorMetadata& GpuFrameResource::colorMetadata() const noexcept {
     return colorMetadata_;
+}
+
+application::NormalizedFrameFormat GpuFrameResource::format() const noexcept {
+    return format_;
 }
 
 domain::DeviceGeneration GpuFrameResource::deviceGeneration() const noexcept {

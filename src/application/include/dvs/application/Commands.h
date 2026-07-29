@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -83,6 +84,19 @@ struct CancelAlignmentAnalysisCommand final {
     CommandContext context;
 };
 
+struct ConfirmAutomaticAlignmentCommand final {
+    CommandContext context;
+};
+
+struct UndoAutomaticAlignmentCommand final {
+    CommandContext context;
+};
+
+struct RestoreSequenceAlignmentCommand final {
+    CommandContext context;
+    std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceResults;
+};
+
 struct SetManualAlignmentAnchorCommand final {
     CommandContext context;
     domain::SourceId sourceId = 0;
@@ -109,6 +123,9 @@ using PlaybackCommand = std::variant<OpenComparisonCommand,
                                      EstimateAlignmentCommand,
                                      AnalyzeSequenceAlignmentCommand,
                                      CancelAlignmentAnalysisCommand,
+                                     ConfirmAutomaticAlignmentCommand,
+                                     UndoAutomaticAlignmentCommand,
+                                     RestoreSequenceAlignmentCommand,
                                      SetManualAlignmentAnchorCommand,
                                      ClearManualAlignmentAnchorsCommand,
                                      CloseSessionCommand>;

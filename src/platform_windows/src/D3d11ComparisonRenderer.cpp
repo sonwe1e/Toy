@@ -34,6 +34,8 @@ struct alignas(16) ComposeConstants final {
     std::array<float, 4U> sourceUvRect{};
     float opacity = 1.0F;
     std::array<float, 3U> padding{};
+    std::uint32_t sourceRotation = 0U;
+    std::array<float, 3U> rotationPadding{};
 };
 
 struct alignas(16) ColorConstants final {
@@ -49,11 +51,18 @@ struct alignas(16) DifferenceConstants final {
     float gain = 1.0F;
     std::uint32_t filter = 0U;
     float padding = 0.0F;
+    std::uint32_t thresholdEnabled = 0U;
+    float threshold = 0.0F;
+    std::uint32_t thresholdPolicy = 0U;
+    float thresholdPadding = 0.0F;
+    std::uint32_t sourceRotationA = 0U;
+    std::uint32_t sourceRotationB = 0U;
+    std::array<float, 2U> rotationPadding{};
 };
 
-static_assert(sizeof(ComposeConstants) == 112U);
+static_assert(sizeof(ComposeConstants) == 128U);
 static_assert(sizeof(ColorConstants) == 48U);
-static_assert(sizeof(DifferenceConstants) == 80U);
+static_assert(sizeof(DifferenceConstants) == 112U);
 
 struct VideoDraw final {
     ComposeConstants compose;
@@ -76,7 +85,7 @@ struct DifferenceDraw final {
 
 struct PreparedSetDraw final {
     FrameMailboxPublication publication;
-    bool difference = false;
+    bool hasDifference = false;
     // Up to three slot draws (two-up, three-up, reference-focus layouts). Each draw carries its
     // own constants and owns one constant-buffer set until the immediate-context draw is issued.
     std::array<VideoDraw, 3U> videoDraws{};
@@ -93,13 +102,15 @@ struct PreparedSetDraw final {
 
 [[nodiscard]] bool isValid(const SurfaceViewMode value) noexcept {
     return value == SurfaceViewMode::SideBySide || value == SurfaceViewMode::ThreeUp ||
-           value == SurfaceViewMode::ReferenceFocus || value == SurfaceViewMode::Difference;
+           value == SurfaceViewMode::ReferenceFocus || value == SurfaceViewMode::Difference ||
+           value == SurfaceViewMode::AnalysisGrid;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceMetric value) noexcept {
     return value == SurfaceDifferenceMetric::RgbAbsolute ||
            value == SurfaceDifferenceMetric::Luma || value == SurfaceDifferenceMetric::Chroma ||
-           value == SurfaceDifferenceMetric::Heatmap;
+           value == SurfaceDifferenceMetric::Heatmap ||
+           value == SurfaceDifferenceMetric::ExactPlanes;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceGain value) noexcept {
@@ -117,6 +128,12 @@ struct PreparedSetDraw final {
 [[nodiscard]] bool isValid(const SurfaceDifferenceFilter value) noexcept {
     return value == SurfaceDifferenceFilter::Nearest ||
            value == SurfaceDifferenceFilter::Bilinear || value == SurfaceDifferenceFilter::Bicubic;
+}
+
+[[nodiscard]] bool isValid(const SurfaceThresholdPolicy value) noexcept {
+    return value == SurfaceThresholdPolicy::LumaOnly ||
+           value == SurfaceThresholdPolicy::AnyChannel ||
+           value == SurfaceThresholdPolicy::AllChannels;
 }
 
 [[nodiscard]] float differenceGain(const SurfaceDifferenceGain value) noexcept {
@@ -145,6 +162,38 @@ textureRegionValues(const application::TextureRegion& region) noexcept {
     };
 }
 
+[[nodiscard]] application::TextureRegion
+transformedTextureRegion(const application::TextureRegion& source,
+                         const SurfaceViewTransform& transform,
+                         const bool roiEnabled,
+                         const SurfaceNormalizedRect& roi) noexcept {
+    const SurfaceNormalizedRect sample = effectiveSurfaceSampleRect(transform, roiEnabled, roi);
+    const float sourceWidth = source.right - source.left;
+    const float sourceHeight = source.bottom - source.top;
+    return application::TextureRegion{
+        .left = source.left + (sample.left * sourceWidth),
+        .top = source.top + (sample.top * sourceHeight),
+        .right = source.left + (sample.right * sourceWidth),
+        .bottom = source.top + (sample.bottom * sourceHeight),
+    };
+}
+
+[[nodiscard]] std::pair<float, float> transformedExtent(const application::FrameGeometry& geometry,
+                                                        const bool roiEnabled,
+                                                        const SurfaceNormalizedRect& roi) noexcept {
+    const float widthScale = roiEnabled ? roi.right - roi.left : 1.0F;
+    const float heightScale = roiEnabled ? roi.bottom - roi.top : 1.0F;
+    const float sampleWidth = static_cast<float>(geometry.width) * widthScale *
+                              static_cast<float>(geometry.presentation.sampleAspectNumerator) /
+                              static_cast<float>(geometry.presentation.sampleAspectDenominator);
+    const float sampleHeight = static_cast<float>(geometry.height) * heightScale;
+    if (geometry.presentation.rotationDegrees == 90U ||
+        geometry.presentation.rotationDegrees == 270U) {
+        return {sampleHeight, sampleWidth};
+    }
+    return {sampleWidth, sampleHeight};
+}
+
 [[nodiscard]] std::array<float, 4U>
 sourcePlaneDimensions(const application::FrameGeometry& geometry) noexcept {
     const std::uint32_t uvWidth = (geometry.width / 2U) + (geometry.width % 2U);
@@ -159,7 +208,8 @@ sourcePlaneDimensions(const application::FrameGeometry& geometry) noexcept {
 
 [[nodiscard]] ComposeConstants makeComposeConstants(const SurfaceRenderState& state,
                                                     const SurfaceRect& destination,
-                                                    const application::TextureRegion& region) {
+                                                    const application::TextureRegion& region,
+                                                    const std::uint16_t rotationDegrees = 0U) {
     return ComposeConstants{
         .clipFromItem = state.clipFromItem,
         .destinationRect = {destination.x, destination.y, destination.width, destination.height},
@@ -171,6 +221,7 @@ sourcePlaneDimensions(const application::FrameGeometry& geometry) noexcept {
                 region.bottom - region.top,
             },
         .opacity = std::clamp(state.opacity, 0.0F, 1.0F),
+        .sourceRotation = rotationDegrees / 90U,
     };
 }
 
@@ -225,13 +276,24 @@ d3dBacking(const std::shared_ptr<const GpuFrameResource>& frame) noexcept {
     return dynamic_cast<const D3d11GpuFrameBacking*>(&frame->backing());
 }
 
+[[nodiscard]] std::uint8_t frameBitDepth(const GpuFrameResource& frame) noexcept {
+    return frame.format() == application::NormalizedFrameFormat::P010_10 ? 10U : 8U;
+}
+
 [[nodiscard]] VideoDraw makeVideoDraw(const SurfaceRenderState& state,
                                       const SurfaceRect& destination,
                                       const GpuFrameResource& frame,
                                       const D3d11GpuFrameBacking& backing) {
+    const application::TextureRegion sourceRegion = transformedTextureRegion(
+        frame.geometry().textureRegion, state.viewTransform, state.roiEnabled, state.roi);
     return VideoDraw{
-        .compose = makeComposeConstants(state, destination, frame.geometry().textureRegion),
-        .color = ColorConstants{.yuvToRgb = nv12ColorTransform(frame.colorMetadata()).yuvToRgb},
+        .compose = makeComposeConstants(
+            state, destination, sourceRegion, frame.geometry().presentation.rotationDegrees),
+        .color =
+            ColorConstants{
+                .yuvToRgb =
+                    nv12ColorTransform(frame.colorMetadata(), frameBitDepth(frame)).yuvToRgb,
+            },
         .yView = backing.yView(),
         .uvView = backing.uvView(),
     };
@@ -243,28 +305,50 @@ d3dBacking(const std::shared_ptr<const GpuFrameResource>& frame) noexcept {
                                                 const D3d11GpuFrameBacking& backingA,
                                                 const GpuFrameResource& frameB,
                                                 const D3d11GpuFrameBacking& backingB) {
+    const application::TextureRegion regionA = transformedTextureRegion(
+        frameA.geometry().textureRegion, state.viewTransform, state.roiEnabled, state.roi);
+    const application::TextureRegion regionB = transformedTextureRegion(
+        frameB.geometry().textureRegion, state.viewTransform, state.roiEnabled, state.roi);
     return DifferenceDraw{
         .compose = makeComposeConstants(
             state,
             destination,
             application::TextureRegion{.left = 0.0F, .top = 0.0F, .right = 1.0F, .bottom = 1.0F}),
-        .colorA = ColorConstants{.yuvToRgb = nv12ColorTransform(frameA.colorMetadata()).yuvToRgb},
-        .colorB = ColorConstants{.yuvToRgb = nv12ColorTransform(frameB.colorMetadata()).yuvToRgb},
+        .colorA =
+            ColorConstants{
+                .yuvToRgb =
+                    nv12ColorTransform(frameA.colorMetadata(), frameBitDepth(frameA)).yuvToRgb,
+            },
+        .colorB =
+            ColorConstants{
+                .yuvToRgb =
+                    nv12ColorTransform(frameB.colorMetadata(), frameBitDepth(frameB)).yuvToRgb,
+            },
         .options =
             DifferenceConstants{
-                .sourceUvRectA = textureRegionValues(frameA.geometry().textureRegion),
-                .sourceUvRectB = textureRegionValues(frameB.geometry().textureRegion),
+                .sourceUvRectA = textureRegionValues(regionA),
+                .sourceUvRectB = textureRegionValues(regionB),
                 .planeDimensionsA = sourcePlaneDimensions(frameA.geometry()),
                 .planeDimensionsB = sourcePlaneDimensions(frameB.geometry()),
                 .metric = static_cast<std::uint32_t>(state.differenceMetric),
                 .gain = differenceGain(state.differenceGain),
-                .filter = static_cast<std::uint32_t>(state.differenceFilter),
+                .filter = static_cast<std::uint32_t>(state.differenceMetric ==
+                                                             SurfaceDifferenceMetric::ExactPlanes
+                                                         ? SurfaceDifferenceFilter::Nearest
+                                                         : state.differenceFilter),
+                .thresholdEnabled = state.thresholdEnabled ? 1U : 0U,
+                .threshold = state.threshold,
+                .thresholdPolicy = static_cast<std::uint32_t>(state.thresholdPolicy),
+                .sourceRotationA = frameA.geometry().presentation.rotationDegrees / 90U,
+                .sourceRotationB = frameB.geometry().presentation.rotationDegrees / 90U,
             },
         .yViewA = backingA.yView(),
         .uvViewA = backingA.uvView(),
         .yViewB = backingB.yView(),
         .uvViewB = backingB.uvView(),
-        .filter = state.differenceFilter,
+        .filter = state.differenceMetric == SurfaceDifferenceMetric::ExactPlanes
+                      ? SurfaceDifferenceFilter::Nearest
+                      : state.differenceFilter,
     };
 }
 
@@ -301,6 +385,41 @@ void appendLetterboxBars(const SurfaceRenderState& state,
 
 } // namespace
 
+bool SurfaceViewTransform::isValid() const noexcept {
+    return std::isfinite(centerX) && std::isfinite(centerY) && std::isfinite(scale) &&
+           centerX >= 0.0F && centerX <= 1.0F && centerY >= 0.0F && centerY <= 1.0F &&
+           scale >= 1.0F && scale <= 64.0F;
+}
+
+bool SurfaceNormalizedRect::isValid() const noexcept {
+    return std::isfinite(left) && std::isfinite(top) && std::isfinite(right) &&
+           std::isfinite(bottom) && left >= 0.0F && top >= 0.0F && right <= 1.0F &&
+           bottom <= 1.0F && left < right && top < bottom;
+}
+
+SurfaceNormalizedRect effectiveSurfaceSampleRect(const SurfaceViewTransform& transform,
+                                                 const bool roiEnabled,
+                                                 const SurfaceNormalizedRect& roi) noexcept {
+    if (!transform.isValid() || (roiEnabled && !roi.isValid())) {
+        return {};
+    }
+    const float roiLeft = roiEnabled ? roi.left : 0.0F;
+    const float roiTop = roiEnabled ? roi.top : 0.0F;
+    const float roiWidth = roiEnabled ? roi.right - roi.left : 1.0F;
+    const float roiHeight = roiEnabled ? roi.bottom - roi.top : 1.0F;
+    const float visible = 1.0F / transform.scale;
+    const float viewportLeft =
+        std::clamp(transform.centerX - (visible * 0.5F), 0.0F, 1.0F - visible);
+    const float viewportTop =
+        std::clamp(transform.centerY - (visible * 0.5F), 0.0F, 1.0F - visible);
+    return SurfaceNormalizedRect{
+        .left = roiLeft + (viewportLeft * roiWidth),
+        .top = roiTop + (viewportTop * roiHeight),
+        .right = roiLeft + ((viewportLeft + visible) * roiWidth),
+        .bottom = roiTop + ((viewportTop + visible) * roiHeight),
+    };
+}
+
 bool SurfaceRenderState::isValid() const noexcept {
     if (!allFinite(clipFromItem) || !std::isfinite(logicalWidth) || !std::isfinite(logicalHeight) ||
         !std::isfinite(opacity) || logicalWidth <= 0.0F || logicalHeight <= 0.0F ||
@@ -310,7 +429,9 @@ bool SurfaceRenderState::isValid() const noexcept {
     return (!scissorEnabled || scissor.isValid()) && dvs::platform::isValid(viewMode) &&
            dvs::platform::isValid(differenceMetric) && dvs::platform::isValid(differenceGain) &&
            dvs::platform::isValid(differenceEdge) && dvs::platform::isValid(differenceFilter) &&
-           referenceSlot < 3U;
+           dvs::platform::isValid(thresholdPolicy) && std::isfinite(threshold) &&
+           threshold >= 0.0F && threshold <= 1.0F && viewTransform.isValid() &&
+           (!roiEnabled || roi.isValid()) && referenceSlot < 3U;
 }
 
 SurfaceSplitLayout computeSurfaceSplit(const float logicalWidth,
@@ -408,16 +529,18 @@ computeReferenceFocusLayout(const float logicalWidth,
     };
 }
 
-SurfaceRect aspectFitRect(const SurfaceRect& bounds,
-                          const std::uint32_t sourceWidth,
-                          const std::uint32_t sourceHeight) noexcept {
+namespace {
+
+[[nodiscard]] SurfaceRect aspectFitRectFloat(const SurfaceRect& bounds,
+                                             const float sourceWidth,
+                                             const float sourceHeight) noexcept {
     if (!bounds.isValid() || !std::isfinite(bounds.x) || !std::isfinite(bounds.y) ||
         !std::isfinite(bounds.width) || !std::isfinite(bounds.height) || sourceWidth == 0U ||
         sourceHeight == 0U) {
         return {};
     }
 
-    const float sourceAspect = static_cast<float>(sourceWidth) / static_cast<float>(sourceHeight);
+    const float sourceAspect = sourceWidth / sourceHeight;
     const float boundsAspect = bounds.width / bounds.height;
     float fittedWidth = bounds.width;
     float fittedHeight = bounds.height;
@@ -433,6 +556,15 @@ SurfaceRect aspectFitRect(const SurfaceRect& bounds,
         .width = fittedWidth,
         .height = fittedHeight,
     };
+}
+
+} // namespace
+
+SurfaceRect aspectFitRect(const SurfaceRect& bounds,
+                          const std::uint32_t sourceWidth,
+                          const std::uint32_t sourceHeight) noexcept {
+    return aspectFitRectFloat(
+        bounds, static_cast<float>(sourceWidth), static_cast<float>(sourceHeight));
 }
 
 std::optional<D3dScissorRect>
@@ -480,7 +612,8 @@ d3dScissorFromBottomLeft(const SurfaceScissorRect& scissor,
     return result;
 }
 
-Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata) noexcept {
+Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata,
+                                      const std::uint8_t bitDepth) noexcept {
     const bool bt709 = metadata.matrix == domain::ColorMatrix::kBt709;
     const float redLuma = bt709 ? 0.2126F : 0.299F;
     const float blueLuma = bt709 ? 0.0722F : 0.114F;
@@ -491,11 +624,21 @@ Nv12ColorTransform nv12ColorTransform(const domain::ColorMetadata& metadata) noe
     const float greenFromCb = -2.0F * blueLuma * (1.0F - blueLuma) / greenLuma;
     const float greenFromCr = -2.0F * redLuma * (1.0F - redLuma) / greenLuma;
 
+    const bool p010 = bitDepth == 10U;
     const bool limited = metadata.range == domain::ColorRange::kLimited;
-    const float yScale = limited ? (255.0F / 219.0F) : 1.0F;
-    const float yOffset = limited ? (-16.0F / 219.0F) : 0.0F;
-    const float chromaScale = limited ? (255.0F / 224.0F) : 1.0F;
-    const float chromaOffset = limited ? (-128.0F / 224.0F) : -0.5F;
+    const float storageMaximum = p010 ? 65535.0F : 255.0F;
+    const float codeScale = p010 ? 64.0F : 1.0F;
+    const float codeMaximum = (p010 ? 1023.0F : 255.0F) * codeScale;
+    const float yMinimum = (p010 ? 64.0F : 16.0F) * codeScale;
+    const float yRange = (p010 ? 876.0F : 219.0F) * codeScale;
+    const float chromaMidpoint = (p010 ? 512.0F : 128.0F) * codeScale;
+    const float chromaRange = (p010 ? 896.0F : 224.0F) * codeScale;
+    const float yScale = limited ? (storageMaximum / yRange) : (storageMaximum / codeMaximum);
+    const float yOffset = limited ? (-yMinimum / yRange) : 0.0F;
+    const float chromaScale =
+        limited ? (storageMaximum / chromaRange) : (storageMaximum / codeMaximum);
+    const float chromaOffset =
+        limited ? (-chromaMidpoint / chromaRange) : (-chromaMidpoint / codeMaximum);
 
     return Nv12ColorTransform{
         .yuvToRgb =
@@ -591,6 +734,9 @@ public:
                                                        : ComparisonRenderResult::ResourceFailure;
         }
 
+        if (const std::shared_ptr<IRenderActivitySink> sink = activitySink_.lock()) {
+            sink->notifyFrameRenderStarted();
+        }
         PreparedSetDraw prepared;
         if (!prepareSetDraw(state, publication, lease, prepared)) {
             return frontPublication_.has_value() && drawFrontOrBackground(state, lease)
@@ -631,6 +777,7 @@ public:
         colorBufferB_.Reset();
         colorBufferA_.Reset();
         differenceBuffer_.Reset();
+        differenceComposeBuffer_.Reset();
         composeBufferC_.Reset();
         composeBufferB_.Reset();
         composeBufferA_.Reset();
@@ -706,6 +853,8 @@ private:
                        *device_.Get(), sizeof(ComposeConstants), composeBufferB_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ComposeConstants), composeBufferC_)) ||
+            FAILED(result = createDynamicConstantBuffer(
+                       *device_.Get(), sizeof(ComposeConstants), differenceComposeBuffer_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ColorConstants), colorBufferA_)) ||
             FAILED(result = createDynamicConstantBuffer(
@@ -917,8 +1066,9 @@ private:
         const auto appendRegionDraw = [&](const SurfaceRect& bounds,
                                           const GpuFrameResource& frame,
                                           const D3d11GpuFrameBacking& backing) {
-            const SurfaceRect destination =
-                aspectFitRect(bounds, frame.geometry().width, frame.geometry().height);
+            const auto [contentWidth, contentHeight] =
+                transformedExtent(frame.geometry(), state.roiEnabled, state.roi);
+            const SurfaceRect destination = aspectFitRectFloat(bounds, contentWidth, contentHeight);
             if (!destination.isValid() || prepared.videoDrawCount >= prepared.videoDraws.size()) {
                 return false;
             }
@@ -930,10 +1080,16 @@ private:
         };
         ID3D11DeviceContext& context = *lease.immediateContext.Get();
         HRESULT result = S_OK;
-        if (state.viewMode == SurfaceViewMode::Difference) {
-            // Difference never degrades to a single-source image. If either selected slot is
-            // unavailable, draw an explicit black unavailable canvas; the QML projection names
-            // the missing source and canonical frame above it.
+        const auto appendDifference = [&](const SurfaceRect& bounds) {
+            if (state.differenceMetric == SurfaceDifferenceMetric::ExactPlanes &&
+                !state.exactPlaneAvailable) {
+                if (prepared.letterboxBarCount < prepared.letterboxBars.size()) {
+                    prepared.letterboxBars[prepared.letterboxBarCount] =
+                        makeComposeConstants(state, bounds, application::TextureRegion{});
+                    ++prepared.letterboxBarCount;
+                }
+                return true;
+            }
             const GpuFrameResource* edgeFirst = frameA.get();
             const D3d11GpuFrameBacking* edgeFirstBacking = backingA;
             const GpuFrameResource* edgeSecond = frameB.get();
@@ -950,44 +1106,38 @@ private:
             const bool edgeFirstUsable = backingUsable(edgeFirst, edgeFirstBacking);
             const bool edgeSecondUsable = backingUsable(edgeSecond, edgeSecondBacking);
             if (!edgeFirstUsable || !edgeSecondUsable) {
-                prepared.publication = publication;
-                prepared.letterboxBars[0U] = makeBlackConstants(state);
-                prepared.letterboxBarCount = 1U;
-            } else {
-                const SurfaceRect bounds{
+                if (prepared.letterboxBarCount < prepared.letterboxBars.size()) {
+                    prepared.letterboxBars[prepared.letterboxBarCount] =
+                        makeComposeConstants(state, bounds, application::TextureRegion{});
+                    ++prepared.letterboxBarCount;
+                }
+                return true;
+            }
+            const auto [contentWidth, contentHeight] =
+                transformedExtent(edgeFirst->geometry(), state.roiEnabled, state.roi);
+            const SurfaceRect destination = aspectFitRectFloat(bounds, contentWidth, contentHeight);
+            if (!destination.isValid()) {
+                return false;
+            }
+            prepared.hasDifference = true;
+            prepared.differenceDraw = makeDifferenceDraw(
+                state, destination, *edgeFirst, *edgeFirstBacking, *edgeSecond, *edgeSecondBacking);
+            appendLetterboxBars(state, bounds, destination, prepared);
+            return true;
+        };
+
+        prepared.publication = publication;
+        if (state.viewMode == SurfaceViewMode::Difference) {
+            // Difference never degrades to a single-source image. If either selected slot is
+            // unavailable, draw an explicit black unavailable canvas; the QML projection names
+            // the missing source and canonical frame above it.
+            if (!appendDifference(SurfaceRect{
                     .x = 0.0F,
                     .y = 0.0F,
                     .width = state.logicalWidth,
                     .height = state.logicalHeight,
-                };
-                const SurfaceRect destination = aspectFitRect(
-                    bounds, edgeFirst->geometry().width, edgeFirst->geometry().height);
-                if (!destination.isValid()) {
-                    return false;
-                }
-                prepared.publication = publication;
-                prepared.difference = true;
-                prepared.differenceDraw = makeDifferenceDraw(state,
-                                                             destination,
-                                                             *edgeFirst,
-                                                             *edgeFirstBacking,
-                                                             *edgeSecond,
-                                                             *edgeSecondBacking);
-                appendLetterboxBars(state, bounds, destination, prepared);
-                result = writeConstantBuffer(
-                    context, *composeBufferA_.Get(), prepared.differenceDraw.compose);
-                if (SUCCEEDED(result)) {
-                    result = writeConstantBuffer(
-                        context, *colorBufferA_.Get(), prepared.differenceDraw.colorA);
-                }
-                if (SUCCEEDED(result)) {
-                    result = writeConstantBuffer(
-                        context, *colorBufferB_.Get(), prepared.differenceDraw.colorB);
-                }
-                if (SUCCEEDED(result)) {
-                    result = writeConstantBuffer(
-                        context, *differenceBuffer_.Get(), prepared.differenceDraw.options);
-                }
+                })) {
+                return false;
             }
         } else {
             // Slot views (USERPLAN 6.3): two-up (two columns), three-up (three columns), or
@@ -996,7 +1146,31 @@ private:
             std::array<SurfaceRect, 3U> regions{};
             std::array<std::size_t, 3U> regionSlots{0U, 1U, 2U};
             std::size_t regionCount = 0U;
-            if (state.viewMode == SurfaceViewMode::ThreeUp) {
+            std::optional<SurfaceRect> gridDifferenceBounds;
+            if (state.viewMode == SurfaceViewMode::AnalysisGrid) {
+                const std::uint32_t leftPixels = state.pixelWidth / 2U;
+                const std::uint32_t topPixels = state.pixelHeight / 2U;
+                const float leftWidth = state.logicalWidth * static_cast<float>(leftPixels) /
+                                        static_cast<float>(state.pixelWidth);
+                const float topHeight = state.logicalHeight * static_cast<float>(topPixels) /
+                                        static_cast<float>(state.pixelHeight);
+                const float rightWidth = state.logicalWidth - leftWidth;
+                const float bottomHeight = state.logicalHeight - topHeight;
+                regions = {
+                    SurfaceRect{.x = 0.0F, .y = 0.0F, .width = leftWidth, .height = topHeight},
+                    SurfaceRect{
+                        .x = leftWidth, .y = 0.0F, .width = rightWidth, .height = topHeight},
+                    SurfaceRect{
+                        .x = 0.0F, .y = topHeight, .width = leftWidth, .height = bottomHeight},
+                };
+                gridDifferenceBounds = SurfaceRect{
+                    .x = leftWidth,
+                    .y = topHeight,
+                    .width = rightWidth,
+                    .height = bottomHeight,
+                };
+                regionCount = 3U;
+            } else if (state.viewMode == SurfaceViewMode::ThreeUp) {
                 const SurfaceColumnLayout columns = computeSurfaceColumns(state.logicalWidth,
                                                                           state.logicalHeight,
                                                                           state.pixelWidth,
@@ -1030,7 +1204,6 @@ private:
                 regionCount = columns.count;
             }
 
-            prepared.publication = publication;
             const std::array<const GpuFrameResource*, 3U> slotFrames{
                 frameA.get(), frameB.get(), frameC.get()};
             const std::array<const D3d11GpuFrameBacking*, 3U> slotBackings{
@@ -1043,6 +1216,9 @@ private:
                 if (!appendRegionDraw(regions[region], *slotFrames[slot], *slotBackings[slot])) {
                     return false;
                 }
+            }
+            if (gridDifferenceBounds.has_value() && !appendDifference(*gridDifferenceBounds)) {
+                return false;
             }
         }
         for (std::size_t index = 0U; SUCCEEDED(result) && index < prepared.letterboxBarCount;
@@ -1062,10 +1238,11 @@ private:
             context.Draw(4U, 0U);
         }
 
-        if (prepared.difference) {
-            drawDifference(context, prepared.differenceDraw);
-        } else {
+        if (prepared.videoDrawCount != 0U) {
             drawVideoSlots(context, prepared);
+        }
+        if (prepared.hasDifference) {
+            drawDifference(context, prepared.differenceDraw);
         }
         const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
         context.PSSetShaderResources(0U, static_cast<UINT>(nullViews.size()), nullViews.data());
@@ -1104,13 +1281,19 @@ private:
     }
 
     void drawDifference(ID3D11DeviceContext& context, const DifferenceDraw& draw) const noexcept {
+        if (FAILED(writeConstantBuffer(context, *differenceComposeBuffer_.Get(), draw.compose)) ||
+            FAILED(writeConstantBuffer(context, *colorBufferA_.Get(), draw.colorA)) ||
+            FAILED(writeConstantBuffer(context, *colorBufferB_.Get(), draw.colorB)) ||
+            FAILED(writeConstantBuffer(context, *differenceBuffer_.Get(), draw.options))) {
+            return;
+        }
         context.PSSetShader(differencePixelShader_.Get(), nullptr, 0U);
         ID3D11SamplerState* const sampler = draw.filter == SurfaceDifferenceFilter::Bilinear
                                                 ? linearSampler_.Get()
                                                 : nearestSampler_.Get();
         context.PSSetSamplers(0U, 1U, &sampler);
 
-        ID3D11Buffer* const composeBuffer = composeBufferA_.Get();
+        ID3D11Buffer* const composeBuffer = differenceComposeBuffer_.Get();
         const std::array<ID3D11Buffer*, 3U> pixelBuffers{
             colorBufferA_.Get(), colorBufferB_.Get(), differenceBuffer_.Get()};
         const std::array<ID3D11ShaderResourceView*, 4U> views{
@@ -1179,6 +1362,9 @@ private:
                 .publicationSerial = publication.publicationSerial,
                 .event = event,
             };
+            if (const std::shared_ptr<IRenderActivitySink> sink = activitySink_.lock()) {
+                sink->notifyAckBackpressured();
+            }
             return ComparisonRenderResult::PresentedAckPending;
         }
         acknowledgementClosed_ = true;
@@ -1222,6 +1408,7 @@ private:
     ComPtr<ID3D11Buffer> composeBufferA_;
     ComPtr<ID3D11Buffer> composeBufferB_;
     ComPtr<ID3D11Buffer> composeBufferC_;
+    ComPtr<ID3D11Buffer> differenceComposeBuffer_;
     ComPtr<ID3D11Buffer> colorBufferA_;
     ComPtr<ID3D11Buffer> colorBufferB_;
     ComPtr<ID3D11Buffer> colorBufferC_;

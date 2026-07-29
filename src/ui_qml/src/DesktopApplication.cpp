@@ -3,6 +3,7 @@
 #include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
+#include "dvs/ui/WorkspaceController.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -67,6 +68,7 @@ public:
 
     [[nodiscard]] bool load(ReviewController& controller,
                             ReviewPreferencesController& preferences,
+                            WorkspaceController& workspace,
                             SurfaceBinder bindSurface) {
         if (engine_ || !bindSurface) {
             return false;
@@ -79,6 +81,8 @@ public:
         engine->rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewPreferences"),
                                                   &preferences);
+        engine->rootContext()->setContextProperty(QStringLiteral("workspaceController"),
+                                                  &workspace);
         QObject::connect(engine.get(),
                          &QQmlEngine::warnings,
                          engine.get(),
@@ -124,9 +128,8 @@ public:
         surfaceDestroyedConnection_ =
             QObject::connect(surface, &QObject::destroyed, [this] { surface_ = nullptr; });
         window_->show();
-        if (options_.smokeMode) {
-            window_->requestActivate();
-        }
+        window_->raise();
+        window_->requestActivate();
         window_->requestUpdate();
         surface_->update();
         return true;
@@ -287,8 +290,9 @@ DesktopApplication::~DesktopApplication() = default;
 
 bool DesktopApplication::load(ReviewController& controller,
                               ReviewPreferencesController& preferences,
+                              WorkspaceController& workspace,
                               SurfaceBinder bindSurface) {
-    return impl_->load(controller, preferences, std::move(bindSurface));
+    return impl_->load(controller, preferences, workspace, std::move(bindSurface));
 }
 
 int DesktopApplication::exec() {

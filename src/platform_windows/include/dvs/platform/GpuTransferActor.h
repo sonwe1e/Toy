@@ -29,6 +29,12 @@ struct GpuTransferStatistics final {
     std::uint64_t submittedSets = 0U;
     std::uint64_t replacedSets = 0U;
     std::uint64_t publishedSets = 0U;
+    std::uint64_t failedSets = 0U;
+    std::uint64_t cancelledSets = 0U;
+    std::uint64_t completedTransfers = 0U;
+    std::uint64_t zeroCopySets = 0U;
+    std::uint64_t totalTransferMicroseconds = 0U;
+    std::uint64_t maximumTransferMicroseconds = 0U;
     std::uint64_t retiredResources = 0U;
     std::uint64_t deviceLossReports = 0U;
     std::thread::id workerThread;
