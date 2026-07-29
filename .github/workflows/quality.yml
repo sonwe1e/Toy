@@ -40,7 +40,6 @@ jobs:
 
   native-quality:
     name: Native format and lint
-    needs: repository-guide
     runs-on: [self-hosted, Windows, X64, dvs-toolchain-4.4]
     timeout-minutes: 60
 

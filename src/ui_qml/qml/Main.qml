@@ -106,7 +106,8 @@ Window {
             missing.push(sourceLabel(differenceSecondSlot));
         return missing.length > 0 ? qsTr("Frame %1 cannot be compared because %2 is missing.").arg(Number(currentFrame) + 1).arg(missing.join(qsTr(" and "))) : "";
     }
-    readonly property bool manualAlignmentActive: sourceAOffset.value !== 0 || sourceBOffset.value !== 0 || sourceCOffset.value !== 0
+    readonly property bool manualOffsetActive: sourceAOffset.value !== 0 || sourceBOffset.value !== 0 || sourceCOffset.value !== 0
+    readonly property bool anyManualAlignmentActive: manualAnchorActive || manualOffsetActive
     property bool timelineDragging: false
     property int timelinePreviewFrame: -1
     readonly property string frameText: timelineDragging && timelinePreviewFrame >= 0 ? qsTr("Frame %1 of %2 (release to seek)").arg(timelinePreviewFrame + 1).arg(totalFrames) : (currentFrame >= 0 && totalFrames > 0 ? qsTr("Frame %1 of %2").arg(currentFrame + 1).arg(totalFrames) : qsTr("No frame displayed"))
@@ -960,16 +961,22 @@ Window {
             }
 
             Text {
-                text: root.manualAlignmentActive || root.manualAnchorActive ? qsTr("Manual aligned") : (root.autoAlignmentActive ? qsTr("Auto aligned") : qsTr("Strict index"))
-                color: root.manualAlignmentActive || root.manualAnchorActive || root.autoAlignmentActive ? "#efbf83" : "#8ce2c2"
+                id: alignmentModeStatus
+
+                objectName: "alignmentModeStatus"
+                text: root.anyManualAlignmentActive ? qsTr("Manual alignment") : (root.autoAlignmentActive ? qsTr("Auto aligned") : qsTr("Strict index"))
+                color: root.anyManualAlignmentActive || root.autoAlignmentActive ? "#efbf83" : "#8ce2c2"
                 font.pixelSize: 12
                 font.weight: Font.DemiBold
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             Text {
-                text: qsTr("Frame offsets")
-                color: root.mutedTextColor
+                id: manualOffsetStatusLabel
+
+                objectName: "manualOffsetStatusLabel"
+                text: root.manualOffsetActive ? qsTr("Manual offset active") : qsTr("Frame offsets")
+                color: root.manualOffsetActive ? "#efbf83" : root.mutedTextColor
                 font.pixelSize: 11
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -1043,9 +1050,9 @@ Window {
 
             ActionButton {
                 objectName: "manualAnchorsButton"
-                implicitWidth: 78
+                implicitWidth: root.manualAnchorActive ? 136 : 78
                 implicitHeight: 34
-                text: qsTr("Anchors…")
+                text: root.manualAnchorActive ? qsTr("Manual anchors active") : qsTr("Anchors…")
                 enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
                 onClicked: anchorDialog.open()
             }
@@ -1064,7 +1071,7 @@ Window {
                 implicitWidth: 90
                 implicitHeight: 34
                 text: qsTr("Strict reset")
-                enabled: root.graphicsReady && !root.busy && (root.manualAlignmentActive || root.manualAnchorActive || root.autoAlignmentActive) && Boolean(root.controller && root.controller.canFirst)
+                enabled: root.graphicsReady && !root.busy && (root.anyManualAlignmentActive || root.autoAlignmentActive) && Boolean(root.controller && root.controller.canFirst)
                 onClicked: {
                     sourceAOffset.value = 0;
                     sourceBOffset.value = 0;
@@ -1074,7 +1081,7 @@ Window {
             }
 
             Text {
-                visible: root.manualAlignmentActive || root.manualAnchorActive || root.autoAlignmentActive
+                visible: root.anyManualAlignmentActive || root.autoAlignmentActive
                 text: qsTr("Missing mapped frames stay black; offsets are never clamped.")
                 color: root.mutedTextColor
                 font.pixelSize: 10

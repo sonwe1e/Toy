@@ -3,8 +3,8 @@
 ## Project Structure and Dependencies
 
 `src/domain` owns rules; `src/application` owns ports. `platform_windows` provides Windows
-services. Outer adapters—`media_ffmpeg`, `persistence_json`, and `ui_qml`—implement
-ports and may use platform services. `src/app` composes them; outer types never enter core.
+services. Adapters—`media_ffmpeg`, `persistence_json`, and `ui_qml`—implement ports.
+`src/app` composes them; outer types never enter core.
 `tests/smoke` contains startup checks; place other tests under `tests/<layer>/<module>` and
 shared support under `tests/support`.
 `assets/`, `packaging/`, `docs/`, and `licenses/` hold runtime data, distribution,
