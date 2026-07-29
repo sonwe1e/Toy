@@ -65,7 +65,13 @@ jobs:
             throw "Invalid vcpkg root: $vcpkgRoot"
           }
           "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          Get-Command cl.exe, ninja.exe -ErrorAction Stop
+          $llvmBin = Join-Path $env:VCINSTALLDIR 'Tools\Llvm\x64\bin'
+          if (-not (Test-Path -LiteralPath $llvmBin -PathType Container)) {
+            throw "Visual Studio LLVM tools were not found: $llvmBin"
+          }
+          $env:PATH = "$llvmBin;$env:PATH"
+          $llvmBin | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
 
       - name: Configure
         shell: pwsh
