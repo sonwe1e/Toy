@@ -57,12 +57,41 @@
             <line number="1" hits="1"/>
           </lines>
         </class>
+        <class name="AlignmentCacheIdentity"
+               filename="src/application/src/AlignmentCacheIdentity.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
+        <class name="AlignmentWorkEstimator"
+               filename="src/application/src/AlignmentWorkEstimator.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
+        <class name="ComparisonExactness"
+               filename="src/application/src/ComparisonExactness.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
         <class name="PlaybackCoordinator" filename="src/application/src/PlaybackCoordinator.cpp">
           <lines>
             <line number="1" hits="1"/>
           </lines>
         </class>
+        <class name="PrefetchScheduler" filename="src/application/src/PrefetchScheduler.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
         <class name="SessionSnapshot" filename="src/application/src/SessionSnapshot.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
+        <class name="WorkspaceCoordinator"
+               filename="src/application/src/WorkspaceCoordinator.cpp">
           <lines>
             <line number="1" hits="1"/>
           </lines>
