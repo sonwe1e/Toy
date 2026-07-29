@@ -1781,7 +1781,9 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     const auto firstCadence = scheduler->request(1U);
     ASSERT_TRUE(firstCadence.has_value());
     EXPECT_EQ(firstCadence->due, clock->now() + 19'334us);
-    EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPlaying;
+    }));
     EXPECT_EQ(provider->frameRequestCount(), 1U);
 
     clock->set(firstCadence->due);
@@ -1800,12 +1802,14 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     ASSERT_TRUE(render->waitForPublishedCount(2U));
     presentPublished(coordinator, render, 1U);
     ASSERT_TRUE(scheduler->waitForScheduleCount(4U));
-    ASSERT_TRUE(waitUntil(
-        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{1}; }));
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        const auto snapshot = coordinator->snapshot();
+        return snapshot->displayedFrame == domain::FrameId{1} &&
+               snapshot->playbackState == domain::PlaybackState::kPlaying;
+    }));
     const auto secondCadence = scheduler->request(3U);
     ASSERT_TRUE(secondCadence.has_value());
     EXPECT_EQ(secondCadence->due, firstCadence->due + 33'333us);
-    EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
 }
 
 TEST(PlaybackCoordinatorTests, StepBeforeCadenceCancelsRunAndRejectsTheStaleTick) {
@@ -1972,8 +1976,11 @@ TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsAndKeepsOneReques
     ASSERT_TRUE(skippedPlaybackFrame.has_value());
     EXPECT_EQ(skippedPlaybackFrame->frameId, domain::FrameId{9});
     EXPECT_EQ(skippedPlaybackFrame->priority, FrameRequestPriority::Sequential);
-    EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{6});
-    EXPECT_EQ(coordinator->snapshot()->requestedFrame, domain::FrameId{9});
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        const auto snapshot = coordinator->snapshot();
+        return snapshot->displayedFrame == domain::FrameId{6} &&
+               snapshot->requestedFrame == domain::FrameId{9};
+    }));
 }
 
 TEST(PlaybackCoordinatorTests, FinalFrameAutoPausesAndPlayFromEndRestartsAtZero) {
