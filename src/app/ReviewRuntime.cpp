@@ -2,6 +2,7 @@
 
 #include "dvs/application/Commands.h"
 #include "dvs/application/PlaybackCoordinator.h"
+#include "dvs/media/AlignmentAnalysisService.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/persistence/SettingsRepository.h"
@@ -40,7 +41,8 @@ namespace {
 
 using namespace std::chrono_literals;
 
-constexpr std::size_t kFrameBudgetBytes = 256U * 1024U * 1024U;
+constexpr std::size_t kPlaybackFrameBudgetBytes = 224U * 1024U * 1024U;
+constexpr std::size_t kAnalysisFrameBudgetBytes = 32U * 1024U * 1024U;
 constexpr auto kGraphicsPollInterval = 2ms;
 constexpr auto kAdapterShutdownTimeout = 2s;
 constexpr auto kTotalShutdownTimeout = 7s;
@@ -188,6 +190,7 @@ public:
         // released on the detached control thread while this state continues to own every
         // dependency that a late decoder operation can access.
         deadlineScheduler.reset();
+        alignmentAnalysisService.reset();
         frameProvider.reset();
         mediaProbe.reset();
         settingsRepository.reset();
@@ -213,6 +216,7 @@ public:
         frameMailbox.reset();
         acknowledgementMailbox.reset();
         deviceBroker.reset();
+        analysisFrameBudget.reset();
         frameBudget.reset();
 
         {
@@ -241,6 +245,7 @@ public:
     std::shared_ptr<application::PlaybackCoordinator> coordinator;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler;
+    std::shared_ptr<media::AlignmentAnalysisService> alignmentAnalysisService;
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider;
     std::shared_ptr<media::MediaProbe> mediaProbe;
     std::shared_ptr<application::ISettingsRepository> settingsRepository;
@@ -251,6 +256,7 @@ public:
     std::shared_ptr<platform::FrameMailbox> frameMailbox;
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox;
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker;
+    std::shared_ptr<platform::FrameBudget> analysisFrameBudget;
     std::shared_ptr<platform::FrameBudget> frameBudget;
 
 private:
@@ -268,7 +274,8 @@ public:
     Impl()
         : shutdownWork_(std::make_shared<ShutdownWork>()),
           abandonedWork_(std::make_unique<std::shared_ptr<ShutdownWork>>()) {
-        frameBudget_ = std::make_shared<platform::FrameBudget>(kFrameBudgetBytes);
+        frameBudget_ = std::make_shared<platform::FrameBudget>(kPlaybackFrameBudgetBytes);
+        analysisFrameBudget_ = std::make_shared<platform::FrameBudget>(kAnalysisFrameBudgetBytes);
         deviceBroker_ = std::make_shared<platform::GraphicsDeviceBroker>();
         frameMailbox_ =
             std::make_shared<platform::FrameMailbox>(deviceBroker_->currentGeneration());
@@ -280,17 +287,20 @@ public:
         mediaProbe_ = std::make_shared<media::MediaProbe>();
         settingsRepository_ = std::make_shared<persistence::SettingsRepository>();
         frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(*frameBudget_);
+        alignmentAnalysisService_ =
+            std::make_shared<media::AlignmentAnalysisService>(*analysisFrameBudget_);
         deadlineScheduler_ = std::make_shared<platform::SteadyDeadlineScheduler>();
         clock_ = std::make_shared<platform::SystemSteadyClock>();
-        coordinator_ =
-            application::PlaybackCoordinator::create(domain::SessionId{1U},
-                                                     application::PlaybackCoordinator::Dependencies{
-                                                         .mediaProbe = mediaProbe_,
-                                                         .directFrameProvider = frameProvider_,
-                                                         .deadlineScheduler = deadlineScheduler_,
-                                                         .clock = clock_,
-                                                         .renderChannel = renderChannel_,
-                                                     });
+        coordinator_ = application::PlaybackCoordinator::create(
+            domain::SessionId{1U},
+            application::PlaybackCoordinator::Dependencies{
+                .mediaProbe = mediaProbe_,
+                .directFrameProvider = frameProvider_,
+                .alignmentAnalysisService = alignmentAnalysisService_,
+                .deadlineScheduler = deadlineScheduler_,
+                .clock = clock_,
+                .renderChannel = renderChannel_,
+            });
         if (!coordinator_) {
             throw std::runtime_error{"The playback coordinator could not be created."};
         }
@@ -432,6 +442,7 @@ public:
         work->coordinator = std::move(coordinator_);
         work->coordinatorEventSink = std::move(coordinatorEventSink_);
         work->deadlineScheduler = std::move(deadlineScheduler_);
+        work->alignmentAnalysisService = std::move(alignmentAnalysisService_);
         work->frameProvider = std::move(frameProvider_);
         work->mediaProbe = std::move(mediaProbe_);
         work->settingsRepository = std::move(settingsRepository_);
@@ -442,6 +453,7 @@ public:
         work->frameMailbox = std::move(frameMailbox_);
         work->acknowledgementMailbox = std::move(acknowledgementMailbox_);
         work->deviceBroker = std::move(deviceBroker_);
+        work->analysisFrameBudget = std::move(analysisFrameBudget_);
         work->frameBudget = std::move(frameBudget_);
 
         // Reserve the failure keepalive before thread creation. If the OS rejects the new thread,
@@ -475,6 +487,7 @@ private:
     std::shared_ptr<ShutdownWork> shutdownWork_;
     std::unique_ptr<std::shared_ptr<ShutdownWork>> abandonedWork_;
     std::shared_ptr<platform::FrameBudget> frameBudget_;
+    std::shared_ptr<platform::FrameBudget> analysisFrameBudget_;
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker_;
     std::shared_ptr<platform::FrameMailbox> frameMailbox_;
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox_;
@@ -484,6 +497,7 @@ private:
     std::shared_ptr<media::MediaProbe> mediaProbe_;
     std::shared_ptr<application::ISettingsRepository> settingsRepository_;
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider_;
+    std::shared_ptr<media::AlignmentAnalysisService> alignmentAnalysisService_;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;
     std::shared_ptr<platform::SystemSteadyClock> clock_;
     std::shared_ptr<application::PlaybackCoordinator> coordinator_;

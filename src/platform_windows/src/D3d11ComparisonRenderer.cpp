@@ -928,24 +928,12 @@ private:
             appendLetterboxBars(state, bounds, destination, prepared);
             return true;
         };
-        const auto appendPlainDraw = [&](const GpuFrameResource& frame,
-                                         const D3d11GpuFrameBacking& backing) {
-            const SurfaceRect bounds{
-                .x = 0.0F,
-                .y = 0.0F,
-                .width = state.logicalWidth,
-                .height = state.logicalHeight,
-            };
-            return appendRegionDraw(bounds, frame, backing);
-        };
-
         ID3D11DeviceContext& context = *lease.immediateContext.Get();
         HRESULT result = S_OK;
         if (state.viewMode == SurfaceViewMode::Difference) {
-            // USERPLAN 7: the difference view compares the two slots of the selected edge. The
-            // first slot of the edge is the reference side. When an edge slot has no frame, the
-            // other slot is shown plain; when neither has one, the first present slot of the
-            // whole set is shown plain, or the black background is left in place.
+            // Difference never degrades to a single-source image. If either selected slot is
+            // unavailable, draw an explicit black unavailable canvas; the QML projection names
+            // the missing source and canonical frame above it.
             const GpuFrameResource* edgeFirst = frameA.get();
             const D3d11GpuFrameBacking* edgeFirstBacking = backingA;
             const GpuFrameResource* edgeSecond = frameB.get();
@@ -963,30 +951,8 @@ private:
             const bool edgeSecondUsable = backingUsable(edgeSecond, edgeSecondBacking);
             if (!edgeFirstUsable || !edgeSecondUsable) {
                 prepared.publication = publication;
-                const GpuFrameResource* plainFrame = nullptr;
-                const D3d11GpuFrameBacking* plainBacking = nullptr;
-                if (edgeFirstUsable) {
-                    plainFrame = edgeFirst;
-                    plainBacking = edgeFirstBacking;
-                } else if (edgeSecondUsable) {
-                    plainFrame = edgeSecond;
-                    plainBacking = edgeSecondBacking;
-                } else {
-                    const std::array<const GpuFrameResource*, 3U> candidates{
-                        frameA.get(), frameB.get(), frameC.get()};
-                    const std::array<const D3d11GpuFrameBacking*, 3U> candidateBackings{
-                        backingA, backingB, backingC};
-                    for (std::size_t index = 0U; index < candidates.size(); ++index) {
-                        if (backingUsable(candidates[index], candidateBackings[index])) {
-                            plainFrame = candidates[index];
-                            plainBacking = candidateBackings[index];
-                            break;
-                        }
-                    }
-                }
-                if (plainFrame != nullptr && !appendPlainDraw(*plainFrame, *plainBacking)) {
-                    return false;
-                }
+                prepared.letterboxBars[0U] = makeBlackConstants(state);
+                prepared.letterboxBarCount = 1U;
             } else {
                 const SurfaceRect bounds{
                     .x = 0.0F,

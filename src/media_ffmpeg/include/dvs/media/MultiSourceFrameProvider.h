@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <memory>
+#include <thread>
+#include <vector>
 
 namespace dvs::platform {
 class FrameBudget;
@@ -17,7 +19,8 @@ namespace dvs::media {
 class MultiSourceFrameProvider final : public application::IFrameProvider {
 public:
     explicit MultiSourceFrameProvider(platform::FrameBudget& frameBudget,
-                                      std::size_t requestCapacity = 16U);
+                                      std::size_t requestCapacity = 16U,
+                                      bool lowPriority = false);
     ~MultiSourceFrameProvider() override;
 
     MultiSourceFrameProvider(const MultiSourceFrameProvider&) = delete;
@@ -41,6 +44,9 @@ public:
     submit(const application::FrameProviderCloseRequest& request,
            std::shared_ptr<application::IApplicationEventSink> events) override;
     void cancel(const application::PlaybackRequestContext& context) noexcept override;
+
+    // Component-test diagnostic for the persistent per-source worker invariant.
+    [[nodiscard]] std::vector<std::thread::id> decodeWorkerIdsForTesting() const;
 
 private:
     class Impl;

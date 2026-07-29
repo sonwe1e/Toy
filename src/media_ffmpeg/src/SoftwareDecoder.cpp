@@ -142,8 +142,9 @@ SoftwareDecoder::SoftwareDecoder(const domain::SourceId sourceId,
                                  domain::MediaDescriptor descriptor,
                                  platform::FrameBudget& frameBudget,
                                  const std::atomic<bool>* const externalInterrupt)
-    : impl_(std::make_unique<Impl>(
-          sourceId, std::move(descriptor), frameBudget, externalInterrupt)) {}
+    : impl_(
+          std::make_unique<Impl>(sourceId, std::move(descriptor), frameBudget, externalInterrupt)) {
+}
 
 SoftwareDecoder::~SoftwareDecoder() = default;
 
@@ -307,7 +308,7 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
 domain::Result<DecodedFrame>
 SoftwareDecoder::decodeExact(const domain::FrameId frameId,
                              const std::atomic<bool>& cancellationRequested) {
-    auto result = decodeInternal(frameId, cancellationRequested, false);
+    auto result = decodeInternal(frameId, cancellationRequested, false, true);
     if (!result) {
         impl_->sequentialReady = false;
     }
@@ -320,7 +321,7 @@ SoftwareDecoder::decodeSequential(const domain::FrameId frameId,
     const bool continueSequentially = impl_->sequentialReady &&
                                       impl_->lastReturnedFrame.has_value() && frameId.isValid() &&
                                       frameId.value() > impl_->lastReturnedFrame->value();
-    auto result = decodeInternal(frameId, cancellationRequested, continueSequentially);
+    auto result = decodeInternal(frameId, cancellationRequested, continueSequentially, true);
     if (!result) {
         impl_->sequentialReady = false;
     }
@@ -330,7 +331,8 @@ SoftwareDecoder::decodeSequential(const domain::FrameId frameId,
 domain::Result<DecodedFrame>
 SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                                 const std::atomic<bool>& cancellationRequested,
-                                const bool continueSequentially) {
+                                const bool continueSequentially,
+                                const bool allowTimelineRecovery) {
     const domain::SourceId sourceId = impl_->sourceId;
     impl_->interrupted.store(cancellationRequested.load(std::memory_order_acquire),
                              std::memory_order_release);
@@ -431,10 +433,26 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 continue;
             }
             if (timestamp > targetTimestamp) {
+                if (!continueSequentially && allowTimelineRecovery) {
+                    // An FFmpeg demuxer interrupted by a superseding request can retain a
+                    // poisoned read position even after av_seek_frame reports success. Reopening
+                    // once restores the source to a deterministic state; a repeated mismatch is
+                    // still surfaced as a real timeline error.
+                    const std::uint64_t seekAttempts = impl_->exactSeekCount;
+                    const domain::Status reopened = open(cancellationRequested);
+                    if (!reopened) {
+                        return domain::Result<DecodedFrame>::failure(reopened.error());
+                    }
+                    impl_->exactSeekCount = seekAttempts;
+                    return decodeInternal(frameId, cancellationRequested, false, false);
+                }
                 return domain::Result<DecodedFrame>::failure(
                     decodeError(domain::MediaErrorCode::kFrameTimelineInvalid,
                                 sourceId,
-                                "The indexed timestamp did not identify a decoded frame.",
+                                "The indexed timestamp did not identify decoded frame " +
+                                    std::to_string(frameId.value()) + " (target " +
+                                    std::to_string(targetTimestamp) + ", decoded " +
+                                    std::to_string(timestamp) + ").",
                                 true));
             }
             if (!isSupportedDecodedFormat(*impl_->frame)) {

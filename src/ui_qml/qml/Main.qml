@@ -48,10 +48,15 @@ Window {
     readonly property string sourceAErrorKey: controller ? controller.sourceAErrorKey : ""
     readonly property string sourceBErrorKey: controller ? controller.sourceBErrorKey : ""
     readonly property string sourceCErrorKey: controller ? controller.sourceCErrorKey : ""
+    readonly property bool sourceAMissing: Boolean(!controller || controller.sourceAMissing)
+    readonly property bool sourceBMissing: Boolean(!controller || controller.sourceBMissing)
+    readonly property bool sourceCMissing: Boolean(!controller || controller.sourceCMissing)
     readonly property string pairErrorKey: controller ? controller.pairErrorKey : ""
     readonly property string frameMappingStatus: controller ? controller.frameMappingStatus : ""
     readonly property string alignmentEstimateStatus: controller ? controller.alignmentEstimateStatus : ""
     readonly property string sequenceAlignmentStatus: controller ? controller.sequenceAlignmentStatus : ""
+    readonly property bool alignmentAnalysisRunning: Boolean(controller && controller.alignmentAnalysisRunning)
+    readonly property string alignmentAnalysisStatus: controller ? controller.alignmentAnalysisStatus : ""
     readonly property string manualAnchorStatus: controller ? controller.manualAnchorStatus : ""
     readonly property var alignmentTimelineMarkers: controller ? controller.alignmentTimelineMarkers : []
     readonly property bool manualAnchorActive: Boolean(controller && controller.manualAnchorActive)
@@ -63,6 +68,8 @@ Window {
             parts.push(alignmentEstimateStatus);
         if (sequenceAlignmentStatus.length > 0)
             parts.push(sequenceAlignmentStatus);
+        if (alignmentAnalysisStatus.length > 0)
+            parts.push(alignmentAnalysisStatus);
         if (manualAnchorStatus.length > 0)
             parts.push(manualAnchorStatus);
         return parts.join("  |  ");
@@ -86,6 +93,19 @@ Window {
     // qmllint disable unqualified
     readonly property bool differenceMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Difference : false
     // qmllint enable unqualified
+    readonly property int differenceEdge: preferences ? Number(preferences.differenceEdge) : 0
+    readonly property int differenceFirstSlot: differenceEdge === 2 ? 1 : 0
+    readonly property int differenceSecondSlot: differenceEdge === 0 ? 1 : 2
+    readonly property string differenceUnavailableDetail: {
+        if (!differenceMode || currentFrame < 0)
+            return "";
+        const missing = [];
+        if (sourceMissing(differenceFirstSlot))
+            missing.push(sourceLabel(differenceFirstSlot));
+        if (sourceMissing(differenceSecondSlot))
+            missing.push(sourceLabel(differenceSecondSlot));
+        return missing.length > 0 ? qsTr("Frame %1 cannot be compared because %2 is missing.").arg(Number(currentFrame) + 1).arg(missing.join(qsTr(" and "))) : "";
+    }
     readonly property bool manualAlignmentActive: sourceAOffset.value !== 0 || sourceBOffset.value !== 0 || sourceCOffset.value !== 0
     property bool timelineDragging: false
     property int timelinePreviewFrame: -1
@@ -103,6 +123,18 @@ Window {
         const decodedUrl = decodeURIComponent(fileUrl.toString());
         const separator = Math.max(decodedUrl.lastIndexOf("/"), decodedUrl.lastIndexOf("\\"));
         return decodedUrl.substring(separator + 1);
+    }
+
+    function sourceLabel(slot) {
+        return qsTr("Source %1").arg(String.fromCharCode(65 + slot));
+    }
+
+    function sourceMissing(slot) {
+        if (slot === 0)
+            return sourceAMissing;
+        if (slot === 1)
+            return sourceBMissing;
+        return sourceCMissing;
     }
 
     function frameAtTimelinePosition(position) {
@@ -991,17 +1023,22 @@ Window {
                 implicitWidth: 86
                 implicitHeight: 34
                 text: qsTr("Auto align")
-                enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
+                enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning && Boolean(root.controller && root.controller.canFirst)
                 onClicked: root.controller.estimateAlignment()
             }
 
             ActionButton {
                 objectName: "analyzeSequenceButton"
-                implicitWidth: 88
+                implicitWidth: root.alignmentAnalysisRunning ? 112 : 88
                 implicitHeight: 34
-                text: qsTr("Find drops")
-                enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
-                onClicked: root.controller.analyzeSequenceAlignment()
+                text: root.alignmentAnalysisRunning ? qsTr("Cancel analysis") : qsTr("Find drops")
+                enabled: root.graphicsReady && !root.busy && Boolean(root.controller && (root.alignmentAnalysisRunning || root.controller.canFirst))
+                onClicked: {
+                    if (root.alignmentAnalysisRunning)
+                        root.controller.cancelAlignmentAnalysis();
+                    else
+                        root.controller.analyzeSequenceAlignment();
+                }
             }
 
             ActionButton {
@@ -1105,6 +1142,46 @@ Window {
             }
         }
         // qmllint enable import unqualified unresolved-type
+
+        Rectangle {
+            id: differenceUnavailableOverlay
+
+            objectName: "differenceUnavailableOverlay"
+            visible: root.differenceUnavailableDetail.length > 0
+            width: Math.min(parent.width - 48, 460)
+            height: unavailableColumn.implicitHeight + 32
+            radius: 8
+            color: "#e6121822"
+            border.color: root.errorColor
+            border.width: 1
+            anchors.centerIn: parent
+
+            Column {
+                id: unavailableColumn
+
+                width: parent.width - 32
+                spacing: 6
+                anchors.centerIn: parent
+
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("Difference unavailable")
+                    color: root.primaryTextColor
+                    font.pixelSize: 17
+                    font.weight: Font.DemiBold
+                }
+
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: root.differenceUnavailableDetail
+                    color: "#fca5a5"
+                    font.pixelSize: 13
+                }
+            }
+        }
 
         Rectangle {
             visible: root.combinedAlignmentStatus.length > 0

@@ -14,6 +14,7 @@ public:
     struct Dependencies final {
         std::shared_ptr<IMediaProbe> mediaProbe;
         std::shared_ptr<IFrameProvider> directFrameProvider;
+        std::shared_ptr<IAlignmentAnalysisService> alignmentAnalysisService;
         std::shared_ptr<IDeadlineScheduler> deadlineScheduler;
         std::shared_ptr<ISteadyClock> clock;
         std::shared_ptr<IRenderChannel> renderChannel;

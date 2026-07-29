@@ -108,20 +108,34 @@ TEST(ProbeTimelineContractTests, VfrProbeCompletedCarriesASharedTimeline) {
 TEST(ProbeTimelineContractTests, OpenRequestCanonicalTimelineAcceptsBothTimingPaths) {
     application::FrameProviderOpenRequest cfrRequest{
         .context = makePlaybackContext(),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = cfrDescriptor(), .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = cfrDescriptor(), .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = cfrDescriptor(),
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = cfrDescriptor(),
+                                         .displayName = "Source 1"},
+            },
         .timeline = domain::CanonicalTimeline{domain::RationalRate::create(30, 1).value()},
     };
     auto vfrTimeline = makeVfrTimeline();
     ASSERT_TRUE(vfrTimeline);
     application::FrameProviderOpenRequest vfrRequest{
         .context = makePlaybackContext(),
-        .sources = std::vector<domain::ComparisonSource>{
-            domain::ComparisonSource{.id = 0U, .role = domain::ComparisonRole::kPrediction, .descriptor = vfrDescriptor(), .displayName = "Source 0"},
-            domain::ComparisonSource{.id = 1U, .role = domain::ComparisonRole::kPrediction, .descriptor = vfrDescriptor(), .displayName = "Source 1"},
-        },
+        .sources =
+            std::vector<domain::ComparisonSource>{
+                domain::ComparisonSource{.id = 0U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = vfrDescriptor(),
+                                         .displayName = "Source 0"},
+                domain::ComparisonSource{.id = 1U,
+                                         .role = domain::ComparisonRole::kPrediction,
+                                         .descriptor = vfrDescriptor(),
+                                         .displayName = "Source 1"},
+            },
         .timeline = domain::CanonicalTimeline{vfrTimeline},
     };
 

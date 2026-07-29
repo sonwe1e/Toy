@@ -28,10 +28,10 @@ TEST(GraphicsDeviceBrokerTests, RetainsQtWarpDeviceWithProtectedImmediateContext
     test::MinimalQuickRenderHarness harness{broker};
 
     ASSERT_TRUE(harness.showAndWait())
-        << "exposed=" << harness.isExposed() << " offscreen=" << harness.isOffscreen()
+        << "exposed=" << harness.isExposed() << " unobtrusive=" << harness.isUnobtrusive()
         << " renders=" << harness.renderCount();
     ASSERT_TRUE(harness.isExposed());
-    ASSERT_TRUE(harness.isOffscreen());
+    ASSERT_TRUE(harness.isUnobtrusive());
     ASSERT_EQ(harness.firstResult(), ui::GraphicsBackendResult::Ready);
     ASSERT_EQ(QQuickWindow::graphicsApi(), QSGRendererInterface::Direct3D11);
 
@@ -87,7 +87,7 @@ TEST(GraphicsDeviceBrokerTests, PublishesMonotonicLossAndUnavailableTransitionsT
     test::MinimalQuickRenderHarness harness{broker};
 
     ASSERT_TRUE(harness.showAndWait())
-        << "exposed=" << harness.isExposed() << " offscreen=" << harness.isOffscreen()
+        << "exposed=" << harness.isExposed() << " unobtrusive=" << harness.isUnobtrusive()
         << " renders=" << harness.renderCount();
     ASSERT_EQ(harness.firstResult(), ui::GraphicsBackendResult::Ready);
     ASSERT_TRUE(broker.tryConsumeNotification().has_value());
@@ -131,7 +131,7 @@ TEST(GraphicsDeviceBrokerTests, CoalescesPressureWithoutVetoingDeviceLoss) {
     test::MinimalQuickRenderHarness harness{broker};
 
     ASSERT_TRUE(harness.showAndWait())
-        << "exposed=" << harness.isExposed() << " offscreen=" << harness.isOffscreen()
+        << "exposed=" << harness.isExposed() << " unobtrusive=" << harness.isUnobtrusive()
         << " renders=" << harness.renderCount();
     ASSERT_EQ(harness.firstResult(), ui::GraphicsBackendResult::Ready);
     const GraphicsDeviceLeaseResult retainedLease = broker.tryLease();
@@ -176,7 +176,7 @@ TEST(GraphicsDeviceBrokerTests, IgnoresLossReportedByAnObsoleteLeaseGeneration) 
     test::MinimalQuickRenderHarness harness{broker};
 
     ASSERT_TRUE(harness.showAndWait())
-        << "exposed=" << harness.isExposed() << " offscreen=" << harness.isOffscreen()
+        << "exposed=" << harness.isExposed() << " unobtrusive=" << harness.isUnobtrusive()
         << " renders=" << harness.renderCount();
     ASSERT_TRUE(broker.tryConsumeNotification().has_value());
     const GraphicsDeviceLeaseResult firstLease = broker.tryLease();

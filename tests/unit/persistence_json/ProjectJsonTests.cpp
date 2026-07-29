@@ -1,6 +1,5 @@
-#include "dvs/persistence/ProjectJson.h"
-
 #include "dvs/domain/ComparisonValidator.h"
+#include "dvs/persistence/ProjectJson.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -29,37 +28,38 @@ makeSource(const domain::SourceId id,
     return domain::ComparisonSource{
         .id = id,
         .role = role,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = path,
-            .extent = domain::MediaExtent{.width = 1920, .height = 1080},
-            .frameRate = makeRate(),
-            .frameCount = domain::FrameCountInfo{.value = 4, .origin = countOrigin},
-            .duration = domain::MediaTime{133333},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8,
-            .colorMetadata =
-                domain::ColorMetadata{
-                    .matrix = domain::ColorMatrix::kBt709,
-                    .range = domain::ColorRange::kFull,
-                    .matrixInferred = false,
-                },
-            .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
-            .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
-            .sourceIdentity =
-                domain::SourceFileIdentity{
-                    .byteSize = 3,
-                    .modifiedUtcMilliseconds = 123456789,
-                    .fingerprintSha256 = fingerprint,
-                },
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = path,
+                .extent = domain::MediaExtent{.width = 1920, .height = 1080},
+                .frameRate = makeRate(),
+                .frameCount = domain::FrameCountInfo{.value = 4, .origin = countOrigin},
+                .duration = domain::MediaTime{133333},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8,
+                .colorMetadata =
+                    domain::ColorMetadata{
+                        .matrix = domain::ColorMatrix::kBt709,
+                        .range = domain::ColorRange::kFull,
+                        .matrixInferred = false,
+                    },
+                .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
+                .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
+                .sourceIdentity =
+                    domain::SourceFileIdentity{
+                        .byteSize = 3,
+                        .modifiedUtcMilliseconds = 123456789,
+                        .fingerprintSha256 = fingerprint,
+                    },
+            },
         .displayName = displayName,
     };
 }
 
-[[nodiscard]] domain::Project makeProject(
-    const std::filesystem::path& projectPath,
-    const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
+[[nodiscard]] domain::Project
+makeProject(const std::filesystem::path& projectPath,
+            const domain::FrameCountOrigin countOrigin = domain::FrameCountOrigin::kReported) {
     std::vector<domain::ComparisonSource> sources;
     sources.push_back(makeSource(0,
                                  projectPath.parent_path() / "source-a.mov",
@@ -77,8 +77,8 @@ makeSource(const domain::SourceId id,
     const auto validated = domain::ComparisonValidator::validate(std::move(sources));
     EXPECT_TRUE(validated);
 
-    const auto created =
-        domain::Project::create(domain::ProjectId{"project-1"}, "Round trip", validated.value().set);
+    const auto created = domain::Project::create(
+        domain::ProjectId{"project-1"}, "Round trip", validated.value().set);
     EXPECT_TRUE(created);
     domain::Project project = created.value();
 
@@ -89,47 +89,46 @@ makeSource(const domain::SourceId id,
     return project;
 }
 
-[[nodiscard]] domain::ComparisonSource
-makeVfrSource(const domain::SourceId id,
-              const std::filesystem::path& path,
-              const std::string& fingerprint,
-              const domain::ComparisonRole role,
-              const std::string& displayName,
-              const std::int64_t frameCount = 4) {
+[[nodiscard]] domain::ComparisonSource makeVfrSource(const domain::SourceId id,
+                                                     const std::filesystem::path& path,
+                                                     const std::string& fingerprint,
+                                                     const domain::ComparisonRole role,
+                                                     const std::string& displayName,
+                                                     const std::int64_t frameCount = 4) {
     return domain::ComparisonSource{
         .id = id,
         .role = role,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = path,
-            .extent = domain::MediaExtent{.width = 1920, .height = 1080},
-            .frameRate = std::nullopt,
-            .frameCount = domain::FrameCountInfo{.value = frameCount,
-                                                 .origin = domain::FrameCountOrigin::kIndexed},
-            .duration = domain::MediaTime{300000},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8,
-            .colorMetadata =
-                domain::ColorMetadata{
-                    .matrix = domain::ColorMatrix::kBt709,
-                    .range = domain::ColorRange::kFull,
-                    .matrixInferred = false,
-                },
-            .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
-            .timingConfidence = domain::TimingConfidence::kVariableFrameRate,
-            .sourceIdentity =
-                domain::SourceFileIdentity{
-                    .byteSize = 5,
-                    .modifiedUtcMilliseconds = 123456789,
-                    .fingerprintSha256 = fingerprint,
-                },
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = path,
+                .extent = domain::MediaExtent{.width = 1920, .height = 1080},
+                .frameRate = std::nullopt,
+                .frameCount = domain::FrameCountInfo{.value = frameCount,
+                                                     .origin = domain::FrameCountOrigin::kIndexed},
+                .duration = domain::MediaTime{300000},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8,
+                .colorMetadata =
+                    domain::ColorMetadata{
+                        .matrix = domain::ColorMatrix::kBt709,
+                        .range = domain::ColorRange::kFull,
+                        .matrixInferred = false,
+                    },
+                .decodeCapabilities = {.softwareDecode = true, .d3d11VaDecode = false},
+                .timingConfidence = domain::TimingConfidence::kVariableFrameRate,
+                .sourceIdentity =
+                    domain::SourceFileIdentity{
+                        .byteSize = 5,
+                        .modifiedUtcMilliseconds = 123456789,
+                        .fingerprintSha256 = fingerprint,
+                    },
+            },
         .displayName = displayName,
     };
 }
 
-[[nodiscard]] domain::Project makeVfrProject(
-    const std::filesystem::path& projectPath) {
+[[nodiscard]] domain::Project makeVfrProject(const std::filesystem::path& projectPath) {
     std::vector<domain::ComparisonSource> sources;
     sources.push_back(makeVfrSource(0,
                                     projectPath.parent_path() / "source-a.mov",
@@ -145,8 +144,8 @@ makeVfrSource(const domain::SourceId id,
     const auto validated = domain::ComparisonValidator::validate(std::move(sources));
     EXPECT_TRUE(validated);
 
-    const auto created =
-        domain::Project::create(domain::ProjectId{"vfr-project"}, "VFR project", validated.value().set);
+    const auto created = domain::Project::create(
+        domain::ProjectId{"vfr-project"}, "VFR project", validated.value().set);
     EXPECT_TRUE(created);
     domain::Project project = created.value();
 
@@ -188,8 +187,7 @@ TEST(ProjectJsonTests, RoundTripsCompleteSchemaTwoDocument) {
     EXPECT_EQ(decodedIdentity.byteSize, expectedIdentity.byteSize);
     EXPECT_EQ(decodedIdentity.modifiedUtcMilliseconds, expectedIdentity.modifiedUtcMilliseconds);
     EXPECT_EQ(decodedIdentity.fingerprintSha256, expectedIdentity.fingerprintSha256);
-    EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.matrix,
-              domain::ColorMatrix::kBt709);
+    EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.matrix, domain::ColorMatrix::kBt709);
     EXPECT_EQ(decodedSources[0].descriptor.colorMetadata.range, domain::ColorRange::kFull);
     EXPECT_FALSE(decodedSources[0].descriptor.colorMetadata.matrixInferred);
     EXPECT_EQ(decoded.value().inMark(), project.inMark());
@@ -210,8 +208,7 @@ TEST(ProjectJsonTests, RoundTripsIndexedFrameCounts) {
     const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
     ASSERT_TRUE(decoded);
     const auto& sources = decoded.value().sources().sources();
-    EXPECT_EQ(sources[0].descriptor.frameCount.origin,
-              domain::FrameCountOrigin::kIndexed);
+    EXPECT_EQ(sources[0].descriptor.frameCount.origin, domain::FrameCountOrigin::kIndexed);
 }
 
 TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsoluteSources) {
@@ -223,10 +220,16 @@ TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsolu
     const std::filesystem::path externalSourcePath = root / "external" / "source-b.mov";
 
     std::vector<domain::ComparisonSource> sources;
-    sources.push_back(makeSource(0, embeddedSourcePath, std::string(64, 'a'),
-                                 domain::ComparisonRole::kReference, "Source A"));
-    sources.push_back(makeSource(1, externalSourcePath, std::string(64, 'b'),
-                                 domain::ComparisonRole::kPrediction, "Source B"));
+    sources.push_back(makeSource(0,
+                                 embeddedSourcePath,
+                                 std::string(64, 'a'),
+                                 domain::ComparisonRole::kReference,
+                                 "Source A"));
+    sources.push_back(makeSource(1,
+                                 externalSourcePath,
+                                 std::string(64, 'b'),
+                                 domain::ComparisonRole::kPrediction,
+                                 "Source B"));
     const auto validated = domain::ComparisonValidator::validate(std::move(sources));
     ASSERT_TRUE(validated);
     const auto created = domain::Project::create(
@@ -243,8 +246,7 @@ TEST(ProjectJsonTests, RelocatesProjectRelativeSourcesButPreservesExternalAbsolu
     const auto& decodedSources = decoded.value().sources().sources();
     EXPECT_EQ(decodedSources[0].descriptor.normalizedPath,
               (relocatedProjectPath.parent_path() / "media" / "source-a.mov").lexically_normal());
-    EXPECT_EQ(decodedSources[1].descriptor.normalizedPath,
-              externalSourcePath.lexically_normal());
+    EXPECT_EQ(decodedSources[1].descriptor.normalizedPath, externalSourcePath.lexically_normal());
 }
 
 TEST(ProjectJsonTests, RejectsMalformedJsonWithStableSchemaError) {

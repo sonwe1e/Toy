@@ -8,15 +8,15 @@
 
 namespace dvs::platform {
 
-std::shared_ptr<const GpuFrameSet>
-GpuFrameSet::create(application::FrameRequestContext context,
-                    domain::FrameId frameId,
-                    std::vector<GpuFrameSlot> slots) noexcept {
+std::shared_ptr<const GpuFrameSet> GpuFrameSet::create(application::FrameRequestContext context,
+                                                       domain::FrameId frameId,
+                                                       std::vector<GpuFrameSlot> slots) noexcept {
     if (!frameId.isValid()) {
         return {};
     }
 
-    // Validate all slots: must have valid frames, unique sourceIds, consistent context/frameId/device
+    // Validate all slots: must have valid frames, unique sourceIds, consistent
+    // context/frameId/device
     std::size_t totalBytes = 0U;
     for (std::size_t index = 0U; index < slots.size(); ++index) {
         const GpuFrameSlot& slot = slots[index];
@@ -37,8 +37,7 @@ GpuFrameSet::create(application::FrameRequestContext context,
         }
 
         // Accumulate accounted bytes with overflow check
-        if (slot.frame->accountedBytes() >
-            std::numeric_limits<std::size_t>::max() - totalBytes) {
+        if (slot.frame->accountedBytes() > std::numeric_limits<std::size_t>::max() - totalBytes) {
             return {};
         }
         totalBytes += slot.frame->accountedBytes();
@@ -72,8 +71,8 @@ std::span<const GpuFrameSlot> GpuFrameSet::slots() const noexcept {
 }
 
 const GpuFrameSlot* GpuFrameSet::find(const domain::SourceId sourceId) const noexcept {
-    const auto iterator = std::find_if(
-        slots_.begin(), slots_.end(), [sourceId](const GpuFrameSlot& slot) {
+    const auto iterator =
+        std::find_if(slots_.begin(), slots_.end(), [sourceId](const GpuFrameSlot& slot) {
             return slot.sourceId == sourceId;
         });
     if (iterator == slots_.end()) {

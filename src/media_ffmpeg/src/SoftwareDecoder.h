@@ -51,7 +51,8 @@ private:
     [[nodiscard]] domain::Result<DecodedFrame>
     decodeInternal(domain::FrameId frameId,
                    const std::atomic<bool>& cancellationRequested,
-                   bool continueSequentially);
+                   bool continueSequentially,
+                   bool allowTimelineRecovery);
 
     class Impl;
 

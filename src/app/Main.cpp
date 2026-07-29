@@ -103,7 +103,14 @@ struct SmokeSources final {
             dvs::ui::ReviewController& controller = *runtime->controller();
             if (smokeStage != SmokeStage::WaitingForLocalizedError && hasReviewError(controller) &&
                 !controller.busy()) {
-                std::cerr << "DVS_UI_SMOKE_MEDIA_ERROR\n";
+                std::cerr << "DVS_UI_SMOKE_MEDIA_ERROR"
+                          << " stage=" << static_cast<int>(smokeStage)
+                          << " sourceA=" << controller.sourceAErrorKey().toStdString()
+                          << " sourceB=" << controller.sourceBErrorKey().toStdString()
+                          << " sourceC=" << controller.sourceCErrorKey().toStdString()
+                          << " comparison=" << controller.pairErrorKey().toStdString()
+                          << " detail=" << controller.lastErrorTechnicalDetail().toStdString()
+                          << '\n';
                 desktop.exit(EXIT_FAILURE);
                 return;
             }

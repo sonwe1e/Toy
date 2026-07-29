@@ -271,9 +271,7 @@ private:
 TEST(SoftwareDecoderTests, DecodesExactFirstAndFinalFramesIntoBudgetedNv12Handles) {
     platform::FrameBudget budget{1024U * 1024U};
     SoftwareDecoder decoder{
-        0U,
-        probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U),
-        budget};
+        0U, probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -294,10 +292,32 @@ TEST(SoftwareDecoderTests, DecodesExactFirstAndFinalFramesIntoBudgetedNv12Handle
     EXPECT_EQ(budget.reservedBytes(), 0U);
 }
 
+TEST(SoftwareDecoderTests, DecodesExactHevcFramesByIndexedDisplayTimestamp) {
+    platform::FrameBudget budget{2U * 1024U * 1024U};
+    SoftwareDecoder decoder{
+        0U, probeDescriptor(fixture("h265_a_320x180_30fps_12.mp4"), 0U), budget};
+    std::atomic<bool> canceled = false;
+
+    ASSERT_TRUE(decoder.open(canceled));
+    const auto first = decoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(first) << first.error().technicalDetail;
+    const auto middle = decoder.decodeExact(domain::FrameId{6}, canceled);
+    ASSERT_TRUE(middle) << middle.error().technicalDetail;
+    const auto last = decoder.decodeExact(domain::FrameId{11}, canceled);
+    ASSERT_TRUE(last) << last.error().technicalDetail;
+    const auto largeStep = decoder.decodeExact(domain::FrameId{10}, canceled);
+    ASSERT_TRUE(largeStep) << largeStep.error().technicalDetail;
+    const auto firstAgain = decoder.decodeExact(domain::FrameId{0}, canceled);
+    ASSERT_TRUE(firstAgain) << firstAgain.error().technicalDetail;
+    EXPECT_NE(frameHash(first.value()), frameHash(middle.value()));
+    EXPECT_NE(frameHash(middle.value()), frameHash(last.value()));
+    EXPECT_NE(frameHash(largeStep.value()), frameHash(firstAgain.value()));
+    EXPECT_EQ(frameHash(first.value()), frameHash(firstAgain.value()));
+}
+
 TEST(SoftwareDecoderTests, RejectsOutOfRangeFramesAndReleasesAFailedBudgetReservation) {
     std::atomic<bool> canceled = false;
-    const auto descriptor =
-        probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
+    const auto descriptor = probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
 
     platform::FrameBudget adequateBudget{1024U * 1024U};
     SoftwareDecoder adequateDecoder{0U, descriptor, adequateBudget};
@@ -316,8 +336,7 @@ TEST(SoftwareDecoderTests, RejectsOutOfRangeFramesAndReleasesAFailedBudgetReserv
 }
 
 TEST(SoftwareDecoderTests, PreservesTheNormalizedDescriptorColorMetadataWithoutReinferringIt) {
-    auto descriptor =
-        probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
+    auto descriptor = probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
     descriptor.colorMetadata = domain::ColorMetadata{
         .matrix = domain::ColorMatrix::kBt709,
         .range = domain::ColorRange::kFull,
@@ -341,10 +360,7 @@ TEST(SoftwareDecoderTests, PreservesTheNormalizedDescriptorColorMetadataWithoutR
 
 TEST(SoftwareDecoderTests, DecodesMpeg4Part2ByDisplayOrderOrdinal) {
     platform::FrameBudget budget{1024U * 1024U};
-    SoftwareDecoder decoder{
-        0U,
-        probeDescriptor(fixture("mpeg4_64x48_30fps_12.mp4"), 0U),
-        budget};
+    SoftwareDecoder decoder{0U, probeDescriptor(fixture("mpeg4_64x48_30fps_12.mp4"), 0U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -360,8 +376,8 @@ TEST(SoftwareDecoderTests, DecodesMpeg4Part2ByDisplayOrderOrdinal) {
 
 TEST(SoftwareDecoderTests, OpensVerifiedCfrAndDecodesFirstMiddleAndLastFrames) {
     platform::FrameBudget budget{2U * 1024U * 1024U};
-    const domain::MediaDescriptor descriptor = probeDescriptor(
-        fixture("h264_disputed_metadata_320x180_30fps_12.mp4"), 0U);
+    const domain::MediaDescriptor descriptor =
+        probeDescriptor(fixture("h264_disputed_metadata_320x180_30fps_12.mp4"), 0U);
     ASSERT_EQ(descriptor.timingConfidence, domain::TimingConfidence::kVerifiedCfr);
 
     SoftwareDecoder decoder{0U, descriptor, budget};
@@ -381,9 +397,7 @@ TEST(SoftwareDecoderTests, OpensVerifiedCfrAndDecodesFirstMiddleAndLastFrames) {
 TEST(SoftwareDecoderTests, ContinuesForwardWithoutSeekingAndFallsBackForReverseTargets) {
     platform::FrameBudget budget{2U * 1024U * 1024U};
     SoftwareDecoder decoder{
-        0U,
-        probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U),
-        budget};
+        0U, probeDescriptor(fixture("h264_a_320x180_30fps_12.mp4"), 0U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -406,10 +420,7 @@ TEST(SoftwareDecoderTests, ContinuesForwardWithoutSeekingAndFallsBackForReverseT
 
 TEST(SoftwareDecoderTests, SequentialMpeg4DecodePreservesBufferedPacketState) {
     platform::FrameBudget budget{1024U * 1024U};
-    SoftwareDecoder decoder{
-        1U,
-        probeDescriptor(fixture("mpeg4_64x48_30fps_12.mp4"), 1U),
-        budget};
+    SoftwareDecoder decoder{1U, probeDescriptor(fixture("mpeg4_64x48_30fps_12.mp4"), 1U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -427,9 +438,7 @@ TEST(SoftwareDecoderTests, SequentialMpeg4DecodePreservesBufferedPacketState) {
 TEST(SoftwareDecoderTests, LazilyIndexesAnEndGapAndReturnsTheExactFinalOrdinal) {
     platform::FrameBudget budget{1024U * 1024U};
     SoftwareDecoder decoder{
-        0U,
-        probeDescriptor(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), 0U),
-        budget};
+        0U, probeDescriptor(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), 0U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -442,9 +451,7 @@ TEST(SoftwareDecoderTests, LazilyIndexesAnEndGapAndReturnsTheExactFinalOrdinal) 
 TEST(SoftwareDecoderTests, LazilyIndexesAMiddleGapWithoutSubstitutingANeighbour) {
     platform::FrameBudget budget{1024U * 1024U};
     SoftwareDecoder decoder{
-        1U,
-        probeDescriptor(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U),
-        budget};
+        1U, probeDescriptor(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 1U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -464,8 +471,7 @@ TEST(SoftwareDecoderTests, LazilyIndexesAMiddleGapWithoutSubstitutingANeighbour)
 // and reproduce the deterministic planar yuv420p hash recorded in tests/fixtures/manifest.json.
 TEST(SoftwareDecoderTests, VfrPresentationTimesAndPlanarHashesMatchIndexedDisplayOrder) {
     platform::FrameBudget budget{1024U * 1024U};
-    const auto descriptor =
-        probeDescriptor(fixture("h264_vfr_320x180_12.mp4"), 0U);
+    const auto descriptor = probeDescriptor(fixture("h264_vfr_320x180_12.mp4"), 0U);
     ASSERT_EQ(descriptor.timingConfidence, domain::TimingConfidence::kVariableFrameRate);
     ASSERT_FALSE(descriptor.frameRate.has_value());
     ASSERT_EQ(descriptor.frameCount.value, 12);
@@ -516,8 +522,7 @@ TEST(SoftwareDecoderTests, VfrPresentationTimesAndPlanarHashesMatchIndexedDispla
 // is strictly wider than a regular cadence step, and the walk performs exactly one seek.
 TEST(SoftwareDecoderTests, VfrSequentialWalkAcrossLongPtsGapReproducesExactFrames) {
     platform::FrameBudget budget{1024U * 1024U};
-    const auto descriptor =
-        probeDescriptor(fixture("h264_vfr_320x180_12.mp4"), 0U);
+    const auto descriptor = probeDescriptor(fixture("h264_vfr_320x180_12.mp4"), 0U);
     ASSERT_EQ(descriptor.timingConfidence, domain::TimingConfidence::kVariableFrameRate);
 
     SoftwareDecoder exact{0U, descriptor, budget};
@@ -562,9 +567,7 @@ TEST(SoftwareDecoderTests, VfrSequentialWalkAcrossLongPtsGapReproducesExactFrame
 TEST(SoftwareDecoderTests, UsesIndexedCountAndOrdinalsForSourcesWithoutNbFrames) {
     platform::FrameBudget budget{1024U * 1024U};
     SoftwareDecoder decoder{
-        0U,
-        probeDescriptor(fixture("h264_no_count_64x48_30fps_12.mkv"), 0U),
-        budget};
+        0U, probeDescriptor(fixture("h264_no_count_64x48_30fps_12.mkv"), 0U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));
@@ -576,9 +579,7 @@ TEST(SoftwareDecoderTests, UsesIndexedCountAndOrdinalsForSourcesWithoutNbFrames)
 TEST(SoftwareDecoderTests, PreservesDisplayOrdinalsForANonZeroStreamStart) {
     platform::FrameBudget budget{1024U * 1024U};
     SoftwareDecoder decoder{
-        1U,
-        probeDescriptor(fixture("h264_nonzero_start_64x48_30fps_12.mp4"), 1U),
-        budget};
+        1U, probeDescriptor(fixture("h264_nonzero_start_64x48_30fps_12.mp4"), 1U), budget};
     std::atomic<bool> canceled = false;
 
     ASSERT_TRUE(decoder.open(canceled));

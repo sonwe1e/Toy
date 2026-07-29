@@ -27,22 +27,16 @@ struct CancelAfterChecks final {
 }
 
 TEST(FrameTimelineIndexTests, SortsDecodeOrderPacketPtsIntoDisplayOrder) {
-    const auto result = validatePresentationTimestamps({0, 1'536, 512, 1'024},
-                                                       false,
-                                                       std::int64_t{4},
-                                                       0U,
-                                                       domain::MediaOperation::kMediaDecode);
+    const auto result = validatePresentationTimestamps(
+        {0, 1'536, 512, 1'024}, false, std::int64_t{4}, 0U, domain::MediaOperation::kMediaDecode);
 
     ASSERT_TRUE(result);
     EXPECT_EQ(result.value(), (std::vector<std::int64_t>{0, 512, 1'024, 1'536}));
 }
 
 TEST(FrameTimelineIndexTests, RejectsDuplicateMissingAndContradictoryPacketPts) {
-    const auto duplicate = validatePresentationTimestamps({0, 512, 512},
-                                                          false,
-                                                          std::nullopt,
-                                                          0U,
-                                                          domain::MediaOperation::kMediaDecode);
+    const auto duplicate = validatePresentationTimestamps(
+        {0, 512, 512}, false, std::nullopt, 0U, domain::MediaOperation::kMediaDecode);
     ASSERT_FALSE(duplicate);
     EXPECT_EQ(duplicate.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
 
@@ -51,11 +45,8 @@ TEST(FrameTimelineIndexTests, RejectsDuplicateMissingAndContradictoryPacketPts) 
     ASSERT_FALSE(missing);
     EXPECT_EQ(missing.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
 
-    const auto contradictory = validatePresentationTimestamps({0, 512, 1'024},
-                                                              false,
-                                                              std::int64_t{4},
-                                                              0U,
-                                                              domain::MediaOperation::kMediaDecode);
+    const auto contradictory = validatePresentationTimestamps(
+        {0, 512, 1'024}, false, std::int64_t{4}, 0U, domain::MediaOperation::kMediaDecode);
     ASSERT_FALSE(contradictory);
     EXPECT_EQ(contradictory.error().code, domain::MediaErrorCode::kFrameTimelineInvalid);
 }

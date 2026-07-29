@@ -20,7 +20,8 @@ bool SessionSnapshot::isConsistent() const noexcept {
     for (std::size_t index = 0U; index < presentedSources.size(); ++index) {
         const PresentedSourceState& source = presentedSources[index];
         if ((source.matchKind == FrameMatchKind::Missing) != !source.sourceFrameId.has_value() ||
-            (source.sourceFrameId.has_value() && !source.sourceFrameId->isValid())) {
+            (source.sourceFrameId.has_value() && !source.sourceFrameId->isValid()) ||
+            (source.matchKind == FrameMatchKind::Missing) != source.missingReason.has_value()) {
             return false;
         }
         for (std::size_t other = index + 1U; other < presentedSources.size(); ++other) {
@@ -30,6 +31,14 @@ bool SessionSnapshot::isConsistent() const noexcept {
         }
     }
     if (!displayedFrame.has_value() && !presentedSources.empty()) {
+        return false;
+    }
+    if (alignmentAnalysisJobId.has_value() != alignmentAnalysisKind.has_value() ||
+        (alignmentAnalysisJobId.has_value() && alignmentAnalysisJobId->value == 0U) ||
+        (!alignmentAnalysisJobId.has_value() &&
+         (alignmentAnalysisCompletedFrames != 0U || alignmentAnalysisTotalFrames != 0U)) ||
+        (alignmentAnalysisTotalFrames != 0U &&
+         alignmentAnalysisCompletedFrames > alignmentAnalysisTotalFrames)) {
         return false;
     }
 

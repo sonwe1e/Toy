@@ -216,21 +216,18 @@ struct LoadedProject final {
             .revision = request.context.projectRevision.value(),
         });
     if (!publisher) {
-        return domain::Status::failure(
-            internal::platformError(publisher.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(publisher.error(), std::nullopt));
     }
 
     const std::span<const char> characters{text.value().data(), text.value().size()};
     const auto bytes = std::as_bytes(characters);
     auto status = publisher.value()->write(bytes);
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
     status = publisher.value()->flush();
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
 
     // The successful compare/exchange is the save's linearization point. A cancellation that
@@ -245,8 +242,7 @@ struct LoadedProject final {
     status = destinationExists ? publisher.value()->publishReplacingExisting()
                                : publisher.value()->publishNew();
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
     return domain::Status::success();
 }

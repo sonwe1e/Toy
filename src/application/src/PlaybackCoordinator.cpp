@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -27,6 +29,60 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr auto kExactFrameDeadline = 5s;
+constexpr float kLowAlignmentConfidence = 0.30F;
+constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
+
+[[nodiscard]] SequenceAlignmentSummary
+summarizeSequenceAlignment(const SequenceAlignmentResult& result) {
+    SequenceAlignmentSummary summary{
+        .sourceId = result.sourceId,
+        .anomalyCount = result.anomalies.size(),
+        .totalCost = result.totalCost,
+        .meanMatchCost = result.meanMatchCost,
+        .confidence = result.confidence,
+        .autoApplicable = result.autoApplicable,
+    };
+    const std::size_t anomalyLimit =
+        std::min(result.anomalies.size(), kMaximumSnapshotAlignmentMarkers);
+    summary.anomalies.assign(result.anomalies.begin(),
+                             result.anomalies.begin() + static_cast<std::ptrdiff_t>(anomalyLimit));
+
+    bool inRun = false;
+    SequenceAlignmentLowConfidenceRun run;
+    for (const SequenceAlignmentEntry& entry : result.entries) {
+        const bool lowConfidence =
+            entry.sourceFrameId.has_value() && entry.confidence < kLowAlignmentConfidence;
+        if (lowConfidence && !inRun) {
+            run = SequenceAlignmentLowConfidenceRun{
+                .firstCanonicalFrame = entry.canonicalFrameId,
+                .lastCanonicalFrame = entry.canonicalFrameId,
+                .minimumConfidence = entry.confidence,
+            };
+            inRun = true;
+        } else if (lowConfidence) {
+            run.lastCanonicalFrame = entry.canonicalFrameId;
+            run.minimumConfidence = std::min(run.minimumConfidence, entry.confidence);
+        }
+        if (inRun && !lowConfidence) {
+            summary.lowConfidenceRuns.push_back(run);
+            inRun = false;
+            if (summary.lowConfidenceRuns.size() >= kMaximumSnapshotAlignmentMarkers) {
+                break;
+            }
+        }
+    }
+    if (inRun && summary.lowConfidenceRuns.size() < kMaximumSnapshotAlignmentMarkers) {
+        summary.lowConfidenceRuns.push_back(run);
+    }
+    if (!result.autoApplicable && summary.lowConfidenceRuns.empty() && !result.entries.empty()) {
+        summary.lowConfidenceRuns.push_back(SequenceAlignmentLowConfidenceRun{
+            .firstCanonicalFrame = result.entries.front().canonicalFrameId,
+            .lastCanonicalFrame = result.entries.back().canonicalFrameId,
+            .minimumConfidence = result.confidence,
+        });
+    }
+    return summary;
+}
 
 enum class PendingPhase {
     kOpeningProvider,
@@ -342,6 +398,16 @@ private:
         bool framePresented = false;
     };
 
+    struct BackgroundAnalysis final {
+        AlignmentAnalysisJobId jobId;
+        AlignmentAnalysisKind kind;
+        CommandContext command;
+        PlaybackRequestContext context;
+        std::optional<std::vector<GlobalOffsetEstimate>> estimates;
+        std::optional<std::vector<SequenceAlignmentResult>> sequenceResults;
+        bool completed = false;
+    };
+
     struct PendingProbeSlot final {
         RequestContext context;
         domain::SourceId sourceId = 0;
@@ -395,6 +461,10 @@ private:
     [[nodiscard]] static domain::PlaybackGeneration
     increment(const domain::PlaybackGeneration value) noexcept {
         return domain::PlaybackGeneration{value.value() + 1U};
+    }
+
+    [[nodiscard]] static std::uint64_t increment(const std::uint64_t value) noexcept {
+        return value + 1U;
     }
 
     [[nodiscard]] bool acceptsCommand(const CommandContext& context) const noexcept {
@@ -540,6 +610,11 @@ private:
         state_.presentedSources.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
+        state_.alignmentRevision = 0U;
+        state_.alignmentAnalysisJobId.reset();
+        state_.alignmentAnalysisKind.reset();
+        state_.alignmentAnalysisCompletedFrames = 0U;
+        state_.alignmentAnalysisTotalFrames = 0U;
         state_.manualAlignmentAnchors.clear();
         state_.compatibilityWarnings.clear();
         state_.lastError.reset();
@@ -576,6 +651,7 @@ private:
             alignmentOffsets_.clear();
             state_.alignmentEstimates.clear();
             state_.sequenceAlignments.clear();
+            state_.alignmentRevision = 0U;
             state_.manualAlignmentAnchors.clear();
             sequenceAlignmentMaps_.clear();
             canonicalTimeline_.reset();
@@ -922,6 +998,7 @@ private:
         alignmentOffsets_.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
+        state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
         sequenceAlignmentMaps_.clear();
         canonicalTimeline_ = std::move(timeline);
@@ -933,6 +1010,7 @@ private:
         state_.presentedSources.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
+        state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
         state_.compatibilityWarnings.clear();
         for (const domain::CompatibilityFinding& finding : compatibilityReport_->findings()) {
@@ -954,6 +1032,7 @@ private:
             .context = context,
             .sources = std::vector<domain::ComparisonSource>(sources_->sources().begin(),
                                                              sources_->sources().end()),
+            .canonicalSourceId = sources_->canonicalSourceId(),
             .timeline = *canonicalTimeline_,
         };
         if (dependencies_.directFrameProvider->submit(request, eventSink_) !=
@@ -1400,6 +1479,7 @@ private:
                      [](const SourceFrameOffset& offset) { return offset.frames != 0; });
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
+        state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
         sequenceAlignmentMaps_.clear();
         beginSeek(command.context, *state_.displayedFrame);
@@ -1413,6 +1493,46 @@ private:
                           coordinatorError(domain::MediaErrorCode::kInvalidArgument,
                                            "Alignment estimation requires a ready comparison set.",
                                            false));
+            return;
+        }
+
+        if (dependencies_.alignmentAnalysisService) {
+            if (analysisJob_.has_value() || !canonicalTimeline_.has_value()) {
+                completeCommand(command.context, CommandOutcome::Busy);
+                return;
+            }
+            const PlaybackRequestContext context = makePlaybackContext();
+            const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
+            const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
+            const AlignmentEstimateRequest request{
+                .context = context,
+                .canonicalSourceId = sources_->canonicalSourceId(),
+                .jobId = jobId,
+                .sources = std::vector<domain::ComparisonSource>{activeSources.begin(),
+                                                                 activeSources.end()},
+                .timeline = canonicalTimeline_,
+            };
+            if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
+                PortSubmitResult::Accepted) {
+                completeCommand(
+                    command.context,
+                    CommandOutcome::Busy,
+                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     "The alignment analysis service did not accept the job."));
+                return;
+            }
+            analysisJob_ = BackgroundAnalysis{
+                .jobId = jobId,
+                .kind = AlignmentAnalysisKind::GlobalOffset,
+                .command = command.context,
+                .context = context,
+            };
+            state_.lastError.reset();
+            state_.alignmentAnalysisJobId = jobId;
+            state_.alignmentAnalysisKind = AlignmentAnalysisKind::GlobalOffset;
+            state_.alignmentAnalysisCompletedFrames = 0U;
+            state_.alignmentAnalysisTotalFrames = 0U;
+            publishSnapshot();
             return;
         }
 
@@ -1452,6 +1572,51 @@ private:
             return;
         }
 
+        if (dependencies_.alignmentAnalysisService) {
+            if (analysisJob_.has_value() || !canonicalTimeline_.has_value()) {
+                completeCommand(command.context, CommandOutcome::Busy);
+                return;
+            }
+            const PlaybackRequestContext context = makePlaybackContext();
+            const AlignmentAnalysisJobId jobId{nextAnalysisJobId_++};
+            const std::span<const domain::ComparisonSource> activeSources = sources_->sources();
+            const SequenceAlignmentRequest request{
+                .context = context,
+                .canonicalSourceId = sources_->canonicalSourceId(),
+                .expectedOffsets = alignmentOffsets_,
+                .options =
+                    SequenceAlignmentOptions{
+                        .bandWidth = 16U,
+                    },
+                .jobId = jobId,
+                .sources = std::vector<domain::ComparisonSource>{activeSources.begin(),
+                                                                 activeSources.end()},
+                .timeline = canonicalTimeline_,
+            };
+            if (dependencies_.alignmentAnalysisService->submit(request, eventSink_) !=
+                PortSubmitResult::Accepted) {
+                completeCommand(
+                    command.context,
+                    CommandOutcome::Busy,
+                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     "The alignment analysis service did not accept the job."));
+                return;
+            }
+            analysisJob_ = BackgroundAnalysis{
+                .jobId = jobId,
+                .kind = AlignmentAnalysisKind::Sequence,
+                .command = command.context,
+                .context = context,
+            };
+            state_.lastError.reset();
+            state_.alignmentAnalysisJobId = jobId;
+            state_.alignmentAnalysisKind = AlignmentAnalysisKind::Sequence;
+            state_.alignmentAnalysisCompletedFrames = 0U;
+            state_.alignmentAnalysisTotalFrames = 0U;
+            publishSnapshot();
+            return;
+        }
+
         const PlaybackRequestContext context = currentPlaybackScope();
         pending_ = PendingCommand{
             .phase = PendingPhase::kAnalyzingSequence,
@@ -1480,6 +1645,31 @@ private:
                                  "The direct frame provider did not accept sequence analysis."),
                 CommandOutcome::Busy);
         }
+    }
+
+    void beginCancelAlignmentAnalysis(const CancelAlignmentAnalysisCommand& command) {
+        if (!analysisJob_.has_value() || !dependencies_.alignmentAnalysisService) {
+            completeCommand(command.context, CommandOutcome::TooLate);
+            return;
+        }
+        dependencies_.alignmentAnalysisService->cancel(analysisJob_->jobId);
+        completeCommand(command.context, CommandOutcome::Succeeded);
+    }
+
+    void abandonAlignmentAnalysis(const CancellationReason reason) {
+        if (!analysisJob_.has_value() || !dependencies_.alignmentAnalysisService) {
+            return;
+        }
+        const AlignmentAnalysisJobId jobId = analysisJob_->jobId;
+        const CommandContext command = analysisJob_->command;
+        analysisJob_.reset();
+        clearAnalysisProgress();
+        dependencies_.alignmentAnalysisService->cancel(jobId);
+        completeCommand(command, CommandOutcome::Canceled);
+        if (reason == CancellationReason::Shutdown) {
+            return;
+        }
+        publishSnapshot();
     }
 
     void beginSetManualAnchor(const SetManualAlignmentAnchorCommand& command) {
@@ -1586,6 +1776,7 @@ private:
         state_.presentedSources.clear();
         state_.alignmentEstimates.clear();
         state_.sequenceAlignments.clear();
+        state_.alignmentRevision = 0U;
         state_.manualAlignmentAnchors.clear();
         sequenceAlignmentMaps_.clear();
         state_.compatibilityWarnings.clear();
@@ -1621,6 +1812,10 @@ private:
                                              true));
             return;
         }
+        if (std::holds_alternative<CancelAlignmentAnalysisCommand>(command)) {
+            beginCancelAlignmentAnalysis(std::get<CancelAlignmentAnalysisCommand>(command));
+            return;
+        }
         if (std::holds_alternative<PauseCommand>(command)) {
             if (pending_.has_value() || pendingProbe_.has_value()) {
                 completeCommand(context, CommandOutcome::Busy);
@@ -1631,6 +1826,14 @@ private:
         }
         const bool isOpenCommand = std::holds_alternative<OpenComparisonCommand>(command) ||
                                    std::holds_alternative<OpenDirectComparisonCommand>(command);
+        const bool invalidatesAnalysis =
+            isOpenCommand || std::holds_alternative<CloseSessionCommand>(command) ||
+            std::holds_alternative<SetAlignmentOffsetsCommand>(command) ||
+            std::holds_alternative<SetManualAlignmentAnchorCommand>(command) ||
+            std::holds_alternative<ClearManualAlignmentAnchorsCommand>(command);
+        if (invalidatesAnalysis && analysisJob_.has_value()) {
+            abandonAlignmentAnalysis(CancellationReason::Superseded);
+        }
         if (isOpenCommand && !pending_.has_value() && !playbackRun_.has_value() &&
             pendingProbe_.has_value()) {
             // A new open supersedes in-flight probes instead of bouncing off a Busy gate.
@@ -1706,6 +1909,8 @@ private:
                     beginEstimateAlignment(value);
                 } else if constexpr (std::is_same_v<Value, AnalyzeSequenceAlignmentCommand>) {
                     beginAnalyzeSequence(value);
+                } else if constexpr (std::is_same_v<Value, CancelAlignmentAnalysisCommand>) {
+                    // Cancellation is handled before the foreground admission gate.
                 } else if constexpr (std::is_same_v<Value, SetManualAlignmentAnchorCommand>) {
                     beginSetManualAnchor(value);
                 } else if constexpr (std::is_same_v<Value, ClearManualAlignmentAnchorsCommand>) {
@@ -1758,6 +1963,7 @@ private:
             const domain::FrameId displayedFrame = *state_.displayedFrame;
             state_.alignmentEstimates = std::move(*pending_->alignmentEstimates);
             state_.sequenceAlignments.clear();
+            state_.alignmentRevision = 0U;
             sequenceAlignmentMaps_.clear();
             std::vector<SourceFrameOffset> nextOffsets = alignmentOffsets_;
             for (const GlobalOffsetEstimate& estimate : state_.alignmentEstimates) {
@@ -1814,14 +2020,21 @@ private:
             }
             const CommandContext command = pending_->command;
             const domain::FrameId displayedFrame = *state_.displayedFrame;
-            state_.sequenceAlignments = std::move(*pending_->sequenceAlignments);
+            std::vector<SequenceAlignmentResult> analyzed =
+                std::move(*pending_->sequenceAlignments);
+            std::vector<SequenceAlignmentSummary> summaries;
+            summaries.reserve(analyzed.size());
             std::vector<SequenceAlignmentResult> accepted;
-            std::copy_if(
-                state_.sequenceAlignments.begin(),
-                state_.sequenceAlignments.end(),
-                std::back_inserter(accepted),
-                [](const SequenceAlignmentResult& result) { return result.autoApplicable; });
+            accepted.reserve(analyzed.size());
+            for (SequenceAlignmentResult& result : analyzed) {
+                summaries.push_back(summarizeSequenceAlignment(result));
+                if (result.autoApplicable) {
+                    accepted.push_back(std::move(result));
+                }
+            }
             const bool mappingChanged = accepted != sequenceAlignmentMaps_;
+            state_.sequenceAlignments = std::move(summaries);
+            state_.alignmentRevision = increment(state_.alignmentRevision);
             sequenceAlignmentMaps_ = std::move(accepted);
             pending_.reset();
             if (mappingChanged) {
@@ -1858,6 +2071,7 @@ private:
                 .sourceFrameId = source.sourceFrameId,
                 .matchKind = source.matchKind,
                 .alignmentConfidence = source.alignmentConfidence,
+                .missingReason = source.missingReason,
             });
         }
         pending_.reset();
@@ -1898,6 +2112,7 @@ private:
                 .sourceFrameId = source.sourceFrameId,
                 .matchKind = source.matchKind,
                 .alignmentConfidence = source.alignmentConfidence,
+                .missingReason = source.missingReason,
             });
         }
         playbackRun_->frame.reset();
@@ -2219,6 +2434,248 @@ private:
         pending_->sequenceAlignments = std::move(analyzed.results);
     }
 
+    [[nodiscard]] bool matchesAnalysis(const AlignmentAnalysisJobId jobId,
+                                       const PlaybackRequestContext& context,
+                                       const AlignmentAnalysisKind kind) const noexcept {
+        return analysisJob_.has_value() && analysisJob_->jobId == jobId &&
+               analysisJob_->context == context && analysisJob_->kind == kind;
+    }
+
+    void clearAnalysisProgress() {
+        state_.alignmentAnalysisJobId.reset();
+        state_.alignmentAnalysisKind.reset();
+        state_.alignmentAnalysisCompletedFrames = 0U;
+        state_.alignmentAnalysisTotalFrames = 0U;
+    }
+
+    void failAnalysis(domain::MediaError error, const CommandOutcome outcome) {
+        if (!analysisJob_.has_value()) {
+            return;
+        }
+        const CommandContext command = analysisJob_->command;
+        analysisJob_.reset();
+        clearAnalysisProgress();
+        state_.lastError = error;
+        publishSnapshot();
+        completeCommand(command, outcome, std::move(error));
+    }
+
+    void handleAnalysisStarted(const AlignmentAnalysisStarted& started) {
+        if (!matchesAnalysis(started.jobId, started.context, started.kind)) {
+            return;
+        }
+        state_.alignmentAnalysisCompletedFrames = 0U;
+        state_.alignmentAnalysisTotalFrames = started.totalFrames;
+        publishSnapshot();
+    }
+
+    void handleAnalysisProgress(const AlignmentAnalysisProgress& progress) {
+        if (!matchesAnalysis(progress.jobId, progress.context, progress.kind) ||
+            progress.completedFrames > progress.totalFrames ||
+            progress.completedFrames < state_.alignmentAnalysisCompletedFrames) {
+            return;
+        }
+        state_.alignmentAnalysisCompletedFrames = progress.completedFrames;
+        state_.alignmentAnalysisTotalFrames = progress.totalFrames;
+        publishSnapshot();
+    }
+
+    void handleAnalysisCompleted(AlignmentAnalysisCompleted completed) {
+        if (!matchesAnalysis(completed.jobId, completed.context, completed.kind) ||
+            !sources_.has_value()) {
+            return;
+        }
+        if (completed.kind == AlignmentAnalysisKind::GlobalOffset) {
+            if (!completed.sequenceResults.empty() ||
+                completed.estimates.size() + 1U != sources_->sources().size()) {
+                failAnalysis(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                              "Global analysis published an invalid result set."),
+                             CommandOutcome::Failed);
+                return;
+            }
+            for (std::size_t index = 0U; index < completed.estimates.size(); ++index) {
+                const GlobalOffsetEstimate& estimate = completed.estimates[index];
+                const bool duplicate = std::any_of(completed.estimates.begin() +
+                                                       static_cast<std::ptrdiff_t>(index + 1U),
+                                                   completed.estimates.end(),
+                                                   [&estimate](const GlobalOffsetEstimate& other) {
+                                                       return other.sourceId == estimate.sourceId;
+                                                   });
+                const bool confidenceValid =
+                    estimate.confidence >= 0.0F && estimate.confidence <= 1.0F &&
+                    estimate.bestCost >= 0.0F && estimate.bestCost <= 1.0F &&
+                    estimate.runnerUpCost >= 0.0F && estimate.runnerUpCost <= 1.0F;
+                if (duplicate || sources_->find(estimate.sourceId) == nullptr ||
+                    estimate.sourceId == sources_->canonicalSourceId() ||
+                    estimate.bestOffset < -64 || estimate.bestOffset > 64 ||
+                    estimate.evidenceCount == 0U || !confidenceValid) {
+                    failAnalysis(
+                        coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                         "Global analysis published an invalid source result."),
+                        CommandOutcome::Failed);
+                    return;
+                }
+            }
+            analysisJob_->estimates = std::move(completed.estimates);
+        } else {
+            if (!completed.estimates.empty() ||
+                completed.sequenceResults.size() + 1U != sources_->sources().size()) {
+                failAnalysis(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                              "Sequence analysis published an invalid result set."),
+                             CommandOutcome::Failed);
+                return;
+            }
+            for (std::size_t index = 0U; index < completed.sequenceResults.size(); ++index) {
+                const SequenceAlignmentResult& result = completed.sequenceResults[index];
+                const domain::ComparisonSource* const source = sources_->find(result.sourceId);
+                const bool duplicate = std::any_of(completed.sequenceResults.begin() +
+                                                       static_cast<std::ptrdiff_t>(index + 1U),
+                                                   completed.sequenceResults.end(),
+                                                   [&result](const SequenceAlignmentResult& other) {
+                                                       return other.sourceId == result.sourceId;
+                                                   });
+                const bool summaryValid = result.totalCost >= 0.0F &&
+                                          result.meanMatchCost >= 0.0F &&
+                                          result.meanMatchCost <= 1.0F &&
+                                          result.confidence >= 0.0F && result.confidence <= 1.0F;
+                if (source == nullptr || duplicate ||
+                    result.sourceId == sources_->canonicalSourceId() || !summaryValid ||
+                    result.entries.size() != state_.canonicalFrameCount) {
+                    failAnalysis(
+                        coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                         "Sequence analysis published an invalid source result."),
+                        CommandOutcome::Failed);
+                    return;
+                }
+                for (std::size_t frame = 0U; frame < result.entries.size(); ++frame) {
+                    const SequenceAlignmentEntry& entry = result.entries[frame];
+                    const bool confidenceValid =
+                        entry.confidence >= 0.0F && entry.confidence <= 1.0F;
+                    const bool missing = !entry.sourceFrameId.has_value();
+                    if (entry.canonicalFrameId.value() != static_cast<std::int64_t>(frame) ||
+                        !confidenceValid ||
+                        missing != (entry.matchKind == FrameMatchKind::Missing) ||
+                        (entry.sourceFrameId.has_value() &&
+                         (!entry.sourceFrameId->isValid() ||
+                          entry.sourceFrameId->value() >= source->descriptor.frameCount.value))) {
+                        failAnalysis(coordinatorError(
+                                         domain::MediaErrorCode::kMediaDecodeFailed,
+                                         "Sequence analysis published an invalid frame mapping."),
+                                     CommandOutcome::Failed);
+                        return;
+                    }
+                }
+            }
+            analysisJob_->sequenceResults = std::move(completed.sequenceResults);
+        }
+        state_.alignmentAnalysisCompletedFrames = state_.alignmentAnalysisTotalFrames;
+        analysisJob_->completed = true;
+    }
+
+    void handleAnalysisCanceled(const AlignmentAnalysisCanceled& canceled) {
+        if (!matchesAnalysis(canceled.jobId, canceled.context, canceled.kind)) {
+            return;
+        }
+        const CommandContext command = analysisJob_->command;
+        analysisJob_.reset();
+        clearAnalysisProgress();
+        publishSnapshot();
+        completeCommand(command, CommandOutcome::Canceled);
+    }
+
+    void handleAnalysisFailed(AlignmentAnalysisFailed failed) {
+        if (!matchesAnalysis(failed.jobId, failed.context, failed.kind)) {
+            return;
+        }
+        failAnalysis(std::move(failed.error), CommandOutcome::Failed);
+    }
+
+    void maybeFinalizeAnalysis() {
+        if (!analysisJob_.has_value() || !analysisJob_->completed || !state_.graphicsReady ||
+            pending_.has_value() || pendingProbe_.has_value() || playbackRun_.has_value() ||
+            !state_.displayedFrame.has_value()) {
+            return;
+        }
+
+        const CommandContext command = analysisJob_->command;
+        const domain::FrameId displayedFrame = *state_.displayedFrame;
+        bool mappingChanged = false;
+        if (analysisJob_->kind == AlignmentAnalysisKind::GlobalOffset &&
+            analysisJob_->estimates.has_value()) {
+            state_.alignmentEstimates = std::move(*analysisJob_->estimates);
+            state_.sequenceAlignments.clear();
+            state_.alignmentRevision = 0U;
+            sequenceAlignmentMaps_.clear();
+            std::vector<SourceFrameOffset> nextOffsets = alignmentOffsets_;
+            for (const GlobalOffsetEstimate& estimate : state_.alignmentEstimates) {
+                if (!estimate.autoApplicable) {
+                    continue;
+                }
+                const auto existing = std::find_if(
+                    nextOffsets.begin(), nextOffsets.end(), [&estimate](const auto& offset) {
+                        return offset.sourceId == estimate.sourceId;
+                    });
+                if (estimate.bestOffset == 0) {
+                    if (existing != nextOffsets.end()) {
+                        nextOffsets.erase(existing);
+                    }
+                } else {
+                    const SourceFrameOffset accepted{
+                        .sourceId = estimate.sourceId,
+                        .frames = estimate.bestOffset,
+                        .matchKind = FrameMatchKind::AutoAligned,
+                        .confidence = estimate.confidence,
+                    };
+                    if (existing == nextOffsets.end()) {
+                        nextOffsets.push_back(accepted);
+                    } else {
+                        *existing = accepted;
+                    }
+                }
+            }
+            const auto bySource = [](const SourceFrameOffset& left,
+                                     const SourceFrameOffset& right) {
+                return left.sourceId < right.sourceId;
+            };
+            std::sort(alignmentOffsets_.begin(), alignmentOffsets_.end(), bySource);
+            std::sort(nextOffsets.begin(), nextOffsets.end(), bySource);
+            mappingChanged = nextOffsets != alignmentOffsets_;
+            alignmentOffsets_ = std::move(nextOffsets);
+        } else if (analysisJob_->kind == AlignmentAnalysisKind::Sequence &&
+                   analysisJob_->sequenceResults.has_value()) {
+            std::vector<SequenceAlignmentResult> analyzed =
+                std::move(*analysisJob_->sequenceResults);
+            std::vector<SequenceAlignmentSummary> summaries;
+            std::vector<SequenceAlignmentResult> accepted;
+            summaries.reserve(analyzed.size());
+            accepted.reserve(analyzed.size());
+            for (SequenceAlignmentResult& result : analyzed) {
+                summaries.push_back(summarizeSequenceAlignment(result));
+                if (result.autoApplicable) {
+                    accepted.push_back(std::move(result));
+                }
+            }
+            mappingChanged = accepted != sequenceAlignmentMaps_;
+            state_.sequenceAlignments = std::move(summaries);
+            state_.alignmentRevision = increment(state_.alignmentRevision);
+            sequenceAlignmentMaps_ = std::move(accepted);
+        } else {
+            failAnalysis(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                          "Analysis completed without the expected payload."),
+                         CommandOutcome::Failed);
+            return;
+        }
+
+        analysisJob_.reset();
+        clearAnalysisProgress();
+        if (mappingChanged) {
+            beginSeek(command, displayedFrame);
+        } else {
+            publishSnapshot();
+            completeCommand(command, CommandOutcome::Succeeded);
+        }
+    }
+
     void handleFramePresented(const FrameSetPresented& presented) {
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             playbackRun_->frame->framePublished &&
@@ -2322,6 +2779,16 @@ private:
                     handleAlignmentEstimated(value);
                 } else if constexpr (std::is_same_v<Value, SequenceAlignmentAnalyzed>) {
                     handleSequenceAlignmentAnalyzed(value);
+                } else if constexpr (std::is_same_v<Value, AlignmentAnalysisStarted>) {
+                    handleAnalysisStarted(value);
+                } else if constexpr (std::is_same_v<Value, AlignmentAnalysisProgress>) {
+                    handleAnalysisProgress(value);
+                } else if constexpr (std::is_same_v<Value, AlignmentAnalysisCompleted>) {
+                    handleAnalysisCompleted(value);
+                } else if constexpr (std::is_same_v<Value, AlignmentAnalysisCanceled>) {
+                    handleAnalysisCanceled(value);
+                } else if constexpr (std::is_same_v<Value, AlignmentAnalysisFailed>) {
+                    handleAnalysisFailed(value);
                 } else if constexpr (std::is_same_v<Value, DeadlineElapsed>) {
                     handleDeadline(value);
                 } else if constexpr (std::is_same_v<Value, GraphicsDeviceReady>) {
@@ -2374,6 +2841,7 @@ private:
             } else {
                 handleEvent(std::move(std::get<ApplicationEvent>(*work)));
             }
+            maybeFinalizeAnalysis();
         }
     }
 
@@ -2410,6 +2878,9 @@ private:
                 dependencies_.renderChannel->clear(pending_->providerContext);
             }
         }
+        if (analysisJob_.has_value() && dependencies_.alignmentAnalysisService) {
+            dependencies_.alignmentAnalysisService->cancel(analysisJob_->jobId);
+        }
         if (playbackRun_.has_value()) {
             stopPlayback(std::nullopt, false);
         }
@@ -2426,8 +2897,10 @@ private:
     std::optional<PendingCommand> pending_;
     std::optional<PendingProbe> pendingProbe_;
     std::optional<PlaybackRun> playbackRun_;
+    std::optional<BackgroundAnalysis> analysisJob_;
     std::uint64_t nextRequestId_ = 1U;
     std::uint64_t nextTimerId_ = 1U;
+    std::uint64_t nextAnalysisJobId_ = 1U;
     std::unordered_set<CommandIdentity, CommandIdentityHash> seenCommands_;
 
     mutable std::mutex publicationMutex_;

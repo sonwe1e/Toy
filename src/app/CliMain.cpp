@@ -1,7 +1,7 @@
 #include "dvs/domain/ComparisonSource.h"
-#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/Module.h"
+#include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/persistence/Module.h"
 #include "dvs/platform/FrameBudget.h"
 #include "dvs/platform/Module.h"
@@ -28,8 +28,7 @@ void printError(const dvs::domain::MediaError& error) {
 }
 
 [[nodiscard]] int runProbe(const std::filesystem::path& sourcePath) {
-    const auto descriptor =
-        dvs::media::MediaProbe::inspect(sourcePath, dvs::domain::SourceId{0});
+    const auto descriptor = dvs::media::MediaProbe::inspect(sourcePath, dvs::domain::SourceId{0});
     if (!descriptor) {
         printError(descriptor.error());
         return EXIT_FAILURE;

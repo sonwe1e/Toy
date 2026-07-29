@@ -81,8 +81,8 @@ GpuFrameResource::create(GpuFrameIdentity identity,
                          const application::FrameGeometry geometry,
                          const domain::ColorMetadata colorMetadata,
                          GpuFrameAllocation allocation) noexcept {
-    if (!identity.frameId.isValid() || !geometry.isValid() ||
-        !colorMetadata.isValid() || !allocation.isValid()) {
+    if (!identity.frameId.isValid() || !geometry.isValid() || !colorMetadata.isValid() ||
+        !allocation.isValid()) {
         return {};
     }
 
@@ -100,8 +100,8 @@ std::shared_ptr<const GpuFrameResource> GpuFrameResource::createDeferred(
     const domain::ColorMetadata colorMetadata,
     GpuFrameAllocation allocation,
     std::shared_ptr<GpuFrameRetirementDomain> retirementDomain) noexcept {
-    if (!identity.frameId.isValid() || !geometry.isValid() ||
-        !colorMetadata.isValid() || !allocation.isValid() || !retirementDomain) {
+    if (!identity.frameId.isValid() || !geometry.isValid() || !colorMetadata.isValid() ||
+        !allocation.isValid() || !retirementDomain) {
         return {};
     }
 

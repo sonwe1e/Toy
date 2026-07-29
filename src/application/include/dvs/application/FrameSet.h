@@ -12,6 +12,14 @@
 
 namespace dvs::application {
 
+// Missing is a mapping outcome, never a decoder fallback. The reason remains adapter-neutral so
+// the application and UI can distinguish an alignment gap from a source boundary.
+enum class MissingReason {
+    AlignmentGap,
+    BeforeSourceStart,
+    AfterSourceEnd,
+};
+
 // One source's contribution to a canonical frame position. A missing entry carries neither a
 // frame nor a source frame id; it is never silently replaced by a neighbor frame.
 struct MappedSourceFrame final {
@@ -21,6 +29,7 @@ struct MappedSourceFrame final {
     domain::MediaTime presentationTime{0};
     FrameMatchKind matchKind = FrameMatchKind::ExactIndex;
     float alignmentConfidence = 1.0F;
+    std::optional<MissingReason> missingReason;
 
     [[nodiscard]] bool hasFrame() const noexcept {
         return frame.has_value();
@@ -75,7 +84,10 @@ inline std::optional<FrameSet> FrameSet::create(const domain::FrameId canonicalF
                 !entry.sourceFrameId->isValid() || entry.matchKind == FrameMatchKind::Missing) {
                 return std::nullopt;
             }
-        } else if (entry.matchKind != FrameMatchKind::Missing) {
+            if (entry.missingReason.has_value()) {
+                return std::nullopt;
+            }
+        } else if (entry.matchKind != FrameMatchKind::Missing || !entry.missingReason.has_value()) {
             return std::nullopt;
         }
     }

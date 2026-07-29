@@ -166,7 +166,8 @@ TEST(FrameMailboxTests, ReplacesThePublishedSetAndAcceptsPartialSets) {
     // A partial set (one of the session's frames) is a legitimate publication: the
     // renderer draws the missing slot as background. It replaces the prior set.
     std::vector<GpuFrameSlot> partialSlots{GpuFrameSlot{.sourceId = 0U, .frame = slotA->frame}};
-    const auto partial = GpuFrameSet::create(latest->context(), latest->frameId(), std::move(partialSlots));
+    const auto partial =
+        GpuFrameSet::create(latest->context(), latest->frameId(), std::move(partialSlots));
     ASSERT_NE(partial, nullptr);
     EXPECT_EQ(partial->frameCount(), 1U);
     ASSERT_EQ(mailbox.publish(partial), FrameMailboxPublishResult::Published);
@@ -372,28 +373,32 @@ TEST(FrameMailboxTests, SetDerivesIdentityAndRejectsContextFrameSourceAndAliasin
         GpuFrameSlot{.sourceId = 0U, .frame = frameA},
         GpuFrameSlot{.sourceId = 1U, .frame = wrongContextB},
     };
-    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongContextSlots)), nullptr);
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongContextSlots)),
+              nullptr);
 
     // Wrong device should fail.
     std::vector<GpuFrameSlot> wrongDeviceSlots{
         GpuFrameSlot{.sourceId = 0U, .frame = frameA},
         GpuFrameSlot{.sourceId = 1U, .frame = wrongDeviceB},
     };
-    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongDeviceSlots)), nullptr);
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongDeviceSlots)),
+              nullptr);
 
     // Wrong frameId should fail.
     std::vector<GpuFrameSlot> wrongFrameSlots{
         GpuFrameSlot{.sourceId = 0U, .frame = frameA},
         GpuFrameSlot{.sourceId = 1U, .frame = wrongFrameB},
     };
-    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongFrameSlots)), nullptr);
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{7}, std::move(wrongFrameSlots)),
+              nullptr);
 
     // Invalid frameId should fail.
     std::vector<GpuFrameSlot> invalidFrameSlots{
         GpuFrameSlot{.sourceId = 0U, .frame = frameA},
         GpuFrameSlot{.sourceId = 1U, .frame = frameB},
     };
-    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{-1}, std::move(invalidFrameSlots)), nullptr);
+    EXPECT_EQ(GpuFrameSet::create(context, domain::FrameId{-1}, std::move(invalidFrameSlots)),
+              nullptr);
 }
 
 } // namespace

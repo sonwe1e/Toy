@@ -48,8 +48,7 @@ TEST_F(ProjectRelinkServiceTests, PreparesAValidatedCandidateWithoutMutatingAnyP
 }
 
 TEST_F(ProjectRelinkServiceTests, ReturnsStableErrorsForMissingFile) {
-    const auto missing =
-        ProjectRelinkService::prepare(1, root_ / "missing.mov");
+    const auto missing = ProjectRelinkService::prepare(1, root_ / "missing.mov");
     ASSERT_FALSE(missing);
     EXPECT_EQ(missing.error().code, domain::MediaErrorCode::kSourceMissing);
     ASSERT_TRUE(missing.error().source.has_value());

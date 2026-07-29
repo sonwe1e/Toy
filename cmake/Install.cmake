@@ -36,6 +36,66 @@ qt6_deploy_runtime_dependencies(
 )
 install(SCRIPT "${dvs_qt_deploy_script}" COMPONENT Runtime)
 
+set(
+    DVS_FFMPEG_RUNTIME_DIR
+    "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/ffmpeg-8.1.2-essentials_build"
+)
+if(EXISTS "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffmpeg.exe" AND
+   EXISTS "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffprobe.exe" AND
+   EXISTS "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/.runtime-provenance.json")
+    install(
+        PROGRAMS
+            "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffmpeg.exe"
+            "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffprobe.exe"
+        DESTINATION .
+        COMPONENT Runtime
+    )
+    install(
+        FILES "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/.runtime-provenance.json"
+        DESTINATION licenses
+        RENAME ffmpeg-runtime-provenance.json
+        COMPONENT Runtime
+    )
+    install(
+        FILES "${DVS_FFMPEG_RUNTIME_DIR}/LICENSE"
+        DESTINATION licenses
+        RENAME FFmpeg-GPL-3.0.txt
+        COMPONENT Runtime
+    )
+    install(
+        FILES "${DVS_FFMPEG_RUNTIME_DIR}/README.txt"
+        DESTINATION licenses
+        RENAME FFmpeg-runtime-build-info.txt
+        COMPONENT Runtime
+    )
+endif()
+
+set(DVS_VCPKG_SHARE_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
+foreach(
+    packageName
+    IN ITEMS
+        double-conversion
+        ffmpeg
+        md4c
+        pcre2
+        qtbase
+        qtdeclarative
+        qtlanguageserver
+        qtshadertools
+        qtsvg
+        zlib
+)
+    set(packageCopyright "${DVS_VCPKG_SHARE_DIR}/${packageName}/copyright")
+    if(EXISTS "${packageCopyright}")
+        install(
+            FILES "${packageCopyright}"
+            DESTINATION licenses/vcpkg
+            RENAME "${packageName}.txt"
+            COMPONENT Runtime
+        )
+    endif()
+endforeach()
+
 if(EXISTS "${PROJECT_SOURCE_DIR}/assets")
     install(DIRECTORY "${PROJECT_SOURCE_DIR}/assets/" DESTINATION assets COMPONENT Runtime)
 endif()

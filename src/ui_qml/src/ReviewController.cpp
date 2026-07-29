@@ -19,7 +19,6 @@ namespace dvs::ui {
 namespace {
 
 constexpr int kProjectionIntervalMilliseconds = 16;
-constexpr float kLowAlignmentConfidence = 0.30F;
 constexpr qsizetype kMaximumAlignmentTimelineMarkers = 256;
 
 struct LocalFileCandidate final {
@@ -83,10 +82,17 @@ struct ReviewView final {
     QString sourceAErrorKey;
     QString sourceBErrorKey;
     QString sourceCErrorKey;
+    bool sourceAMissing = true;
+    bool sourceBMissing = true;
+    bool sourceCMissing = true;
     QString pairErrorKey;
+    QString lastErrorTechnicalDetail;
     QString frameMappingStatus;
     QString alignmentEstimateStatus;
     QString sequenceAlignmentStatus;
+    bool alignmentAnalysisRunning = false;
+    qreal alignmentAnalysisProgress = 0.0;
+    QString alignmentAnalysisStatus;
     QString manualAnchorStatus;
     QVariantList alignmentTimelineMarkers;
     bool manualAnchorActive = false;
@@ -304,7 +310,7 @@ public:
     }
 
     [[nodiscard]] bool estimateAlignment() {
-        return dispatchNavigation(
+        return dispatchBackgroundAnalysis(
             [](const ReviewView& view) { return view.canFirst; },
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
@@ -313,11 +319,20 @@ public:
     }
 
     [[nodiscard]] bool analyzeSequenceAlignment() {
-        return dispatchNavigation(
+        return dispatchBackgroundAnalysis(
             [](const ReviewView& view) { return view.canFirst; },
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
                     application::AnalyzeSequenceAlignmentCommand{.context = context}};
+            });
+    }
+
+    [[nodiscard]] bool cancelAlignmentAnalysis() {
+        return dispatchBackgroundAnalysis(
+            [](const ReviewView& view) { return view.alignmentAnalysisRunning; },
+            [](const application::CommandContext& context) {
+                return application::PlaybackCommand{
+                    application::CancelAlignmentAnalysisCommand{.context = context}};
             });
     }
 
@@ -452,13 +467,38 @@ private:
             next.totalFrames = static_cast<qulonglong>(snapshot_->canonicalFrameCount);
             next.playing = snapshot_->playbackState == domain::PlaybackState::kPlaying ||
                            snapshot_->playbackState == domain::PlaybackState::kBuffering;
+            next.alignmentAnalysisRunning = snapshot_->alignmentAnalysisJobId.has_value();
+            if (next.alignmentAnalysisRunning) {
+                const qulonglong completed = snapshot_->alignmentAnalysisCompletedFrames;
+                const qulonglong total = snapshot_->alignmentAnalysisTotalFrames;
+                next.alignmentAnalysisProgress =
+                    total == 0U ? 0.0 : static_cast<qreal>(completed) / static_cast<qreal>(total);
+                next.alignmentAnalysisStatus =
+                    total == 0U ? QStringLiteral("Preparing alignment analysis…")
+                                : QStringLiteral("Analyzing alignment… %1%")
+                                      .arg(qRound(next.alignmentAnalysisProgress * 100.0));
+            }
 
             QStringList mappingParts;
             for (const application::PresentedSourceState& source : snapshot_->presentedSources) {
                 const QString currentSourceName = sourceName(source.sourceId);
-                if (source.matchKind == application::FrameMatchKind::Missing) {
+                const bool missing = source.matchKind == application::FrameMatchKind::Missing;
+                if (source.sourceId == 0U) {
+                    next.sourceAMissing = missing;
+                } else if (source.sourceId == 1U) {
+                    next.sourceBMissing = missing;
+                } else if (source.sourceId == 2U) {
+                    next.sourceCMissing = missing;
+                }
+                if (missing) {
+                    QString reason = QStringLiteral("alignment gap");
+                    if (source.missingReason == application::MissingReason::BeforeSourceStart) {
+                        reason = QStringLiteral("before source start");
+                    } else if (source.missingReason == application::MissingReason::AfterSourceEnd) {
+                        reason = QStringLiteral("after source end");
+                    }
                     mappingParts.push_back(
-                        QStringLiteral("%1: Missing frame").arg(currentSourceName));
+                        QStringLiteral("%1: Missing frame (%2)").arg(currentSourceName, reason));
                 } else if ((source.matchKind == application::FrameMatchKind::GlobalOffset ||
                             source.matchKind == application::FrameMatchKind::AutoAligned ||
                             source.matchKind == application::FrameMatchKind::ManualAnchor) &&
@@ -507,7 +547,7 @@ private:
             next.alignmentEstimateStatus = estimateParts.join(QStringLiteral("  |  "));
             QStringList sequenceParts;
             QVariantList lowConfidenceTimelineMarkers;
-            for (const application::SequenceAlignmentResult& result :
+            for (const application::SequenceAlignmentSummary& result :
                  snapshot_->sequenceAlignments) {
                 const QString currentSourceName = sourceName(result.sourceId);
                 QStringList anomalyParts;
@@ -553,27 +593,13 @@ private:
                     next.autoAlignmentActive = true;
                 }
 
-                bool inLowConfidenceRun = false;
-                bool projectedLowConfidence = false;
-                for (const application::SequenceAlignmentEntry& entry : result.entries) {
-                    const bool lowConfidence = entry.sourceFrameId.has_value() &&
-                                               entry.confidence < kLowAlignmentConfidence;
-                    if (lowConfidence && !inLowConfidenceRun) {
-                        appendTimelineMarker(lowConfidenceTimelineMarkers,
-                                             entry.canonicalFrameId,
-                                             QStringLiteral("low-confidence"),
-                                             currentSourceName,
-                                             qRound(entry.confidence * 100.0F));
-                        projectedLowConfidence = true;
-                    }
-                    inLowConfidenceRun = lowConfidence;
-                }
-                if (!result.autoApplicable && !projectedLowConfidence && !result.entries.empty()) {
+                for (const application::SequenceAlignmentLowConfidenceRun& run :
+                     result.lowConfidenceRuns) {
                     appendTimelineMarker(lowConfidenceTimelineMarkers,
-                                         result.entries.front().canonicalFrameId,
+                                         run.firstCanonicalFrame,
                                          QStringLiteral("low-confidence"),
                                          currentSourceName,
-                                         qRound(result.confidence * 100.0F));
+                                         qRound(run.minimumConfidence * 100.0F));
                 }
             }
             next.sequenceAlignmentStatus = sequenceParts.join(QStringLiteral("  |  "));
@@ -610,6 +636,8 @@ private:
 
             if (snapshot_->lastError.has_value()) {
                 const QString key = QString::fromStdString(snapshot_->lastError->userMessageKey);
+                next.lastErrorTechnicalDetail =
+                    QString::fromStdString(snapshot_->lastError->technicalDetail);
                 const std::optional<domain::SourceId> errorSource = snapshot_->lastError->source;
                 if (errorSource.has_value() && *errorSource == 0U) {
                     if (next.sourceAErrorKey.isEmpty()) {
@@ -710,6 +738,29 @@ private:
             return false;
         }
         return dispatch(factory(*context));
+    }
+
+    template <typename Enabled, typename Factory>
+    [[nodiscard]] bool dispatchBackgroundAnalysis(Enabled enabled, Factory factory) {
+        if (!onOwnerThread() || stopped_) {
+            return false;
+        }
+        refresh();
+        if (stopped_ || !enabled(view_)) {
+            return false;
+        }
+        const std::optional<application::CommandContext> context = allocateCommandContext();
+        if (!context.has_value()) {
+            failClosed();
+            return false;
+        }
+        try {
+            return dependencies_.submit(factory(*context)) ==
+                   application::PortSubmitResult::Accepted;
+        } catch (...) {
+            failClosed();
+            return false;
+        }
     }
 
     template <typename Enabled, typename Factory>
@@ -814,8 +865,24 @@ QString ReviewController::sourceCErrorKey() const {
     return impl_->view().sourceCErrorKey;
 }
 
+bool ReviewController::sourceAMissing() const noexcept {
+    return impl_->view().sourceAMissing;
+}
+
+bool ReviewController::sourceBMissing() const noexcept {
+    return impl_->view().sourceBMissing;
+}
+
+bool ReviewController::sourceCMissing() const noexcept {
+    return impl_->view().sourceCMissing;
+}
+
 QString ReviewController::pairErrorKey() const {
     return impl_->view().pairErrorKey;
+}
+
+QString ReviewController::lastErrorTechnicalDetail() const {
+    return impl_->view().lastErrorTechnicalDetail;
 }
 
 QString ReviewController::frameMappingStatus() const {
@@ -828,6 +895,18 @@ QString ReviewController::alignmentEstimateStatus() const {
 
 QString ReviewController::sequenceAlignmentStatus() const {
     return impl_->view().sequenceAlignmentStatus;
+}
+
+bool ReviewController::alignmentAnalysisRunning() const noexcept {
+    return impl_->view().alignmentAnalysisRunning;
+}
+
+qreal ReviewController::alignmentAnalysisProgress() const noexcept {
+    return impl_->view().alignmentAnalysisProgress;
+}
+
+QString ReviewController::alignmentAnalysisStatus() const {
+    return impl_->view().alignmentAnalysisStatus;
 }
 
 QString ReviewController::manualAnchorStatus() const {
@@ -925,6 +1004,10 @@ bool ReviewController::estimateAlignment() {
 
 bool ReviewController::analyzeSequenceAlignment() {
     return impl_->analyzeSequenceAlignment();
+}
+
+bool ReviewController::cancelAlignmentAnalysis() {
+    return impl_->cancelAlignmentAnalysis();
 }
 
 bool ReviewController::setManualAlignmentAnchor(const int sourceIndex,

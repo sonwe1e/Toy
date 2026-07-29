@@ -608,6 +608,7 @@ makeThreeSolidSetWithMissingMiddle(platform::FrameBudget& budget, const domain::
                 .frame = std::nullopt,
                 .presentationTime = domain::MediaTime{0},
                 .matchKind = application::FrameMatchKind::Missing,
+                .missingReason = application::MissingReason::AlignmentGap,
             },
             application::MappedSourceFrame{
                 .sourceId = 2U,
@@ -662,8 +663,9 @@ public:
             return false;
         }
         if (QScreen* const screen = QGuiApplication::primaryScreen()) {
-            const QRect desktop = screen->virtualGeometry();
-            window.setPosition(desktop.right() + 32, desktop.bottom() + 32);
+            const QRect available = screen->availableGeometry();
+            window.setPosition(available.right() - window.width() + 1,
+                               available.bottom() - window.height() + 1);
         }
         surface.update();
         window.requestUpdate();
@@ -1091,6 +1093,32 @@ TEST(ComparisonSurfaceWarpTests, LeavesMissingSourceSlotUndrawnWithoutShiftingLa
     EXPECT_GT(first.red() + first.green() + first.blue(), 20);
     expectColorNear(missing, QColor{255, 0, 255}, 2);
     EXPECT_GT(third.red(), first.red());
+    EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, DifferenceWithMissingEdgeStaysBlackInsteadOfShowingOneSource) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Difference);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And1);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSetWithMissingMiddle(*budget, domain::FrameId{42});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(42U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage unavailable = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(unavailable.isNull());
+    expectColorNear(unavailable.pixelColor(unavailable.width() / 2, unavailable.height() / 2),
+                    QColor{0, 0, 0},
+                    2);
     EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
     harness.releaseRenderer();

@@ -128,8 +128,7 @@ private:
 }
 
 TEST(MediaProbeTests, VerifiesCfrH264WithNormalizedMetadata) {
-    const auto result =
-        MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
+    const auto result = MediaProbe::inspect(fixture("h264_a_320x180_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -150,8 +149,8 @@ TEST(MediaProbeTests, VerifiesCfrH264WithNormalizedMetadata) {
 }
 
 TEST(MediaProbeTests, VerifiesCfrWhenContainerRateDeclarationsDisagree) {
-    const auto result = MediaProbe::inspect(fixture("h264_disputed_metadata_320x180_30fps_12.mp4"),
-                                            0U);
+    const auto result =
+        MediaProbe::inspect(fixture("h264_disputed_metadata_320x180_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -163,8 +162,7 @@ TEST(MediaProbeTests, VerifiesCfrWhenContainerRateDeclarationsDisagree) {
 }
 
 TEST(MediaProbeTests, AcceptsH265AndKeepsDifferentSourceGeometry) {
-    const auto result =
-        MediaProbe::inspect(fixture("h265_b_160x90_30fps_12.mp4"), 1U);
+    const auto result = MediaProbe::inspect(fixture("h265_b_160x90_30fps_12.mp4"), 1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -177,8 +175,7 @@ TEST(MediaProbeTests, AcceptsH265AndKeepsDifferentSourceGeometry) {
 }
 
 TEST(MediaProbeTests, AcceptsMpeg4Part2WhenFfmpegProvidesTheDecoder) {
-    const auto result =
-        MediaProbe::inspect(fixture("mpeg4_64x48_30fps_12.mp4"), 0U);
+    const auto result = MediaProbe::inspect(fixture("mpeg4_64x48_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -191,8 +188,7 @@ TEST(MediaProbeTests, AcceptsMpeg4Part2WhenFfmpegProvidesTheDecoder) {
 }
 
 TEST(MediaProbeTests, CountsAnUnreportedFrameTotalFromThePresentationTimestampIndex) {
-    const auto result =
-        MediaProbe::inspect(fixture("h264_no_count_64x48_30fps_12.mkv"), 1U);
+    const auto result = MediaProbe::inspect(fixture("h264_no_count_64x48_30fps_12.mkv"), 1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -203,8 +199,7 @@ TEST(MediaProbeTests, CountsAnUnreportedFrameTotalFromThePresentationTimestampIn
 }
 
 TEST(MediaProbeTests, VerifiesCfrForNonzeroStartFromNormalizedIndex) {
-    const auto result = MediaProbe::inspect(fixture("h264_nonzero_start_64x48_30fps_12.mp4"),
-                                            1U);
+    const auto result = MediaProbe::inspect(fixture("h264_nonzero_start_64x48_30fps_12.mp4"), 1U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -216,8 +211,7 @@ TEST(MediaProbeTests, VerifiesCfrForNonzeroStartFromNormalizedIndex) {
 }
 
 TEST(MediaProbeTests, ClassifiesVariableFrameRateWhenNoCandidateMatches) {
-    const auto result =
-        MediaProbe::inspect(fixture("h264_vfr_320x180_12.mp4"), 0U);
+    const auto result = MediaProbe::inspect(fixture("h264_vfr_320x180_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -229,8 +223,7 @@ TEST(MediaProbeTests, ClassifiesVariableFrameRateWhenNoCandidateMatches) {
 }
 
 TEST(MediaProbeTests, ClassifiesMiddlePtsGapAsValidVfrAndPreservesFrameCount) {
-    const auto result = MediaProbe::inspect(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"),
-                                            0U);
+    const auto result = MediaProbe::inspect(fixture("h264_middle_pts_gap_64x48_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -242,8 +235,7 @@ TEST(MediaProbeTests, ClassifiesMiddlePtsGapAsValidVfrAndPreservesFrameCount) {
 }
 
 TEST(MediaProbeTests, ClassifiesEndPtsGapAsValidVfrAndPreservesFrameCount) {
-    const auto result =
-        MediaProbe::inspect(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), 0U);
+    const auto result = MediaProbe::inspect(fixture("h264_end_pts_gap_64x48_30fps_12.mp4"), 0U);
 
     ASSERT_TRUE(result);
     const domain::MediaDescriptor& descriptor = result.value();
@@ -255,8 +247,7 @@ TEST(MediaProbeTests, ClassifiesEndPtsGapAsValidVfrAndPreservesFrameCount) {
 }
 
 TEST(MediaProbeTests, RejectsUnsupportedTenBitPixelFormats) {
-    const auto tenBit =
-        MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U);
+    const auto tenBit = MediaProbe::inspect(fixture("h265_10bit_320x180_30fps_12.mp4"), 1U);
     ASSERT_FALSE(tenBit);
     EXPECT_EQ(tenBit.error().code, domain::MediaErrorCode::kUnsupportedPixelFormat);
 }

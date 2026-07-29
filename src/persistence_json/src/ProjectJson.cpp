@@ -67,8 +67,9 @@ template <typename TValue>
     return member;
 }
 
-[[nodiscard]] domain::Result<const Json*>
-arrayMember(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+[[nodiscard]] domain::Result<const Json*> arrayMember(const Json& object,
+                                                      const std::string_view field,
+                                                      std::optional<domain::SourceId> sourceId) {
     auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<const Json*>::failure(member.error());
@@ -94,8 +95,9 @@ arrayMember(const Json& object, const std::string_view field, std::optional<doma
     return domain::Result<std::string>::success(member.value()->get<std::string>());
 }
 
-[[nodiscard]] domain::Result<bool>
-boolMember(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+[[nodiscard]] domain::Result<bool> boolMember(const Json& object,
+                                              const std::string_view field,
+                                              std::optional<domain::SourceId> sourceId) {
     auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<bool>::failure(member.error());
@@ -107,8 +109,9 @@ boolMember(const Json& object, const std::string_view field, std::optional<domai
     return domain::Result<bool>::success(member.value()->get<bool>());
 }
 
-[[nodiscard]] domain::Result<std::int64_t>
-int64Value(const Json& value, std::optional<domain::SourceId> sourceId, const std::string_view field) {
+[[nodiscard]] domain::Result<std::int64_t> int64Value(const Json& value,
+                                                      std::optional<domain::SourceId> sourceId,
+                                                      const std::string_view field) {
     if (value.is_number_unsigned()) {
         const std::uint64_t unsignedValue = value.get<std::uint64_t>();
         if (unsignedValue > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
@@ -124,8 +127,9 @@ int64Value(const Json& value, std::optional<domain::SourceId> sourceId, const st
                                        "Field must be an integer: " + std::string{field} + ".");
 }
 
-[[nodiscard]] domain::Result<std::uint64_t>
-uint64Value(const Json& value, std::optional<domain::SourceId> sourceId, const std::string_view field) {
+[[nodiscard]] domain::Result<std::uint64_t> uint64Value(const Json& value,
+                                                        std::optional<domain::SourceId> sourceId,
+                                                        const std::string_view field) {
     if (value.is_number_unsigned()) {
         return domain::Result<std::uint64_t>::success(value.get<std::uint64_t>());
     }
@@ -139,8 +143,9 @@ uint64Value(const Json& value, std::optional<domain::SourceId> sourceId, const s
         sourceId, "Field must be an unsigned integer: " + std::string{field} + ".");
 }
 
-[[nodiscard]] domain::Result<std::int64_t>
-int64Member(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+[[nodiscard]] domain::Result<std::int64_t> int64Member(const Json& object,
+                                                       const std::string_view field,
+                                                       std::optional<domain::SourceId> sourceId) {
     auto member = requiredMember(object, field, sourceId);
     if (!member) {
         return domain::Result<std::int64_t>::failure(member.error());
@@ -172,8 +177,9 @@ int64Member(const Json& object, const std::string_view field, std::optional<doma
     return domain::Result<std::uint32_t>::success(static_cast<std::uint32_t>(value.value()));
 }
 
-[[nodiscard]] domain::Result<std::uint8_t>
-uint8Member(const Json& object, const std::string_view field, std::optional<domain::SourceId> sourceId) {
+[[nodiscard]] domain::Result<std::uint8_t> uint8Member(const Json& object,
+                                                       const std::string_view field,
+                                                       std::optional<domain::SourceId> sourceId) {
     auto value = uint64Member(object, field, sourceId);
     if (!value) {
         return domain::Result<std::uint8_t>::failure(value.error());
@@ -260,8 +266,7 @@ pathFromDocument(const std::string_view storedPath,
                  const std::filesystem::path& projectDirectory,
                  std::optional<domain::SourceId> sourceId) {
     if (storedPath.empty() || storedPath.find('\0') != std::string_view::npos) {
-        return invalidSchema<std::filesystem::path>(sourceId,
-                                                    "Persisted source path is invalid.");
+        return invalidSchema<std::filesystem::path>(sourceId, "Persisted source path is invalid.");
     }
 
     const std::filesystem::path path{std::string{storedPath}};
@@ -482,8 +487,8 @@ mediaOperationFromId(const std::string_view identifier) noexcept {
     };
 }
 
-[[nodiscard]] domain::Result<domain::RationalRate> decodeRate(const Json& document,
-                                                              std::optional<domain::SourceId> sourceId) {
+[[nodiscard]] domain::Result<domain::RationalRate>
+decodeRate(const Json& document, std::optional<domain::SourceId> sourceId) {
     auto numerator = int64Member(document, "numerator", sourceId);
     if (!numerator) {
         return domain::Result<domain::RationalRate>::failure(numerator.error());
@@ -590,8 +595,7 @@ decodeSource(const Json& document,
              const std::filesystem::path& projectDirectory,
              std::optional<domain::SourceId> sourceId) {
     if (!document.is_object()) {
-        return invalidSchema<domain::MediaDescriptor>(sourceId,
-                                                      "Source entry must be an object.");
+        return invalidSchema<domain::MediaDescriptor>(sourceId, "Source entry must be an object.");
     }
 
     auto storedPath = stringMember(document, "path", sourceId);
@@ -830,8 +834,7 @@ decodeNullableFrame(const Json& document, const std::string_view field) {
     Json document = Json::object();
     for (const auto& [key, value] : workspace) {
         if (key.empty()) {
-            return invalidSchema<Json>(std::nullopt,
-                                       "Workspace keys must be non-empty.");
+            return invalidSchema<Json>(std::nullopt, "Workspace keys must be non-empty.");
         }
         document[key] = value;
     }
@@ -938,10 +941,9 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     }
     const auto& sourcesList = *sourcesArray.value();
     if (sourcesList.size() < 2 || sourcesList.size() > 3) {
-        return invalidSchema<domain::Project>(
-            std::nullopt,
-            "Sources array must contain 2-3 entries; got " +
-                std::to_string(sourcesList.size()) + ".");
+        return invalidSchema<domain::Project>(std::nullopt,
+                                              "Sources array must contain 2-3 entries; got " +
+                                                  std::to_string(sourcesList.size()) + ".");
     }
 
     std::optional<domain::SourceId> referenceSourceId;
@@ -1006,10 +1008,10 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     }
 
     if (referenceSourceId.has_value() && !foundReferenceMatch) {
-        return invalidSchema<domain::Project>(
-            std::nullopt,
-            "referenceSourceId " + std::to_string(*referenceSourceId) +
-                " does not match any source entry id.");
+        return invalidSchema<domain::Project>(std::nullopt,
+                                              "referenceSourceId " +
+                                                  std::to_string(*referenceSourceId) +
+                                                  " does not match any source entry id.");
     }
 
     auto validated = domain::ComparisonValidator::validate(std::move(sources));

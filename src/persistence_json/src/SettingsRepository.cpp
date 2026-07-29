@@ -33,9 +33,8 @@ constexpr std::uintmax_t kMaximumSettingsBytes = 1024U * 1024U;
 }
 
 [[nodiscard]] domain::MediaError settingsError(std::string technicalDetail) {
-    return internal::persistenceError(domain::MediaErrorCode::kProjectFileIo,
-                                      std::nullopt,
-                                      std::move(technicalDetail));
+    return internal::persistenceError(
+        domain::MediaErrorCode::kProjectFileIo, std::nullopt, std::move(technicalDetail));
 }
 
 [[nodiscard]] domain::Result<std::filesystem::path>
@@ -184,20 +183,17 @@ readSettings(const std::filesystem::path& configuredPath) {
                                                  .revision = request.context.requestId.value(),
                                              });
     if (!publisher) {
-        return domain::Status::failure(
-            internal::platformError(publisher.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(publisher.error(), std::nullopt));
     }
 
     const std::span<const char> characters{text.data(), text.size()};
     auto status = publisher.value()->write(std::as_bytes(characters));
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
     status = publisher.value()->flush();
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
 
     if (!operation.tryBeginCommit()) {
@@ -207,8 +203,7 @@ readSettings(const std::filesystem::path& configuredPath) {
     status = destinationExists ? publisher.value()->publishReplacingExisting()
                                : publisher.value()->publishNew();
     if (!status) {
-        return domain::Status::failure(
-            internal::platformError(status.error(), std::nullopt));
+        return domain::Status::failure(internal::platformError(status.error(), std::nullopt));
     }
     return domain::Status::success();
 }

@@ -25,7 +25,7 @@ namespace {
 using namespace std::chrono_literals;
 
 [[nodiscard]] application::FrameSetPresented makeAcknowledgement(const std::uint64_t requestId,
-                                                                  const std::int64_t frameId) {
+                                                                 const std::int64_t frameId) {
     return application::FrameSetPresented{
         .context =
             application::FrameRequestContext{

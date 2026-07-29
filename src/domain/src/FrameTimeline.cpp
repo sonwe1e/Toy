@@ -9,11 +9,8 @@ namespace dvs::domain {
 namespace {
 
 [[nodiscard]] MediaError timelineError(const MediaErrorCode code, std::string detail) {
-    return makeMediaError(code,
-                          MediaOperation::kMediaDescriptorValidation,
-                          std::nullopt,
-                          false,
-                          std::move(detail));
+    return makeMediaError(
+        code, MediaOperation::kMediaDescriptorValidation, std::nullopt, false, std::move(detail));
 }
 
 [[nodiscard]] MediaError missingTimelineError() {

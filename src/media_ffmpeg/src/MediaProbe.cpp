@@ -469,8 +469,8 @@ checkedSubtract(const std::int64_t a, const std::int64_t b, std::int64_t* const 
         }
     }
 
-    auto colorMetadata = normalizeColorMetadata(
-        parameters, static_cast<std::uint32_t>(parameters.height), sourceId);
+    auto colorMetadata =
+        normalizeColorMetadata(parameters, static_cast<std::uint32_t>(parameters.height), sourceId);
     if (!colorMetadata) {
         return domain::Result<domain::MediaDescriptor>::failure(colorMetadata.error());
     }

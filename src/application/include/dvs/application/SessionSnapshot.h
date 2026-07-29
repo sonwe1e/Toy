@@ -15,6 +15,7 @@ struct PresentedSourceState final {
     std::optional<domain::FrameId> sourceFrameId;
     FrameMatchKind matchKind = FrameMatchKind::ExactIndex;
     float alignmentConfidence = 1.0F;
+    std::optional<MissingReason> missingReason;
 
     [[nodiscard]] bool operator==(const PresentedSourceState&) const = default;
 };
@@ -34,7 +35,12 @@ struct SessionSnapshot final {
     std::uint64_t canonicalFrameCount = 0;
     std::vector<PresentedSourceState> presentedSources;
     std::vector<GlobalOffsetEstimate> alignmentEstimates;
-    std::vector<SequenceAlignmentResult> sequenceAlignments;
+    std::uint64_t alignmentRevision = 0U;
+    std::vector<SequenceAlignmentSummary> sequenceAlignments;
+    std::optional<AlignmentAnalysisJobId> alignmentAnalysisJobId;
+    std::optional<AlignmentAnalysisKind> alignmentAnalysisKind;
+    std::uint64_t alignmentAnalysisCompletedFrames = 0U;
+    std::uint64_t alignmentAnalysisTotalFrames = 0U;
     std::vector<SourceAlignmentAnchors> manualAlignmentAnchors;
     std::vector<domain::MediaErrorCode> compatibilityWarnings;
     std::optional<domain::MediaError> lastError;

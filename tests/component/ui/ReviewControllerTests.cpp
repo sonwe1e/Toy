@@ -352,6 +352,7 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
             .sourceId = 2U,
             .sourceFrameId = std::nullopt,
             .matchKind = application::FrameMatchKind::Missing,
+            .missingReason = application::MissingReason::AfterSourceEnd,
         },
     };
     backend->currentSnapshot.compatibilityWarnings = {
@@ -377,37 +378,8 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
         },
     };
     backend->currentSnapshot.sequenceAlignments = {
-        application::SequenceAlignmentResult{
+        application::SequenceAlignmentSummary{
             .sourceId = 1U,
-            .entries =
-                {
-                    application::SequenceAlignmentEntry{
-                        .canonicalFrameId = domain::FrameId{0},
-                        .sourceFrameId = domain::FrameId{0},
-                        .confidence = 0.20F,
-                    },
-                    application::SequenceAlignmentEntry{
-                        .canonicalFrameId = domain::FrameId{1},
-                        .sourceFrameId = domain::FrameId{1},
-                        .confidence = 0.18F,
-                    },
-                    application::SequenceAlignmentEntry{
-                        .canonicalFrameId = domain::FrameId{2},
-                        .sourceFrameId = domain::FrameId{2},
-                        .confidence = 0.82F,
-                    },
-                    application::SequenceAlignmentEntry{
-                        .canonicalFrameId = domain::FrameId{3},
-                        .sourceFrameId = std::nullopt,
-                        .matchKind = application::FrameMatchKind::Missing,
-                        .confidence = 0.0F,
-                    },
-                    application::SequenceAlignmentEntry{
-                        .canonicalFrameId = domain::FrameId{4},
-                        .sourceFrameId = domain::FrameId{5},
-                        .confidence = 0.25F,
-                    },
-                },
             .anomalies =
                 {
                     application::SequenceAlignmentAnomaly{
@@ -418,6 +390,20 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
                         .kind = application::SequenceAlignmentAnomalyKind::TargetFrameDuplicate,
                         .canonicalFrameId = domain::FrameId{4},
                         .sourceFrameId = domain::FrameId{5},
+                    },
+                },
+            .anomalyCount = 2U,
+            .lowConfidenceRuns =
+                {
+                    application::SequenceAlignmentLowConfidenceRun{
+                        .firstCanonicalFrame = domain::FrameId{0},
+                        .lastCanonicalFrame = domain::FrameId{1},
+                        .minimumConfidence = 0.18F,
+                    },
+                    application::SequenceAlignmentLowConfidenceRun{
+                        .firstCanonicalFrame = domain::FrameId{4},
+                        .lastCanonicalFrame = domain::FrameId{4},
+                        .minimumConfidence = 0.25F,
                     },
                 },
             .totalCost = 0.2F,
@@ -455,6 +441,9 @@ TEST_F(ReviewControllerTests, ProjectsDisplayFramesGraphicsAndRoleSpecificErrorK
     EXPECT_EQ(controller.totalFrames(), 5U);
     EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("B: source frame 4")));
     EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("C: Missing frame")));
+    EXPECT_FALSE(controller.sourceAMissing());
+    EXPECT_FALSE(controller.sourceBMissing());
+    EXPECT_TRUE(controller.sourceCMissing());
     EXPECT_TRUE(controller.frameMappingStatus().contains(QStringLiteral("auto offset +1, 64%")));
     EXPECT_TRUE(controller.alignmentEstimateStatus().contains(QStringLiteral("B: auto +1 (64%)")));
     EXPECT_TRUE(controller.alignmentEstimateStatus().contains(
@@ -694,7 +683,7 @@ TEST_F(ReviewControllerTests, DispatchesExplicitAlignmentOffsetsAsOneAtomicComma
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentAsOneBusyCommand) {
+TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentWithoutBlockingNavigation) {
     auto backend = std::make_shared<FakeBackend>();
     backend->currentSnapshot = readySnapshot(5, 10U);
     ReviewController controller{dependenciesFor(backend)};
@@ -703,12 +692,13 @@ TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentAsOneBusyCommand) {
     ASSERT_EQ(backend->submitted.size(), 1U);
     EXPECT_NE(std::get_if<application::EstimateAlignmentCommand>(&backend->submitted.back()),
               nullptr);
+    EXPECT_FALSE(controller.busy());
+    EXPECT_TRUE(controller.next());
     EXPECT_TRUE(controller.busy());
-    EXPECT_FALSE(controller.estimateAlignment());
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, DispatchesSequenceAnalysisAsOneBusyCommand) {
+TEST_F(ReviewControllerTests, DispatchesSequenceAnalysisWithoutBlockingNavigation) {
     auto backend = std::make_shared<FakeBackend>();
     backend->currentSnapshot = readySnapshot(5, 10U);
     ReviewController controller{dependenciesFor(backend)};
@@ -717,8 +707,29 @@ TEST_F(ReviewControllerTests, DispatchesSequenceAnalysisAsOneBusyCommand) {
     ASSERT_EQ(backend->submitted.size(), 1U);
     EXPECT_NE(std::get_if<application::AnalyzeSequenceAlignmentCommand>(&backend->submitted.back()),
               nullptr);
+    EXPECT_FALSE(controller.busy());
+    EXPECT_TRUE(controller.previous());
     EXPECT_TRUE(controller.busy());
-    EXPECT_FALSE(controller.analyzeSequenceAlignment());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ProjectsAnalysisProgressAndDispatchesCancellation) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshot(5, 10U);
+    backend->currentSnapshot.alignmentAnalysisJobId = application::AlignmentAnalysisJobId{7U};
+    backend->currentSnapshot.alignmentAnalysisKind = application::AlignmentAnalysisKind::Sequence;
+    backend->currentSnapshot.alignmentAnalysisCompletedFrames = 25U;
+    backend->currentSnapshot.alignmentAnalysisTotalFrames = 100U;
+    ReviewController controller{dependenciesFor(backend)};
+
+    EXPECT_TRUE(controller.alignmentAnalysisRunning());
+    EXPECT_DOUBLE_EQ(controller.alignmentAnalysisProgress(), 0.25);
+    EXPECT_FALSE(controller.alignmentAnalysisStatus().isEmpty());
+    ASSERT_TRUE(controller.cancelAlignmentAnalysis());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_NE(std::get_if<application::CancelAlignmentAnalysisCommand>(&backend->submitted.back()),
+              nullptr);
+    EXPECT_FALSE(controller.busy());
     controller.stop();
 }
 

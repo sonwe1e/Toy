@@ -35,10 +35,16 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QString sourceAErrorKey READ sourceAErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBErrorKey READ sourceBErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCErrorKey READ sourceCErrorKey NOTIFY stateChanged)
+    Q_PROPERTY(bool sourceAMissing READ sourceAMissing NOTIFY stateChanged)
+    Q_PROPERTY(bool sourceBMissing READ sourceBMissing NOTIFY stateChanged)
+    Q_PROPERTY(bool sourceCMissing READ sourceCMissing NOTIFY stateChanged)
     Q_PROPERTY(QString pairErrorKey READ pairErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString frameMappingStatus READ frameMappingStatus NOTIFY stateChanged)
     Q_PROPERTY(QString alignmentEstimateStatus READ alignmentEstimateStatus NOTIFY stateChanged)
     Q_PROPERTY(QString sequenceAlignmentStatus READ sequenceAlignmentStatus NOTIFY stateChanged)
+    Q_PROPERTY(bool alignmentAnalysisRunning READ alignmentAnalysisRunning NOTIFY stateChanged)
+    Q_PROPERTY(qreal alignmentAnalysisProgress READ alignmentAnalysisProgress NOTIFY stateChanged)
+    Q_PROPERTY(QString alignmentAnalysisStatus READ alignmentAnalysisStatus NOTIFY stateChanged)
     Q_PROPERTY(QString manualAnchorStatus READ manualAnchorStatus NOTIFY stateChanged)
     Q_PROPERTY(
         QVariantList alignmentTimelineMarkers READ alignmentTimelineMarkers NOTIFY stateChanged)
@@ -91,10 +97,17 @@ public:
     [[nodiscard]] QString sourceAErrorKey() const;
     [[nodiscard]] QString sourceBErrorKey() const;
     [[nodiscard]] QString sourceCErrorKey() const;
+    [[nodiscard]] bool sourceAMissing() const noexcept;
+    [[nodiscard]] bool sourceBMissing() const noexcept;
+    [[nodiscard]] bool sourceCMissing() const noexcept;
     [[nodiscard]] QString pairErrorKey() const;
+    [[nodiscard]] QString lastErrorTechnicalDetail() const;
     [[nodiscard]] QString frameMappingStatus() const;
     [[nodiscard]] QString alignmentEstimateStatus() const;
     [[nodiscard]] QString sequenceAlignmentStatus() const;
+    [[nodiscard]] bool alignmentAnalysisRunning() const noexcept;
+    [[nodiscard]] qreal alignmentAnalysisProgress() const noexcept;
+    [[nodiscard]] QString alignmentAnalysisStatus() const;
     [[nodiscard]] QString manualAnchorStatus() const;
     [[nodiscard]] QVariantList alignmentTimelineMarkers() const;
     [[nodiscard]] bool manualAnchorActive() const noexcept;
@@ -126,6 +139,7 @@ public:
     applyAlignmentOffsets(qint64 sourceAFrames, qint64 sourceBFrames, qint64 sourceCFrames);
     Q_INVOKABLE bool estimateAlignment();
     Q_INVOKABLE bool analyzeSequenceAlignment();
+    Q_INVOKABLE bool cancelAlignmentAnalysis();
     Q_INVOKABLE bool
     setManualAlignmentAnchor(int sourceIndex, qint64 canonicalFrame, qint64 sourceFrame);
     Q_INVOKABLE bool clearManualAlignmentAnchors();

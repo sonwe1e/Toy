@@ -1,5 +1,8 @@
 # Third-Party Licenses
 
-This directory will contain the exact license texts shipped with the pinned Qt, FFmpeg, codec, compiler-runtime, and utility dependencies. Package generation must fail when the runtime dependency manifest and these texts disagree.
+This directory contains the reviewed third-party notice index. The install rules add the
+exact license texts shipped with the pinned FFmpeg runtime and the vcpkg-built Qt, FFmpeg,
+codec, and utility dependencies.
 
-Do not treat this placeholder as a distribution-ready notice set. `THIRD_PARTY_NOTICES.md` will be generated and reviewed when the install tree is implemented.
+Package generation fails when the FFmpeg runtime manifest, provenance, version, and license
+profile disagree.

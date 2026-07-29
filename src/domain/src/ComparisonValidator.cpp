@@ -51,10 +51,9 @@ std::int64_t ValidatedComparisonSet::canonicalFrameCount() const noexcept {
 }
 
 bool ValidatedComparisonSet::hasEstimatedFrameCount() const noexcept {
-    return std::any_of(
-        sources_.begin(), sources_.end(), [](const ComparisonSource& source) {
-            return source.descriptor.frameCount.origin == FrameCountOrigin::kEstimated;
-        });
+    return std::any_of(sources_.begin(), sources_.end(), [](const ComparisonSource& source) {
+        return source.descriptor.frameCount.origin == FrameCountOrigin::kEstimated;
+    });
 }
 
 void CompatibilityReport::add(CompatibilityFinding finding) {
@@ -70,17 +69,15 @@ bool CompatibilityReport::isEmpty() const noexcept {
 }
 
 bool CompatibilityReport::hasFatal() const noexcept {
-    return std::any_of(
-        findings_.begin(), findings_.end(), [](const CompatibilityFinding& finding) {
-            return finding.severity == CompatibilitySeverity::kFatal;
-        });
+    return std::any_of(findings_.begin(), findings_.end(), [](const CompatibilityFinding& finding) {
+        return finding.severity == CompatibilitySeverity::kFatal;
+    });
 }
 
 bool CompatibilityReport::hasAlignmentRequired() const noexcept {
-    return std::any_of(
-        findings_.begin(), findings_.end(), [](const CompatibilityFinding& finding) {
-            return finding.severity == CompatibilitySeverity::kAlignmentRequired;
-        });
+    return std::any_of(findings_.begin(), findings_.end(), [](const CompatibilityFinding& finding) {
+        return finding.severity == CompatibilitySeverity::kAlignmentRequired;
+    });
 }
 
 namespace {
@@ -150,17 +147,17 @@ void comparePair(const ComparisonSource& first,
 
 Result<ComparisonValidation> ComparisonValidator::validate(std::vector<ComparisonSource> sources) {
     if (sources.size() < kMinimumSources || sources.size() > kMaximumSources) {
-        return Result<ComparisonValidation>::failure(setFailure(
-            MediaErrorCode::kInvalidArgument,
-            "A comparison session requires two or three sources."));
+        return Result<ComparisonValidation>::failure(
+            setFailure(MediaErrorCode::kInvalidArgument,
+                       "A comparison session requires two or three sources."));
     }
 
     for (std::size_t index = 0; index < sources.size(); ++index) {
         for (std::size_t other = index + 1; other < sources.size(); ++other) {
             if (sources[index].id == sources[other].id) {
-                return Result<ComparisonValidation>::failure(setFailure(
-                    MediaErrorCode::kInvalidArgument,
-                    "Comparison source IDs must be unique within a session."));
+                return Result<ComparisonValidation>::failure(
+                    setFailure(MediaErrorCode::kInvalidArgument,
+                               "Comparison source IDs must be unique within a session."));
             }
         }
     }
@@ -177,9 +174,9 @@ Result<ComparisonValidation> ComparisonValidator::validate(std::vector<Compariso
         }
         if (source.role == ComparisonRole::kReference) {
             if (referenceId.has_value()) {
-                return Result<ComparisonValidation>::failure(setFailure(
-                    MediaErrorCode::kInvalidArgument,
-                    "At most one source may carry the reference role."));
+                return Result<ComparisonValidation>::failure(
+                    setFailure(MediaErrorCode::kInvalidArgument,
+                               "At most one source may carry the reference role."));
             }
             referenceId = source.id;
         }

@@ -73,10 +73,8 @@ TEST_F(FingerprintServiceTests, HashesEveryByteAtTheTwoMiBBoundary) {
     writeFile(originalPath, original);
     writeFile(changedPath, changed);
 
-    const auto originalIdentity =
-        FingerprintService::fingerprint(originalPath, 0);
-    const auto changedIdentity =
-        FingerprintService::fingerprint(changedPath, 0);
+    const auto originalIdentity = FingerprintService::fingerprint(originalPath, 0);
+    const auto changedIdentity = FingerprintService::fingerprint(changedPath, 0);
 
     ASSERT_TRUE(originalIdentity);
     ASSERT_TRUE(changedIdentity);
@@ -102,8 +100,7 @@ TEST_F(FingerprintServiceTests, HashesOnlyFirstAndLastMiBAboveTheBoundary) {
     writeFile(firstPath, firstChanged);
     writeFile(lastPath, lastChanged);
 
-    const auto originalIdentity =
-        FingerprintService::fingerprint(originalPath, 0);
+    const auto originalIdentity = FingerprintService::fingerprint(originalPath, 0);
     const auto middleIdentity = FingerprintService::fingerprint(middlePath, 0);
     const auto firstIdentity = FingerprintService::fingerprint(firstPath, 0);
     const auto lastIdentity = FingerprintService::fingerprint(lastPath, 0);
@@ -131,8 +128,7 @@ TEST_F(FingerprintServiceTests, ReportsStableErrorsForMissingAndChangedSources) 
     ASSERT_TRUE(expected);
 
     writeFile(source, {'x', 'y', 'z'});
-    const auto status =
-        FingerprintService::verify(source, expected.value(), 1);
+    const auto status = FingerprintService::verify(source, expected.value(), 1);
 
     ASSERT_FALSE(status);
     EXPECT_EQ(status.error().code, domain::MediaErrorCode::kSourceFingerprintMismatch);

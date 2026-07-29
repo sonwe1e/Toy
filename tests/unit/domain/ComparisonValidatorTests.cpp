@@ -71,8 +71,8 @@ TEST(ComparisonValidatorTests, AcceptsTwoIdenticalSourcesWithFirstAsCanonical) {
 }
 
 TEST(ComparisonValidatorTests, ReferenceRoleWinsCanonicalSelection) {
-    const auto result = ComparisonValidator::validate(
-        {makeSource(0), makeSource(1, ComparisonRole::kReference)});
+    const auto result =
+        ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kReference)});
 
     ASSERT_TRUE(result.hasValue());
     EXPECT_EQ(result.value().set.canonicalSourceId(), 1U);
@@ -96,8 +96,8 @@ TEST(ComparisonValidatorTests, RejectsFewerThanTwoOrMoreThanThreeSources) {
     ASSERT_FALSE(single.hasValue());
     EXPECT_EQ(single.error().code, MediaErrorCode::kInvalidArgument);
 
-    const auto quadruple = ComparisonValidator::validate(
-        {makeSource(0), makeSource(1), makeSource(2), makeSource(3)});
+    const auto quadruple =
+        ComparisonValidator::validate({makeSource(0), makeSource(1), makeSource(2), makeSource(3)});
     ASSERT_FALSE(quadruple.hasValue());
     EXPECT_EQ(quadruple.error().code, MediaErrorCode::kInvalidArgument);
 }
@@ -131,9 +131,9 @@ TEST(ComparisonValidatorTests, RejectsTwoReferenceRoles) {
 }
 
 TEST(ComparisonValidatorTests, WarnsOnFrameCountMismatchWithoutBlocking) {
-    const auto result =
-        ComparisonValidator::validate({makeSource(0, ComparisonRole::kReference, makeDescriptor(90)),
-                                       makeSource(1, ComparisonRole::kPrediction, makeDescriptor(89))});
+    const auto result = ComparisonValidator::validate(
+        {makeSource(0, ComparisonRole::kReference, makeDescriptor(90)),
+         makeSource(1, ComparisonRole::kPrediction, makeDescriptor(89))});
 
     ASSERT_TRUE(result.hasValue());
     EXPECT_EQ(result.value().set.canonicalFrameCount(), 90);
@@ -144,32 +144,37 @@ TEST(ComparisonValidatorTests, WarnsOnFrameCountMismatchWithoutBlocking) {
 TEST(ComparisonValidatorTests, WarnsOnRateDurationResolutionAndColorMismatches) {
     const auto rateMismatch =
         makeDescriptor(90, makeRate(60), MediaExtent{.width = 1'920, .height = 1'080});
-    const auto result = ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kPrediction, rateMismatch)});
+    const auto result = ComparisonValidator::validate(
+        {makeSource(0), makeSource(1, ComparisonRole::kPrediction, rateMismatch)});
 
     ASSERT_TRUE(result.hasValue());
     EXPECT_TRUE(hasFinding(result.value().report, MediaErrorCode::kSourceFrameRateMismatch));
 
-    const auto durationMismatch = makeDescriptor(90, makeRate(), MediaExtent{.width = 1'920, .height = 1'080},
-                                                 ColorMetadata{}, MediaTime{3'033'335});
-    const auto durationResult =
-        ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kPrediction, durationMismatch)});
+    const auto durationMismatch = makeDescriptor(90,
+                                                 makeRate(),
+                                                 MediaExtent{.width = 1'920, .height = 1'080},
+                                                 ColorMetadata{},
+                                                 MediaTime{3'033'335});
+    const auto durationResult = ComparisonValidator::validate(
+        {makeSource(0), makeSource(1, ComparisonRole::kPrediction, durationMismatch)});
     ASSERT_TRUE(durationResult.hasValue());
     EXPECT_TRUE(hasFinding(durationResult.value().report, MediaErrorCode::kSourceDurationMismatch));
 
     const auto resolutionMismatch =
         makeDescriptor(90, makeRate(), MediaExtent{.width = 1'280, .height = 720});
-    const auto resolutionResult =
-        ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kPrediction, resolutionMismatch)});
+    const auto resolutionResult = ComparisonValidator::validate(
+        {makeSource(0), makeSource(1, ComparisonRole::kPrediction, resolutionMismatch)});
     ASSERT_TRUE(resolutionResult.hasValue());
-    EXPECT_TRUE(hasFinding(resolutionResult.value().report, MediaErrorCode::kSourceResolutionMismatch));
+    EXPECT_TRUE(
+        hasFinding(resolutionResult.value().report, MediaErrorCode::kSourceResolutionMismatch));
 
-    const auto colorMismatch = makeDescriptor(90,
-                                              makeRate(),
-                                              MediaExtent{.width = 1'920, .height = 1'080},
-                                              ColorMetadata{.matrix = ColorMatrix::kBt709,
-                                                            .range = ColorRange::kFull});
-    const auto colorResult =
-        ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kPrediction, colorMismatch)});
+    const auto colorMismatch =
+        makeDescriptor(90,
+                       makeRate(),
+                       MediaExtent{.width = 1'920, .height = 1'080},
+                       ColorMetadata{.matrix = ColorMatrix::kBt709, .range = ColorRange::kFull});
+    const auto colorResult = ComparisonValidator::validate(
+        {makeSource(0), makeSource(1, ComparisonRole::kPrediction, colorMismatch)});
     ASSERT_TRUE(colorResult.hasValue());
     EXPECT_TRUE(
         hasFinding(colorResult.value().report, MediaErrorCode::kSourceColorMetadataMismatch));

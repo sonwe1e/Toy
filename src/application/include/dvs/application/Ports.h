@@ -40,6 +40,9 @@ struct FrameProviderOpenRequest final {
     // The session's compared sources, two or three entries in session order. The provider opens
     // one decode slot per entry and publishes one FrameSet entry per slot.
     std::vector<domain::ComparisonSource> sources;
+    // Canonical ownership is explicit because Reference is a semantic role, not a source-order
+    // convention. Adapters must never infer the canonical source from sources.front().
+    domain::SourceId canonicalSourceId = 0;
     // The canonical timeline carries either a rational CFR rate or an immutable, normalized,
     // zero-anchored VFR display-order timeline. The provider and the coordinator share one
     // VFR timeline without persisting derived per-frame data for the whole session.
@@ -61,6 +64,9 @@ struct AlignmentEstimateRequest final {
     domain::SourceId canonicalSourceId = 0;
     GlobalOffsetEstimationOptions options;
     std::size_t candidateSampleCount = 5U;
+    AlignmentAnalysisJobId jobId;
+    std::vector<domain::ComparisonSource> sources;
+    std::optional<domain::CanonicalTimeline> timeline;
 };
 
 struct SequenceAlignmentRequest final {
@@ -69,6 +75,9 @@ struct SequenceAlignmentRequest final {
     std::vector<SourceFrameOffset> expectedOffsets;
     SequenceAlignmentOptions options;
     std::size_t maximumFrameCount = 50'000U;
+    AlignmentAnalysisJobId jobId;
+    std::vector<domain::ComparisonSource> sources;
+    std::optional<domain::CanonicalTimeline> timeline;
 };
 
 struct FrameProviderCloseRequest final {
@@ -159,6 +168,22 @@ public:
     submit(const FrameProviderCloseRequest& request,
            std::shared_ptr<IApplicationEventSink> events) = 0;
     virtual void cancel(const PlaybackRequestContext& context) noexcept = 0;
+};
+
+// Alignment analysis owns a decode path that is independent from playback. A successful submit
+// admits a background job; completion is reported through job events and never reserves the
+// coordinator's foreground command slot.
+class IAlignmentAnalysisService {
+public:
+    virtual ~IAlignmentAnalysisService() = default;
+
+    [[nodiscard]] virtual PortSubmitResult
+    submit(const AlignmentEstimateRequest& request,
+           std::shared_ptr<IApplicationEventSink> events) = 0;
+    [[nodiscard]] virtual PortSubmitResult
+    submit(const SequenceAlignmentRequest& request,
+           std::shared_ptr<IApplicationEventSink> events) = 0;
+    virtual void cancel(AlignmentAnalysisJobId jobId) noexcept = 0;
 };
 
 class IProjectRepository {

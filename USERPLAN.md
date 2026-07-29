@@ -1,777 +1,855 @@
-
-
-
-
 # 核心结论
 
-这个项目最终不应该是“三个播放器项目合并后继续共存”，而应该是：
+这笔提交不是简单补功能，而是已经完成了从“双视频播放器”向“2～3 路 VFI 专用比较器”的核心架构迁移：`FramePair` 已升级为 `FrameSet`，三路布局、任意两路误差图、全局偏移估计、带状序列对齐、掉帧/重复帧检测和手动锚点都已有真实实现。
 
-> **以 `DualVideoStudio` 为唯一技术主干，彻底淘汰 `DualVideoTool` 的播放链路，把 `video-compare` 仅作为交互与算法参考，重构成一个原生支持 2～3 路视频、显式对齐、逐帧精确导航和任意两路误差图的 VFI 专用比较器。**
+但目前**还不适合直接合并为稳定主线版本**。现在最需要做的不是继续扩充 UI，而是先修复四个会影响正确性的 P0 问题：
 
-最终产品的核心对象也不应继续叫 `FramePair`，而应升级为 **`FrameSet`**：在同一个标准帧位置上，原子地包含 Reference、Prediction 1、Prediction 2 三路画面，以及三组可选差分关系。
+1. 非第一路 Reference 的标准时间线处理错误。
+2. 普通解码失败会被伪装成 `Missing frame`。
+3. 完整序列对齐结果会在播放过程中反复进行 O(N) 快照复制。
+4. 误差图一侧缺帧时会退化为显示单路原图，容易造成误判。
 
-这条路线既能保留 `DualVideoStudio` 现有最有价值的精确帧、异步状态机、GPU 渲染和测试体系，也能避免把 `DualVideoTool` 的代理依赖、QImage 拷贝、剪辑导出，以及 `video-compare` 的 SDL 巨型状态机、示波器、裁剪、HDR、滤镜等不必要功能带入最终工程。
+此外，当前 `Quality` 工作流已经失败，`Build and Test` 仍处于排队状态，因此分支目前也不满足合并门禁。
 
----
+按工程成熟度判断：
 
-# 一、仓库现状与审计边界
-
-当前 GitHub 中可以检索到的核心代码位于导入提交 `6d3b3e9bf973def125eea26f8142990943e8b981`，提交内容为 `DualVideoStudio`、`DualVideoTool` 和 `video-compare` 三个工作区的整体导入。该提交目前没有关联的 GitHub Actions 运行记录。fileciteturn4file0L1-L2 fileciteturn49file0L1-L1
-
-默认分支目前没有正常暴露这次导入内容，因此本次审计采用：
-
-- `DualVideoStudio`、`DualVideoTool`：直接读取导入提交中的实际代码。
-- `video-compare`：根据目录名、A/D 操作方式和功能特征，结合可读取的 `pixop/video-compare` 上游代码进行分析。它与用户描述的项目高度吻合，但在默认分支修复前，不能保证仓库内副本与上游当前版本逐行一致。
-
-这也是合并工作的第一个阻塞项：**先让导入提交进入一个可构建、可发起 PR、可运行 CI 的正常分支，再开始重构。**
-
----
-
-# 二、三个项目分别应该如何处理
-
-| 工程 | 当前优势 | 主要问题 | 最终处理 |
-|---|---|---|---|
-| `DualVideoStudio` | 原子 A/B 帧、精确帧序号、PTS 索引、VFR 时间线、异步请求身份、取消与过期结果过滤、D3D11 差分渲染、分层测试 | 全部模型硬编码为 A/B；编解码支持范围窄；当前解码仍是软件且 A/B 串行；工程范围包含大量当前不需要的项目、代理、导出能力 | **唯一主干，进行泛化和裁剪** |
-| `DualVideoTool` | 已经验证过基本工作流；传统 Qt Widgets 容易快速开发；已有代理、时间线、导出界面 | 播放必须等待代理；QImage CPU 路径；浮点 FPS 映射；职责集中；存在未进入构建的死代码；剪辑与导出不是当前目标 | **淘汰，仅保留少量 UI 经验和测试媒体** |
-| `video-compare` | FFmpeg 格式适应性较广；时间偏移、缩放、滑动对比、差分模式成熟；交互经过长期使用 | A/D 不是精确逐帧；多路右视频只能切换，不能三路同屏；SDL 状态机庞大；功能远超需求；数据模型仍是 Left/Right | **作为参考实现，不作为合并底座** |
-
-`DualVideoTool` 自己的后续架构设计文档已经明确指出，它不适合作为下一版的结构基础：`PlaybackEngine` 同时承担播放、代理、线程、剪辑和诊断，播放被完整代理生成阻塞，帧路径中存在 UI 线程 QImage 拷贝，部分异步操作缺少严格的请求身份。fileciteturn32file0L9-L13
-
-`DualVideoStudio` 的架构方向则是正确的：业务规则、应用协调器、FFmpeg、Windows/D3D11 和 QML 已经分层；渲染发布要求 A/B 属于同一个标准 `FrameId`，并且只有完整帧对可以提交。fileciteturn23file0L3-L9
+| 模块           | 当前状态         |
+| ------------ | ------------ |
+| 2～3 路核心数据模型  | 较完整          |
+| 精确逐帧和原子显示    | 较完整          |
+| 三路布局和任意两路差分  | 基本完成         |
+| 全局偏移和序列对齐    | 算法已实现，工程闭环不足 |
+| 长视频性能        | 明显不足         |
+| 解码调度         | 仍需重构         |
+| 媒体格式兼容性      | 仍处于第一阶段      |
+| 产品级错误表达      | 部分情况下会误导     |
+| CI、硬件测试和发布门禁 | 未完成          |
 
 ---
 
-# 三、当前最关键的技术问题
+# 一、本次提交已经完成的关键工作
 
-## 3.1 `video-compare` 中 A/D“没有响应”的真实原因
+## 1. 多路数据模型已经成立
 
-这大概率不是简单的键盘事件失效，而是 **A/D 的语义与用户理解不一致**。
+新的 `FrameSet` 会在同一个 canonical frame 下携带所有已加载源。缺帧使用显式 `Missing` 条目表示，不允许用邻帧或最后一帧静默替代；同时要求帧句柄与 `sourceFrameId` 必须同时存在或同时缺失。
 
-在上游实现中：
+这一点非常重要，因为它使以下场景都能被统一表达：
 
-- 普通 `A` 增加 `frame_buffer_offset_delta_`，向已经缓存的旧帧移动。
-- 普通 `D` 减少该偏移，向缓存中的新帧移动。
-- `Shift+D` 才会请求解码下一帧。
-- `Shift+A` 才会通过一次反向 seek 尝试得到前一帧。fileciteturn13file0L239-L252
+* Reference + Prediction 1；
+* Prediction 1 + Prediction 2；
+* Reference + 两个 Prediction；
+* 某一路开头或结尾少一帧；
+* 序列对齐检测出中间掉帧；
+* 手动锚点导致某个标准帧超出源范围。
 
-内部又会把缓存偏移强制限制在：
+## 2. 对齐算法不是占位实现
 
-\[
-0 \leq offset \leq \min(N_\text{left}, N_\text{right})-1
-\]
+全局偏移算法使用了：
 
-因此在最常见的情况下：
+[
+D=0.50D_{\text{SSIM}}+
+0.35D_{\text{gradient}}+
+0.10D_{\text{pHash}}+
+0.05D_{\text{luma}}
+]
 
-- 当前处于最新缓存帧时，`offset=0`。
-- 按 `D` 后得到 `-1`，随即被截断回 `0`，视觉上完全无变化。
-- 播放缓存尚未积累时，按 `A` 也没有更旧帧可进入。
-- 左右缓存深度不同时，只能浏览两边都存在的公共缓存区域。fileciteturn21file0L162-L197
+并从高活动帧中选择证据，使用候选代价中位数，比较最优和次优候选的 margin 来决定是否自动应用。
 
-所以最终项目中不应继续沿用这一语义。建议：
+序列对齐采用带状动态规划，支持：
 
-- `A` / `Left`：标准帧位置减一。
-- `D` / `Right`：标准帧位置加一。
-- 每次操作都进入 `ComparisonCoordinator::seekFrame()`。
-- 正在播放时，第一次逐帧操作先暂停，再跳转。
-- “浏览解码缓存历史”不作为用户功能暴露。
-- 连续快速按键不应因 `busy` 被丢弃，而应累积为一个最新目标帧，并取消过期解码请求。
+* 正常匹配；
+* Prediction 缺帧；
+* Prediction 额外帧；
+* 重复帧分类；
+* 每帧置信度；
+* 整体映射置信度。
 
-这将从根本上解决“按了但没有反应”的体验问题。
+空间和计算复杂度被限制为 (O(NW))，而不是完整 (O(N^2))。
 
----
+手动锚点也已经支持单调验证、区间插值和边界外偏移延伸。
 
-## 3.2 当前 `DualVideoStudio` 仍然是彻底硬编码的双路系统
+## 3. 三路渲染与误差图已落地
 
-现有 `FramePair` 的创建接口必须同时接收 `frameA` 和 `frameB`，内部字段也是固定的 A/B；它从类型层面保证不会产生缺失一侧的可渲染帧对，这一点很好，但无法自然扩展到三路。fileciteturn25file0L12-L52
+`ComparisonSurface` 已支持：
 
-同样的硬编码还存在于：
+* Two-up；
+* Three-up；
+* Reference focus；
+* Difference；
+* 任意两路差分边；
+* RGB、Luma、Chroma、Heatmap；
+* 1x～16x gain；
+* Nearest、Bilinear、Bicubic。
 
-- `ValidatedSourcePair` 和 `SourcePairValidator`；
-- `SourceRole::kA / kB / kPair`；
-- `ReviewController::openPair(A, B)`；
-- QML 中的 `selectedSourceA`、`selectedSourceB`；
-- `DualVideoSurface` 的两个纹理和 `ReferenceA/ReferenceB`；
-- `DirectFrameProvider` 中的 `decoderA_`、`decoderB_`；
-- 错误状态中的 `sourceAErrorKey`、`sourceBErrorKey`。fileciteturn26file0L11-L31 fileciteturn38file0L21-L58 fileciteturn46file0L20-L72
+GPU shader 中也确实实现了 bicubic 采样、独立颜色矩阵变换和四种差分模式，并不是 UI 中有选项但底层没有实现。
 
-因此，第三路不能通过继续增加 `C`、`decoderC_`、`sourceCErrorKey` 来实现。那会让所有模块形成三路硬编码，未来任何扩展都会再次重写。
+## 4. 快速连续逐帧操作得到改善
 
-正确做法是一次性将系统泛化成 **2～3 路动态源集合**。
+连续按键会基于“最新请求帧”继续累加，而不是始终基于最后一次已经显示的帧。例如连续按五次下一帧会形成 101、102、103、104、105 的目标链，旧请求可以被后续请求替代。
 
----
-
-## 3.3 “是否允许帧率、帧数、时长不一致”目前自相矛盾
-
-旧设计文档规定两路必须：
-
-- 有相同的有理数帧率；
-- 有相同帧数；
-- 持续时间误差不超过一帧。fileciteturn32file0L89-L101
-
-但当前真实代码中的 `SourcePairValidator` 只检查两个描述符是否有效，以及帧数是否完全一致；它并不比较帧率或时长。fileciteturn27file0L33-L60
-
-单元测试甚至明确验证了：
-
-- 不同帧率可以通过；
-- 不同时长可以通过；
-- 两个 VFR 视频只要索引帧数相同也可以通过。fileciteturn29file0L61-L100
-
-与此同时，界面仍然向用户显示“必须相同帧率”“必须相同时长”的错误信息。fileciteturn35file0L128-L175
-
-这不是小型文档问题，而是会直接导致错误播放映射的契约问题。建议彻底改成：
-
-> **单个视频是否合法由 `SourceValidator` 决定；多个视频是否完全兼容不再决定能否打开，而是生成一份 `CompatibilityReport`。**
-
-兼容性问题应该分级：
-
-- **Fatal**：无法打开、无法建立显示顺序索引、解码器不可用。
-- **Warning**：帧数不同、帧率不同、时长不同、分辨率不同、颜色元数据不同。
-- **Alignment required**：存在全局偏移、掉帧、重复帧或时间漂移。
-
-这样，帧数差一两帧的视频仍然可以进入播放器，只是时间线和缺失帧会被明确标识。
+这比 `video-compare` 的缓存游标式 A/D 语义更符合逐帧审查工作流。
 
 ---
 
-## 3.4 当前编解码兼容性还不足以覆盖用户描述的输入
+# 二、必须优先修复的 P0 问题
 
-现有 `MediaProbe` 已经有一个很强的能力：它会构建显示顺序的 PTS 索引，并根据真实时间戳判断 CFR 或 VFR；VFR 视频会形成独立的 `FrameTimeline`，而不再依赖浮点 FPS。fileciteturn42file0L5-L94
+## P0-1：Reference 位于 B 或 C 时，provider 仍假设 A 是 canonical source
 
-但当前输入限制仍然很窄：
+领域层正确地规定：
 
-- 只允许 H.264、H.265/HEVC 和 MPEG-4 Part 2；
-- 只允许 8-bit 4:2:0；
-- 只接受 SDR BT.601/BT.709；
-- HDR 会被拒绝；
-- `d3d11VaDecode` 当前标记为 `false`；
-- 解码链实际使用的是 `SoftwareDecoder`。fileciteturn41file0L158-L207 fileciteturn41file0L304-L331 fileciteturn42file0L205-L225
+* 有 Reference 时，Reference 是 canonical source；
+* 没有 Reference 时，第一路是 canonical source。
 
-因此，“编码格式不固定”不能仅靠增加文件扩展名过滤器解决。需要把能力拆成三层：
+UI 也允许将 A、B 或 C 任意一路选作 Reference，并保持 A、B、C 原始顺序提交。
 
-1. **容器和解码器能力**：FFmpeg 是否可以解码。
-2. **像素格式归一化能力**：是否可以转换成内部 NV12、P010 或统一的分析格式。
-3. **渲染与差分能力**：颜色空间、位深和旋转是否能够被正确解释。
+协调器构造 `FrameProviderOpenRequest` 时同样保持原始 source order，没有把 Reference 移动到第一个位置。
 
-不建议继续使用固定 codec 白名单作为主要策略，而应形成一张能力矩阵；无法直接进入 GPU 路径的输入，再使用可选的“兼容性代理”，而不是让所有视频都必须先转码。
-
----
-
-## 3.5 当前双路解码链不能直接扩展到高性能三路
-
-`DirectFrameProvider` 虽然有明确的 Exact、Sequential 和 Prefetch 优先级以及取消机制，但只有一个 provider worker，并且会先解码 A，再解码 B。fileciteturn43file0L31-L35 fileciteturn45file0L51-L81
-
-扩展第三路后，如果继续串行执行：
-
-\[
-T_\text{FrameSet}=T_A+T_B+T_C
-\]
-
-逐帧响应和连续播放延迟都会显著上升。
-
-应改成：
-
-\[
-T_\text{FrameSet}\approx \max(T_A,T_B,T_C)+T_\text{assemble}
-\]
-
-即每个输入拥有独立的 `SourceDecodeActor`，协调器并行发送请求，`FrameSetAssembler` 等待同一请求身份的结果。任何过期结果都丢弃，任何一侧缺失都形成显式的 `MissingFrame`，而不是悄悄复用邻帧。
-
----
-
-# 四、建议明确的产品模型
-
-## 4.1 两种比较模式
-
-为了避免自动对齐掩盖推理错误，播放器应明确提供两种模式。
-
-### Strict Index Mode：默认用于插帧结果检查
-
-标准帧 \(i\) 直接映射到所有输入的第 \(i\) 帧：
-
-\[
-M_s(i)=i
-\]
-
-若某一路不存在这一帧，则该面板显示 `Missing frame`。不自动补帧、不重复最后一帧、不静默裁掉多余帧。
-
-这最适合 Reference 与模型预测结果，因为帧数不一致本身往往就是需要被发现的推理问题。
-
-### Aligned Capture Mode：用于手机录屏、二次组合和有偏移的视频
-
-允许：
-
-- 全局帧偏移；
-- 开头或结尾多一两帧；
-- 中间掉帧或重复帧；
-- VFR；
-- 手工锚点和局部漂移修正。
-
-所有自动映射都必须显示当前状态，例如：
-
-> `Prediction 2: Auto-aligned, offset +1, one missing frame at 824`
-
-不能让用户误以为仍然是严格同帧比较。
-
----
-
-## 4.2 新的数据模型
-
-建议把当前模型重构为：
+但 `MultiSourceFrameProvider::executeOpen()` 使用：
 
 ```cpp
-using SourceId = std::uint32_t;
+const MediaDescriptor& canonicalDescriptor =
+    request.sources.front().descriptor;
+```
 
-enum class ComparisonRole {
-    Reference,
-    Prediction,
+并用第一路描述符验证 canonical timeline。
+
+因此会出现：
+
+* A=30 FPS、B=24 FPS、Reference=B：领域验证允许打开并产生 warning，但 provider 会错误地拿 A 的 30 FPS 验证 B 的 24 FPS timeline。
+* Reference=C 且 C 为 VFR：provider 会拿 A 的 CFR/VFR 属性做判断。
+* Reference 不是第一路时，canonical 规则在 domain 和 adapter 中不一致。
+
+### 实现方案
+
+修改 `FrameProviderOpenRequest`：
+
+```cpp
+struct FrameProviderOpenRequest {
+    PlaybackRequestContext context;
+    std::vector<domain::ComparisonSource> sources;
+    domain::SourceId canonicalSourceId;
+    domain::CanonicalTimeline timeline;
 };
+```
 
-enum class FrameMatchKind {
-    ExactIndex,
-    GlobalOffset,
-    AutoAligned,
-    ManualAnchor,
-    Missing,
-};
+provider 必须显式查找：
 
-struct ComparisonSource {
-    SourceId id;
-    ComparisonRole role;
-    MediaDescriptor descriptor;
-    std::string displayName;
+```cpp
+const auto canonical = std::find_if(
+    request.sources.begin(),
+    request.sources.end(),
+    [&](const auto& source) {
+        return source.id == request.canonicalSourceId;
+    });
+
+if (canonical == request.sources.end()) {
+    return invalidArgument;
+}
+```
+
+所有涉及 canonical slot 的代码都必须使用 `canonicalSourceId`，禁止继续依赖 `front()`。
+
+必须增加三组测试：
+
+1. Reference=B，A/B 帧率不同。
+2. Reference=C，A/B/C 原始顺序不变。
+3. Reference=B 且 B 为 VFR，确认运行时 timeline 属于 B。
+
+---
+
+## P0-2：普通解码错误会被伪装成 `Missing`
+
+当前 provider 收集各路 future 结果时，只有 `kFrameBudgetExceeded` 会让整个请求失败；其余任何解码错误都会被转换成一个 `Missing` 条目。
+
+这意味着以下错误可能被错误地呈现为“这一帧缺失”：
+
+* 文件读取错误；
+* 源文件在 probe 后发生变化；
+* codec 解码失败；
+* PTS 索引与真实帧不一致；
+* unsupported pixel format；
+* FFmpeg seek 失败；
+* 视频损坏。
+
+这对模型评测工具是危险的，因为用户会把“解码器出错”理解成“预测结果少了一帧”。
+
+### 实现方案
+
+`Missing` 只能由映射层产生，不能由 decoder 产生。
+
+建议增加：
+
+```cpp
+enum class MissingReason {
+    AlignmentGap,
+    BeforeSourceStart,
+    AfterSourceEnd,
 };
 
 struct MappedSourceFrame {
     SourceId sourceId;
-    std::optional<FrameId> sourceFrameId;
-    std::optional<FrameHandle> frame;
-    MediaTime presentationTime;
+    optional<FrameId> sourceFrameId;
+    optional<FrameHandle> frame;
     FrameMatchKind matchKind;
-    float alignmentConfidence;
-};
-
-struct FrameSet {
-    FrameId canonicalFrameId;
-    MediaTime canonicalTime;
-    std::vector<MappedSourceFrame> sources;  // size 2 or 3
-};
-
-struct DifferenceEdge {
-    SourceId first;
-    SourceId second;
+    optional<MissingReason> missingReason;
 };
 ```
 
-关键约束是：
-
-> 一个 `FrameSet` 必须为每个已加载源包含一个条目，但条目可以明确表示 `Missing`。
-
-这样既保留了原子提交，又能正确处理某一路少一帧，而不需要拒绝整个会话。
-
----
-
-## 4.3 Reference 不应是固定的 Source A
-
-会话模型应为：
+处理规则：
 
 ```cpp
-struct ComparisonSession {
-    std::vector<ComparisonSource> sources;  // 2..3
-    std::optional<SourceId> referenceSource;
-    SourceId canonicalSource;
-    AlignmentPolicy alignmentPolicy;
+if (mappingExplicitlyMissing || mappedFrameOutOfRange) {
+    appendMissing(...);
+} else {
+    auto decoded = decoder.decode(...);
+    if (!decoded) {
+        failWholeFrameRequest(decoded.error());
+        return;
+    }
+}
+```
+
+可以保留上一张已经显示的 `FrameSet`，并在 UI 顶部显示 source-specific error，但绝不能发布一个伪造的 `Missing` 新帧。
+
+---
+
+## P0-3：完整序列映射被放进 Snapshot，播放时存在 O(N) 复制
+
+`SessionSnapshot` 直接包含：
+
+```cpp
+std::vector<SequenceAlignmentResult> sequenceAlignments;
+```
+
+每个 `SequenceAlignmentResult` 又可能携带数万乃至十万条逐帧映射。
+
+协调器每次发布状态时会执行：
+
+```cpp
+std::make_shared<const SessionSnapshot>(state_);
+```
+
+也就是完整复制 `state_`。
+
+序列分析完成后，每次显示一帧、播放状态变化或错误变化，都可能复制完整对齐表。对于两条 50,000 帧映射，这会产生明显的 CPU 消耗、内存分配和 UI 抖动。
+
+### 实现方案
+
+把重型分析数据移出高频 Snapshot：
+
+```cpp
+struct AlignmentReport {
+    uint64_t revision;
+    vector<SequenceAlignmentResult> results;
+    vector<TimelineMarker> markers;
+};
+
+struct SessionSnapshot {
+    ...
+    shared_ptr<const AlignmentSummary> alignmentSummary;
+    uint64_t alignmentRevision;
 };
 ```
 
-规则如下：
+建议进一步拆分：
 
-- Reference + 两个预测：Reference 是标准时间线。
-- Reference + 一个预测：Reference 是标准时间线。
-- 只有两个预测：第一个输入默认作为标准时间线，但可以切换。
-- Reference 可在 UI 中重新指定，不必重新打开解码器。
-- Error map 由 `DifferenceEdge` 选择，而不是写死 A-B。
+* `sequenceAlignmentMaps_`：协调器内部使用的不可变映射。
+* `AlignmentSummary`：每路置信度、异常数量、是否自动应用。
+* `TimelineMarkerIndex`：供 UI 按可视时间范围查询。
+* 完整 mapping：不进入 16 ms UI 投影路径。
 
----
+UI 只查询当前时间线窗口附近的 marker，例如：
 
-# 五、时间对齐的具体技术路线
-
-## 5.1 第一级：元数据与严格帧序号检查
-
-打开视频时立即生成：
-
-- 实际显示顺序帧数；
-- 每帧 PTS 索引；
-- CFR/VFR 分类；
-- 起始时间；
-- 帧率候选；
-- 分辨率、旋转、SAR、颜色范围和位深。
-
-`DualVideoStudio` 已经能够构建显示顺序 PTS 索引，并将 VFR 时间线归一化到第一帧，这部分可以直接保留。fileciteturn42file0L96-L153
-
-不过当前实现会在 probe 阶段完整扫描时间戳索引。三条长视频会使首次打开时间近似变成 O(总帧数)。建议改成：
-
-- UI 先完成快速 metadata probe；
-- CFR 且元数据可信时，允许尽快显示第一帧；
-- 后台建立完整索引；
-- VFR、帧数未知或时间戳异常时，完整索引成为强制步骤；
-- 索引进度应显示在每一路源卡片上。
-
----
-
-## 5.2 第二级：全局偏移估计
-
-对于帧数只差一两帧或整体错位的情况，先估计全局偏移：
-
-\[
-E(\delta)=\operatorname{median}_{i\in S}
-D\left(R_i,\;P_{i+\delta}\right)
-\]
-
-其中：
-
-- \(\delta\) 在小范围内搜索，例如 \([-16,16]\)；
-- \(S\) 选择若干运动明显的采样帧；
-- 图像先缩放到低分辨率亮度图；
-- 距离函数使用结构和边缘，而不是纯像素差：
-
-\[
-D=\alpha(1-\mathrm{SSIM})
-+\beta\left\|\nabla Y_R-\nabla Y_P\right\|_1
-+\gamma D_{\mathrm{pHash}}
-\]
-
-使用中位数而不是均值，可以避免个别插帧坏帧或场景切换主导结果。
-
-只有最佳偏移与次优偏移之间的差距足够明显时才自动应用；否则应提示用户手动选择。
-
----
-
-## 5.3 第三级：掉帧和重复帧检测
-
-若单一偏移无法解释整个视频，则使用带状动态规划建立单调映射。
-
-状态：
-
-\[
-C(i,j)
-\]
-
-表示 Reference 前 \(i\) 帧与目标视频前 \(j\) 帧的最小累计代价。转移包括：
-
-- 匹配：\((i-1,j-1)\)
-- Reference 缺帧：\((i-1,j)\)
-- Prediction 缺帧或重复：\((i,j-1)\)
-
-因为实际问题通常只差一两帧，不需要完整 \(O(N^2)\) DTW。将搜索限制在当前估计偏移附近宽度 \(W\) 的带状区域：
-
-\[
-O(NW),\qquad W\approx 8\sim16
-\]
-
-即可处理：
-
-- 中间少一帧；
-- 某帧被重复两次；
-- 开头或结尾多一帧；
-- 小范围时间漂移。
-
-生成的 `AlignmentMap` 应明确记录每个标准帧映射到哪一帧，以及缺失和重复的位置。
-
----
-
-## 5.4 手动锚点
-
-自动对齐必须允许用户覆盖：
-
-```text
-Reference frame 824  <->  Prediction 2 frame 825
-Reference frame 1900 <->  Prediction 2 frame 1902
+```cpp
+markersInRange(firstFrame, lastFrame, maximumCount);
 ```
 
-多个锚点之间使用分段单调映射。时间线上显示：
+---
 
-- 全局偏移；
-- 掉帧点；
-- 重复帧点；
-- 手动锚点；
-- 低置信度区域。
+## P0-4：差分边缺帧时会显示单路原图
 
-这比单纯提供一个 `+/- time shift` 更适合模型结果检查。
+差分模式下，如果所选的两路中只有一路存在，渲染器会直接显示存在的那一路原图；如果两路都不存在，则再寻找其他可用源显示。
+
+这会出现如下误导：
+
+* UI 当前显示为 `Difference: Reference ↔ Prediction 2`；
+* Prediction 2 实际 Missing；
+* 画面却显示完整 Reference；
+* 用户可能认为“误差图非常亮”或误以为已经切回普通画面。
+
+### 实现方案
+
+Difference 模式必须有明确的可用性状态：
+
+```cpp
+enum class DifferenceAvailability {
+    Available,
+    FirstSourceMissing,
+    SecondSourceMissing,
+    BothMissing,
+};
+```
+
+缺帧时：
+
+* 不运行 Difference shader；
+* 保持黑色或棋盘格背景；
+* 绘制明显的 `Difference unavailable`；
+* 标注具体缺少哪一路和对应 canonical frame；
+* 不允许退化为单路原图。
+
+普通 Three-up 视图中的 Missing panel 也不应只是黑屏，应增加 `Missing` 标签或斜线纹理。
 
 ---
 
-# 六、播放、逐帧和渲染架构
+## P0-5：CI 当前不是绿色
 
-建议的主链路是：
+当前分支的实际工作流状态为：
+
+* `Quality`：失败；
+* `Build and Test`：排队。
+
+`Quality` 会执行仓库指南检查、coverage gate、全仓库 format-check 和 lint。
+
+目前连接器没有提供失败日志，所以不能准确断言失败发生在 format、lint 还是前置脚本。但在合并前必须做到：
 
 ```text
-QML
-  │
-ReviewController
-  │
+Quality             PASS
+Build and Test      PASS
+Release tests       PASS
+Package smoke       PASS
+```
+
+不能只依赖本地测试通过的描述。
+
+---
+
+# 三、P1：性能和工程架构仍需重构
+
+## 1. 当前不是真正的“每路一个 Decode Actor”
+
+代码注释称每一路使用独立 actor，但实际每次请求一帧时，都会为 2～3 路调用：
+
+```cpp
+std::async(std::launch::async, ...)
+```
+
+然后等待所有 future。
+
+这可能带来：
+
+* 反复创建异步任务或线程；
+* 调度延迟不稳定；
+* 三路 60 FPS 下大量线程生命周期成本；
+* 无法为每一路建立独立优先级和背压；
+* 一个慢源会阻塞 provider 总 worker。
+
+### 目标架构
+
+```text
 ComparisonCoordinator
-  ├── AlignmentService
-  ├── SourceDecodeActor[Reference]
-  ├── SourceDecodeActor[Prediction1]
-  ├── SourceDecodeActor[Prediction2]
-  │
+        │
+MultiSourceFrameProvider
+        │
 FrameSetAssembler
-  │
-FrameMailbox
-  │
-ComparisonSurface / D3D11
-  │
-PresentationAck
+   ┌────┼────┐
+   │    │    │
+Actor A Actor B Actor C
 ```
 
-## 6.1 原子播放
+每个 `SourceDecodeActor`：
 
-每个标准帧只发布一次 `FrameSet`：
+* 拥有一个长期 worker thread；
+* 独占一个 `SoftwareDecoder` 或硬件 decoder context；
+* 有 bounded Exact、Sequential、Prefetch mailbox；
+* Exact 可抢占 Prefetch；
+* 使用 session epoch、generation、request ID 丢弃过期结果；
+* 返回 `SourceFrameCompleted`；
+* `FrameSetAssembler` 只在所有 source slot 终止后组装。
 
-- 三路都存在：发布三个帧句柄。
-- 某一路缺失：发布一个包含 `Missing` 的完整集合。
-- 播放跟不上：丢弃整个旧 `FrameSet`，不能只推进其中一路。
-- 帧被真正渲染并收到 acknowledgement 后，才更新 UI 的当前帧序号。
+需要增加的性能测试：
 
-现有 `PlaybackCoordinator` 已经拥有会话 ID、epoch、command ID、请求取消、过期结果过滤、精确帧超时和关键事件队列，这部分值得完整保留。fileciteturn39file0L24-L84 fileciteturn39file0L236-L314
-
-## 6.2 逐帧操作
-
-按键操作不应被 UI 的 `busy` 简单吞掉，而应使用目标帧合并：
-
-```text
-当前显示 100
-快速按 D 五次
-目标依次变成 101, 102, 103, 104, 105
-取消 101～104 的过期请求
-最终提交 105
-```
-
-相邻帧解码应优先使用：
-
-- 当前 GOP 内的顺序解码状态；
-- 当前帧前后的小型帧缓存；
-- Exact 请求高于播放和预取；
-- 最新 Exact 请求抢占旧 Exact 请求。
-
-## 6.3 三路显示布局
-
-推荐只保留四种高价值布局：
-
-1. **Two-up**：两路左右或上下。
-2. **Three-up**：Reference、Prediction 1、Prediction 2 三列。
-3. **Reference focus**：Reference 大图，两个 Prediction 上下排列。
-4. **Analysis grid**：选中的两路加一张差分图，第四格显示放大区域或元数据。
-
-不建议第一版默认显示六格“3 原图 + 3 误差图”，因为 1080p/4K 下单格过小，也会显著增加 shader 工作量。可以作为后续 Matrix 模式。
+* 连续播放过程中线程数量不增长；
+* 快速连续 seek 不产生线程泄漏；
+* 三路 exact seek 的延迟接近 `max(TA, TB, TC)`；
+* 任何时刻不发布部分集合。
 
 ---
 
-# 七、误差图的实现建议
+## 2. “Find drops” 会独占整个播放后端
 
-当前 `DualVideoSurface` 已经支持：
+序列分析目前在 provider 的同一个 worker 中：
 
-- RGB absolute；
-- Luma；
-- Chroma；
-- Heatmap；
-- 1x～16x gain；
-- A/B 参考画布；
-- Nearest、Bilinear、Bicubic。fileciteturn46file0L27-L72
+1. 完整解码 canonical source；
+2. 完整解码 Prediction 1；
+3. 完整解码 Prediction 2；
+4. 运行 DP；
+5. 最后一次性返回结果。
 
-这些能力应保留，但从固定 A/B 改成选择任意 `DifferenceEdge`：
+每路最多允许 50,000 帧，内部硬上限为 100,000 帧。
 
-```text
-Reference ↔ Prediction 1
-Reference ↔ Prediction 2
-Prediction 1 ↔ Prediction 2
+期间：
+
+* 没有进度事件；
+* 没有单独的 Cancel command；
+* 没有分析超时；
+* 播放 provider 被占用；
+* 不能边分析边继续审查视频；
+* 每次分析都重新解码完整视频。
+
+### 实现方案
+
+新增独立服务：
+
+```cpp
+class IAlignmentAnalysisService {
+    submit(GlobalOffsetJob);
+    submit(SequenceAlignmentJob);
+    cancel(AnalysisJobId);
+};
 ```
 
-建议区分两类差分。
+事件：
 
-## 7.1 视觉差分
+```cpp
+AlignmentAnalysisStarted
+AlignmentAnalysisProgress
+AlignmentAnalysisCompleted
+AlignmentAnalysisCanceled
+AlignmentAnalysisFailed
+```
 
-用于人眼定位问题，可以允许：
+分析任务使用独立低优先级 worker pool，不得占用播放 actor。
 
-- 统一到选择的参考分辨率；
-- RGB absolute；
-- Luma；
-- Signed heatmap；
-- 阈值 mask；
-- gain 调节。
+同时增加 signature cache：
 
-改变差分模式只触发 GPU 重绘，不重新解码视频。当前设计已经遵循这一原则。fileciteturn24file0L81-L99
+```text
+cache key =
+source fingerprint
++ FFmpeg version
++ signature algorithm version
++ downsample configuration
+```
 
-## 7.2 像素精确差分
-
-只有满足以下条件时才称为 pixel-exact：
-
-- 分辨率相同；
-- 旋转和显示尺寸相同；
-- 颜色空间和范围已归一化；
-- 没有空间缩放；
-- 当前帧映射不是 `Missing`；
-- 当前时间对齐策略满足要求。
-
-只要发生缩放，就必须在界面上明确标记：
-
-> `Resampled comparison — not pixel-exact`
-
-当前 QML 已经有类似提示，可继续使用。fileciteturn36file0L90-L103
+缓存内容可以是每帧 16×9 或后续多尺度 signature。这样第二次运行序列分析不必重新完整解码。
 
 ---
 
-# 八、编解码和性能路线
+## 3. Probe 后 Decoder 又重新建立一次完整 PTS 索引
 
-## 第一阶段：先保证正确
+`MediaProbe` 已经完成显示顺序时间戳扫描；但每个 `SoftwareDecoder::open()` 又调用一次 `buildPresentationTimestampIndex()`。
 
-保留 FFmpeg 软件解码，同时扩展：
+三路长视频相当于：
 
-- H.264、HEVC、MPEG-4 Part 2；
-- 8-bit YUV420；
-- CFR/VFR；
-- 非零起始 PTS；
-- B-frame 显示顺序；
-- MP4、MOV、MKV、AVI；
-- 旋转和 SAR 元数据；
-- 不同分辨率。
+* Probe 扫描三次；
+* Decoder open 再扫描三次；
+* Sequence analysis 又完整解码三次。
 
-## 第二阶段：扩展兼容性
+### 实现方案
 
-增加统一转换层：
+probe 应输出一个 adapter-internal runtime source：
 
-```text
-Decoder output
-  ├── NV12 8-bit
-  ├── P010 10-bit
-  ├── YUV422 / YUV444
-  └── BGRA/RGBA
-          ↓
-Normalized GPU frame
+```cpp
+struct ProbedMediaRuntime {
+    MediaDescriptor descriptor;
+    shared_ptr<const NativeTimelineIndex> nativeTimeline;
+};
 ```
 
-解码器和渲染器能力应独立判断，而不是因为 decoder 能解码就直接承诺可以比较。
+`NativeTimelineIndex` 不进入 domain 和项目 JSON，但可以在 `media_ffmpeg` 内部通过 source ID/session registry 共享给 decoder。
 
-## 第三阶段：硬件解码
-
-每一路拥有独立解码上下文，共享同一个 D3D11 device：
-
-- FFmpeg D3D11VA；
-- NV12/P010 纹理直接进入渲染；
-- 避免 GPU→CPU→GPU；
-- 硬件失败时回退软件；
-- 回退状态在 UI 中可见。
-
-当前 manifest 已固定 FFmpeg、Qt Base、Qt Declarative 和 Qt Shader Tools，依赖管理基础是完整的。fileciteturn48file0L3-L39
-
-## 可选兼容性代理
-
-代理不应再是播放前置条件。只在以下情况下生成：
-
-- 原视频无法稳定随机 seek；
-- 解码格式无法直接进入渲染链；
-- 用户主动选择建立快速预览缓存。
-
-`DualVideoTool` 当前 `isReady()` 强制要求代理就绪，并且通过两次 `QImage.copy()` 拆分合成代理，这条链路应彻底删除。fileciteturn33file0L342-L348 fileciteturn34file0L238-L266
+还应提供基于 fingerprint 的磁盘缓存，避免每次启动都重新扫描。
 
 ---
 
-# 九、三个文件夹合并为一个的具体方法
+## 4. 每帧重新创建 SwsContext 和 CPU 缓冲
 
-## Phase 0：修复仓库和构建入口
+当前每次成功解码一帧都会：
 
-先从导入提交创建正常开发分支，再合并到 `main`：
+* 调用 `sws_getContext()`；
+* 创建一个新的 NV12 `std::vector`；
+* 完整转换；
+* 再复制到 FrameResource。
 
-```bash
-git switch -c refactor/unified-comparator \
-    6d3b3e9bf973def125eea26f8142990943e8b981
+三路 1080p60 或 4K 下，这会是明显瓶颈。
 
-git push -u origin refactor/unified-comparator
-```
+### 改造顺序
 
-随后处理：
+第一步：
 
-- 把 `DualVideoStudio` 移到仓库根目录；
-- 根目录增加 README、架构说明和构建说明；
-- 删除 `DualVideoTool/package/DualVideoTool.zip`；
-- 删除 `tmp`、诊断输出和构建产物；
-- 确认嵌套 `.git.bak` 不被提交；
-- 将硬件性能 CI 与普通单元测试 CI 分开。
+* 使用 `sws_getCachedContext()`；
+* 为每个 decoder 持久保存转换 context；
+* 使用 FrameResourceFactory 的可复用 buffer pool；
+* 避免中间 `std::vector`。
 
-现有测试入口已经按 unit、component、smoke 分层，但导入提交还没有实际 workflow 运行证据。fileciteturn50file0L3-L5 fileciteturn49file0L1-L1
+第二步：
 
-## Phase 1：裁剪产品范围
+* decoder 直接写入预分配 NV12 resource。
 
-从主构建中移除：
+第三步：
 
-- Clip；
-- ClipQueue；
-- VideoEncoder；
-- ExportPlan；
-- 项目级导出记录；
-- 强制代理；
-- scope、waveform、vectorscope、histogram；
-- 裁剪和截图工作流；
-- VMAF 等非实时能力。
-
-保留：
-
-- 播放；
-- 暂停；
-- 精确 seek；
-- 单帧步进；
-- 2～3 路同屏；
-- 缩放和平移；
-- 对齐；
-- GPU 差分；
-- 设置持久化；
-- 诊断日志。
-
-## Phase 2：将 A/B 模型泛化
-
-依次修改：
-
-```text
-SourceRole             → SourceId + ComparisonRole
-ValidatedSourcePair    → ValidatedComparisonSet
-FramePair              → FrameSet
-FramePairReady         → FrameSetReady
-OpenPairCommand        → OpenComparisonCommand
-DirectFrameProvider    → MultiSourceFrameProvider
-DualVideoSurface       → ComparisonSurface
-ReviewController A/B   → SourceListModel
-```
-
-完成后必须先保证两路功能完全回归，再增加第三路。
-
-## Phase 3：实现三路并行解码和显示
-
-- 一个输入一个 `SourceDecodeActor`；
-- `FrameSetAssembler` 按 request ID 汇合；
-- 三路布局；
-- Reference 可选；
-- 任意两路可选择为当前差分边；
-- 显式 Missing 面板；
-- 快速连续逐帧请求合并。
-
-## Phase 4：实现严格和对齐模式
-
-先完成：
-
-1. Strict Index；
-2. 手动全局偏移；
-3. 自动全局偏移；
-4. 掉帧和重复帧检测；
-5. 手动锚点；
-6. 时间线异常标记。
-
-不要一开始就实现完整无约束 DTW。
-
-## Phase 5：扩展差分和分析布局
-
-- 三组 pairwise diff；
-- RGB/Luma/Chroma/Heatmap；
-- 阈值 mask；
-- ROI 放大；
-- 非 pixel-exact 状态；
-- 缺失帧不参与差分。
-
-## Phase 6：兼容性和性能强化
-
-- P010/10-bit；
-- D3D11VA；
-- 旋转和 SAR；
-- 可选兼容性代理；
-- 三路 1080p60 性能测试；
-- 长视频索引缓存；
-- 安装包和运行时依赖验证。
+* D3D11VA 解码后直接将 NV12/P010 GPU texture 交给 renderer；
+* 避免 GPU→CPU→GPU。
 
 ---
 
-# 十、建议的最终目录
+# 四、对齐算法还需要的可靠性增强
+
+## 1. 16×9 signature 对复杂内容过于粗糙
+
+当前 signature 只有 144 个亮度值。
+
+它对以下场景可能不稳定：
+
+* 大面积静止游戏画面；
+* 重复 UI 或相似菜单；
+* 淡入淡出；
+* 黑场；
+* 周期性动画；
+* 小面积高速运动；
+* 两个插帧结果仅局部区域不同。
+
+现有测试主要使用规则生成的 synthetic pattern，虽然覆盖了固定偏移、缺帧、重复和纯常量歧义，但还没有真实视频中的场景切换、局部运动和重复场景测试。
+
+### 建议升级
+
+使用两级 signature：
 
 ```text
-Toy/
-├── CMakeLists.txt
-├── CMakePresets.json
-├── README.md
-├── docs/
-│   ├── architecture.md
-│   ├── alignment.md
-│   └── media-support.md
-├── src/
-│   ├── domain/
-│   │   ├── ComparisonSession
-│   │   ├── ComparisonSource
-│   │   ├── FrameSet
-│   │   ├── AlignmentMap
-│   │   └── DifferenceSpec
-│   ├── application/
-│   │   ├── ComparisonCoordinator
-│   │   ├── FrameSetAssembler
-│   │   └── CommandsAndEvents
-│   ├── media_ffmpeg/
-│   │   ├── MediaProbe
-│   │   ├── TimelineIndexer
-│   │   ├── SourceDecodeActor
-│   │   └── FrameCache
-│   ├── alignment/
-│   │   ├── OffsetEstimator
-│   │   ├── SequenceAligner
-│   │   └── ManualAnchorMap
-│   ├── render_d3d11/
-│   │   ├── ComparisonSurface
-│   │   └── DifferencePass
-│   ├── platform_windows/
-│   └── ui_qml/
-├── tests/
-│   ├── unit/
-│   ├── component/
-│   ├── integration/
-│   ├── ui/
-│   └── fixtures/
-└── third_party/
-    └── notices/
+Level 1: 16×9，快速全局搜索
+Level 2: 64×36，候选验证
 ```
 
-在合并过渡期，可以暂时保留：
+Level 2 可额外包含：
 
-```text
-legacy/
-├── DualVideoTool/
-└── video-compare/
+* Sobel magnitude；
+* 局部方差；
+* edge histogram；
+* 可选的轻量 DINO/ConvNeXt embedding 离线模式。
+
+不需要立即引入重型神经网络；先做多尺度亮度和边缘即可显著改善。
+
+## 2. 当前自动应用只看整体平均置信度
+
+序列结果是否自动应用取决于：
+
+* 平均匹配代价；
+* 平均 confidence。
+
+因此可能发生：
+
+* 90% 区域非常可靠；
+* 10% 区域高度歧义；
+* 整体平均仍达标；
+* 整张 mapping 被自动应用。
+
+### 实现方案
+
+采用分段状态：
+
+```cpp
+enum class AlignmentSegmentState {
+    Accepted,
+    ReviewRequired,
+    Rejected,
+};
 ```
 
-但它们不应进入主 CMake 构建。迁移完成后，只保留必要的第三方声明和合法可复用的测试媒体。
+自动应用条件应同时考虑：
+
+* mean cost；
+* mean confidence；
+* P10 confidence；
+* 最长低置信度连续区间；
+* scene cut 附近置信度；
+* anomaly density。
+
+低置信度区间应保留 strict/global-offset 映射，等待用户确认，而不是整张表全部自动应用。
+
+## 3. 手动锚点没有参与 DP 约束
+
+当前手动锚点只在最终 `sourceMappingsFor()` 中覆盖 sequence map；运行 sequence analysis 时，锚点并未作为边界条件输入 DP。
+
+正确做法是：
+
+* 将锚点划分为多个区间；
+* 每个区间在两个锚点之间单独执行带状 DP；
+* 锚点位置作为硬约束；
+* 锚点外使用延伸 offset；
+* 若锚点与自动证据冲突，明确报告冲突。
+
+## 4. 缺少结果确认、撤销和版本管理
+
+目前高置信度 global estimate 和 sequence map 会自动应用。
+
+还需要：
+
+* `Apply suggested alignment`；
+* `Undo alignment`；
+* `Return to strict index`；
+* 删除单个 anchor；
+* 清除某一路 anchor，而不只是全部清除；
+* 比较自动应用前后的映射变化；
+* 保留 mapping revision。
 
 ---
 
-# 十一、必须建立的测试矩阵
+# 五、产品与持久化仍欠缺的内容
 
-最终系统至少需要覆盖以下场景：
+## 1. 项目文件没有保存对齐状态
 
-| 类型 | 测试样例 |
-|---|---|
-| 标准输入 | 三路相同帧数、相同 CFR |
-| 帧数异常 | Prediction 少 1 帧、少 2 帧、多 1 帧 |
-| 局部异常 | 中间掉帧、重复帧 |
-| 时间偏移 | 全局偏移 -2、-1、+1、+2 |
-| 时间线 | 非零起始 PTS、B-frame、VFR、时间戳间隔异常 |
-| 空间 | 不同分辨率、不同 SAR、旋转 |
-| 编码 | H.264、HEVC、MPEG-4 Part 2、后续 10-bit |
-| 错误输入 | 损坏视频、无法 seek、帧索引不完整 |
-| UI | A/D、Left/Right、快速连按、焦点切换、时间线拖动 |
-| 原子性 | 任何时候都不能出现 Reference 已更新但 Prediction 未更新 |
-| 差分 | 三组 pairwise diff、相同帧必须全黑、Missing 不计算 |
+Schema v2 当前保存：
 
-验收时最重要的不是“能打开三个视频”，而是以下四个不变量：
+* 2～3 路源；
+* Reference；
+* marks；
+* last displayed frame；
+* workspace state。
 
-1. **同一次显示更新中的所有视频属于同一个标准帧位置。**
-2. **逐帧操作永远表示标准帧 ±1，而不是缓存游标移动。**
-3. **自动对齐绝不静默隐藏掉帧、重复帧或帧数差异。**
-4. **差分图明确区分 pixel-exact 与经过缩放、颜色转换或自动对齐的结果。**
+没有正式定义：
+
+* global offsets；
+* approved sequence map；
+* manual anchors；
+* alignment mode；
+* alignment algorithm version。
+
+`Project` domain 中也没有对应字段。
+
+### 建议
+
+不要直接把数万帧 mapping 塞入项目 JSON。推荐：
+
+```json
+{
+  "alignment": {
+    "mode": "manual-anchors",
+    "offsets": {
+      "1": 1,
+      "2": -1
+    },
+    "anchors": {
+      "1": [
+        { "canonicalFrame": 824, "sourceFrame": 825 }
+      ]
+    },
+    "derivedMapCacheKey": "..."
+  }
+}
+```
+
+* 手动 offset 和 anchors 属于用户语义，应持久化。
+* 完整 sequence map 是派生数据，可单独缓存。
+* 缓存必须绑定所有 source fingerprints 和算法版本。
+
+## 2. CompatibilityReport 丢失了 source pair 信息
+
+领域中的 `CompatibilityFinding` 包含具体 source IDs 和 severity。
+
+但 Snapshot 只保留 `MediaErrorCode` 列表，UI 无法知道：
+
+* 哪两路帧率不一致；
+* 哪两路发生颜色元数据差异；
+* 同一个 warning 是否出现多次。
+
+此外，`kAlignmentRequired` 已定义，但当前 validator 把帧数、帧率、时长不一致全部标记为普通 `Warning`。
+
+建议：
+
+* 帧数、帧率、时长差异改为 `AlignmentRequired`；
+* 分辨率、颜色差异保留 `Warning`；
+* Snapshot 保存结构化 `CompatibilityFindingSummary`；
+* UI 显示具体来源，例如 `A ↔ C: frame count mismatch`。
+
+## 3. UI 仍然硬编码 A/B/C
+
+核心已经是动态的 2～3 路 collection，但 Controller 仍使用：
+
+* `sourceAFilename/sourceBFilename/sourceCFilename`；
+* 三个 error key；
+* 三个 qint64 offset 参数；
+* raw source index。
+
+短期支持最多三路时这可以运行，但后续维护成本较高。建议改为：
+
+```cpp
+Q_PROPERTY(QAbstractItemModel* sources READ sources CONSTANT)
+```
+
+Source model 每一行包含：
+
+```text
+sourceId
+role
+filename
+errorKey
+frameId
+matchKind
+confidence
+manualOffset
+missing
+```
+
+这样 QML 用 Repeater 构建 source card、label 和 offset control。
 
 ---
 
-# 最终判断
+# 六、仍未完成的分析和媒体能力
 
-`DualVideoStudio` 已经提供了正确的底层骨架，但它目前仍是一个“工程化的双视频播放器”，而不是“VFI 专用多视频比较器”。最优技术路线不是继续补丁式加入第三路，而是先完成 **A/B 硬编码解除、兼容性检查与对齐分离、`FramePair` 到 `FrameSet` 的核心模型升级**；完成这三件事后，三路同播、三组误差图、帧数差一两帧和手机录屏对齐都会自然落在同一套架构内。
+当前项目文档也明确记录了后续媒体阶段尚未完成：
+
+* 10-bit/P010；
+* YUV422/YUV444；
+* BGRA/RGBA；
+* rotation 和 SAR；
+* D3D11VA；
+* 软件回退状态；
+* optional compatibility proxy。
+
+目前实际支持仍限定于：
+
+* H.264、HEVC、MPEG-4 Part 2；
+* 8-bit 4:2:0；
+* SDR；
+* BT.601/BT.709；
+* 软件解码。
+
+硬件性能 workflow 虽然已经建立，但文档明确说明真正的 hardware/performance suites 尚未落地，当前会报告零匹配测试。
+
+分析 UI 还应继续增加：
+
+* 差分阈值 mask；
+* ROI 放大和同步 pan/zoom；
+* 1:1 pixel 模式；
+* Difference unavailable 占位；
+* 完整 analysis grid；
+* pixel-exact / resampled 明确状态；
+* 低置信度区间而非单点 marker。
+
+---
+
+# 七、推荐的具体实施路线
+
+## 阶段一：正确性封板
+
+优先修改：
+
+```text
+Ports.h
+PlaybackCoordinator.cpp
+MultiSourceFrameProvider.cpp
+FrameSet.h
+D3d11ComparisonRenderer.cpp
+SessionSnapshot.h
+```
+
+完成：
+
+1. `FrameProviderOpenRequest` 增加 `canonicalSourceId`。
+2. decoder error 不再转换成 Missing。
+3. Missing 增加明确 reason。
+4. Difference 缺帧不再显示单路原图。
+5. 重型 alignment map 移出 Snapshot。
+6. 修复 Quality workflow 并保证所有 PR checks 绿色。
+
+这一阶段完成前不建议继续增加媒体格式。
+
+## 阶段二：持久化 Decode Actor
+
+新增：
+
+```text
+SourceDecodeActor.h/.cpp
+FrameSetAssembler.h/.cpp
+DecodeMailbox.h/.cpp
+```
+
+删除逐帧 `std::async`。
+
+每一路一个持久 actor，provider 只负责：
+
+* 路由请求；
+* 控制 generation；
+* 汇合结果；
+* 发布完整 FrameSet。
+
+## 阶段三：独立 Alignment Analysis Service
+
+新增：
+
+```text
+alignment/
+├── AlignmentAnalysisService
+├── SignatureExtractor
+├── SignatureCache
+├── GlobalOffsetAnalyzer
+├── SequenceAlignmentAnalyzer
+└── AlignmentProgress
+```
+
+支持：
+
+* 进度；
+* 取消；
+* 缓存；
+* 后台低优先级；
+* 不阻塞播放；
+* 分段置信度；
+* anchors 约束 DP；
+* 分析版本和结果 revision。
+
+## 阶段四：完善分析 UI
+
+依次完成：
+
+1. Missing panel 和 Difference unavailable。
+2. 同步缩放和平移。
+3. ROI 放大。
+4. 阈值 mask。
+5. pixel-exact 状态。
+6. Analysis grid。
+7. Alignment 审核、确认、撤销、单个 anchor 删除。
+
+## 阶段五：媒体和性能
+
+按以下顺序推进：
+
+1. 共享 PTS index，删除重复扫描。
+2. 缓存 SwsContext。
+3. FrameResource buffer pool。
+4. rotation 和 SAR。
+5. P010/10-bit。
+6. D3D11VA。
+7. GPU 纹理直通 renderer。
+8. optional compatibility proxy。
+
+## 阶段六：持久化和发布门禁
+
+* 项目文件保存 offsets 和 anchors；
+* 派生 sequence map 使用独立缓存；
+* source fingerprint 变化后自动使缓存失效；
+* 真实三路 1080p60 测试；
+* 4K 三路逐帧 seek 测试；
+* 长视频索引和 sequence analysis 性能测试；
+* Debug、Release、Package、Quality 全部绿色。
+
+---
+
+# 最终验收标准
+
+下一阶段完成的判断不应是“UI 中已经有按钮”，而应满足以下可测试条件：
+
+1. Reference 选 A、B、C 都能正确建立 canonical timeline。
+2. 损坏视频或 decoder 错误绝不会被显示为 `Missing frame`。
+3. 序列映射有 100,000 条时，逐帧播放不会复制整个映射表。
+4. 连续播放过程中线程数量保持稳定，不因每帧创建 `std::async` 任务而增长。
+5. `Find drops` 有进度、有取消，并且不阻塞正常播放。
+6. 差分边任一路 Missing 时，显示明确的不可计算状态。
+7. 自动对齐的局部低置信度区间不会被静默自动应用。
+8. 对齐 offset 和手动 anchors 在重启项目后可恢复。
+9. 三路 1080p60 的原子 FrameSet 不出现单路提前更新。
+10. GitHub `Quality`、`Build and Test`、Release 和 package smoke 全部通过。
+
+---
+
+**综合判断：这笔提交已经完成了最难的“架构方向和基础功能迁移”，但当前仍属于功能可演示、正确性尚需封板、性能尚未工程化的阶段。最优下一步是暂停新增功能，先完成 canonical source、错误语义、Snapshot 体积和差分缺帧四个 P0 修复，再进行 Decode Actor 与独立 Alignment Service 重构。**

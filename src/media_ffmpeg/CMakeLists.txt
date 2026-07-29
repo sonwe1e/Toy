@@ -1,10 +1,13 @@
 add_library(
     dvs_media_ffmpeg
     STATIC
+        src/AlignmentAnalysisService.cpp
         src/Module.cpp
         src/MultiSourceFrameProvider.cpp
+        src/FrameSetAssembler.cpp
         src/FrameTimelineIndex.cpp
         src/MediaProbe.cpp
+        src/SourceDecodeActor.cpp
         src/SoftwareDecoder.cpp
 )
 add_library(dvs::media_ffmpeg ALIAS dvs_media_ffmpeg)

@@ -79,6 +79,10 @@ struct AnalyzeSequenceAlignmentCommand final {
     CommandContext context;
 };
 
+struct CancelAlignmentAnalysisCommand final {
+    CommandContext context;
+};
+
 struct SetManualAlignmentAnchorCommand final {
     CommandContext context;
     domain::SourceId sourceId = 0;
@@ -104,6 +108,7 @@ using PlaybackCommand = std::variant<OpenComparisonCommand,
                                      SetAlignmentOffsetsCommand,
                                      EstimateAlignmentCommand,
                                      AnalyzeSequenceAlignmentCommand,
+                                     CancelAlignmentAnalysisCommand,
                                      SetManualAlignmentAnchorCommand,
                                      ClearManualAlignmentAnchorsCommand,
                                      CloseSessionCommand>;

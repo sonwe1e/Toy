@@ -108,26 +108,24 @@ but intentionally report no tests until those suites land.
 
 ## Runtime Tool Pinning
 
-The application will bundle a GPL-enabled FFmpeg/ffprobe runtime, and coverage builds
-will use pinned native coverage tools. Exact upstream artifacts have not yet been
-approved. Accordingly, both manifests in `tools/dependencies/` have status
-`unconfigured` and contain no invented URL or checksum.
+The application bundles the reviewed GPL-enabled Gyan FFmpeg/ffprobe 8.1.2 essentials
+runtime. Its immutable GitHub release URL, archive digest, executable digests, license,
+publisher release, and upstream source commit are pinned in
+`tools/dependencies/ffmpeg-runtime.json`. Coverage tools remain unconfigured until an
+exact artifact is reviewed.
 
 `tools/bootstrap-runtime.ps1` is deliberately fail-closed. It refuses an unconfigured
 manifest, an unpinned version, a non-HTTPS URL, an invalid SHA-256, an unsafe archive,
 or a destination outside `out/tools`. It never falls back to a tool on `PATH` and never
 selects a latest release.
 
-After maintainers review artifact provenance and licensing, each manifest must be
-changed to `pinned` and populated with all fields described by its
-`configurationRequirements`. Bootstrap one component explicitly:
+Bootstrap the pinned FFmpeg component explicitly:
 
 ```powershell
 .\tools\bootstrap-runtime.ps1 -Component Ffmpeg
-.\tools\bootstrap-runtime.ps1 -Component Coverage
 ```
 
-Use `-Component All` only after both manifests are pinned. Existing destinations are
+Do not use `-Component All` until the coverage manifest is pinned. Existing destinations are
 reused only when their provenance matches; `-Force` is required for a reviewed
 replacement. The initial CI workflows do not download unpinned runtime tools.
 

@@ -24,6 +24,10 @@ static_assert(std::is_abstract_v<IRenderChannel>);
 static_assert(std::is_same_v<decltype(FrameProviderOpenRequest::context), PlaybackRequestContext>);
 static_assert(std::is_same_v<decltype(FrameProviderOpenRequest::sources),
                              std::vector<domain::ComparisonSource>>);
+static_assert(
+    std::is_same_v<decltype(FrameProviderOpenRequest::canonicalSourceId), domain::SourceId>);
+static_assert(std::is_same_v<decltype(SessionSnapshot::sequenceAlignments),
+                             std::vector<SequenceAlignmentSummary>>);
 static_assert(std::is_same_v<decltype(FrameProviderCloseRequest::context), PlaybackRequestContext>);
 static_assert(std::is_same_v<decltype(ProjectSaveRequest::projectPath), std::filesystem::path>);
 static_assert(std::is_same_v<decltype(ProjectRelinkRequest::context), RequestContext>);
@@ -32,8 +36,8 @@ static_assert(std::is_same_v<decltype(ProjectRelinkRequest::newSourcePath), std:
 static_assert(
     std::is_same_v<decltype(SourceRelinkPrepared::candidate), domain::SourceRelinkCandidate>);
 static_assert(std::is_same_v<decltype(OpenComparisonCommand::context), CommandContext>);
-static_assert(std::is_same_v<decltype(OpenComparisonCommand::sources),
-                             std::vector<OpenComparisonSource>>);
+static_assert(
+    std::is_same_v<decltype(OpenComparisonCommand::sources), std::vector<OpenComparisonSource>>);
 static_assert(std::is_same_v<decltype(OpenComparisonSource::path), std::filesystem::path>);
 static_assert(
     std::is_same_v<decltype(std::get<OpenComparisonCommand>(std::declval<PlaybackCommand&>())),
@@ -88,6 +92,7 @@ static_assert(
         .presentationTime = domain::MediaTime{0},
         .matchKind = FrameMatchKind::Missing,
         .alignmentConfidence = 0.0F,
+        .missingReason = MissingReason::AlignmentGap,
     };
 }
 
@@ -116,18 +121,17 @@ TEST(ContractCompileTests, FrameSetRequiresCanonicalValidityAndConsistentEntries
         domain::FrameId{0}, domain::MediaTime{0}, {mapped(0, *handleA), mapped(0, *handleB)});
     EXPECT_FALSE(duplicateSources.has_value());
 
-    const auto inconsistentEntry = FrameSet::create(
-        domain::FrameId{0},
-        domain::MediaTime{0},
-        {MappedSourceFrame{
-             .sourceId = 0,
-             .sourceFrameId = domain::FrameId{0},
-             .frame = *handleA,
-             .presentationTime = domain::MediaTime{0},
-             .matchKind = FrameMatchKind::Missing,
-             .alignmentConfidence = 1.0F,
-         },
-         mapped(1, *handleB)});
+    const auto inconsistentEntry = FrameSet::create(domain::FrameId{0},
+                                                    domain::MediaTime{0},
+                                                    {MappedSourceFrame{
+                                                         .sourceId = 0,
+                                                         .sourceFrameId = domain::FrameId{0},
+                                                         .frame = *handleA,
+                                                         .presentationTime = domain::MediaTime{0},
+                                                         .matchKind = FrameMatchKind::Missing,
+                                                         .alignmentConfidence = 1.0F,
+                                                     },
+                                                     mapped(1, *handleB)});
     EXPECT_FALSE(inconsistentEntry.has_value());
 
     const auto complete = FrameSet::create(

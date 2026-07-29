@@ -208,6 +208,7 @@ makeCpuSetWithMissing(FrameBudget& budget,
             .presentationTime = domain::MediaTime{0},
             .matchKind = application::FrameMatchKind::Missing,
             .alignmentConfidence = 1.0F,
+            .missingReason = application::MissingReason::AlignmentGap,
         },
     };
     return application::FrameSet::create(

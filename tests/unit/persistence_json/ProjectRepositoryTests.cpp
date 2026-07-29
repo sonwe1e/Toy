@@ -1,7 +1,6 @@
+#include "dvs/domain/ComparisonValidator.h"
 #include "dvs/persistence/FingerprintService.h"
 #include "dvs/persistence/ProjectRepository.h"
-
-#include "dvs/domain/ComparisonValidator.h"
 
 #include <atomic>
 #include <chrono>
@@ -227,53 +226,55 @@ makeProject(const std::filesystem::path& sourceAPath,
     sources.push_back(domain::ComparisonSource{
         .id = 0,
         .role = domain::ComparisonRole::kReference,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = sourceAPath,
-            .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
-            .frameRate = rate.value(),
-            .frameCount =
-                domain::FrameCountInfo{
-                    .value = 5,
-                    .origin = domain::FrameCountOrigin::kReported,
-                },
-            .duration = domain::MediaTime{166'666},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8U,
-            .decodeCapabilities =
-                domain::DecodeCapabilities{
-                    .softwareDecode = true,
-                    .d3d11VaDecode = false,
-                },
-            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-            .sourceIdentity = identityA,
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = sourceAPath,
+                .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
+                .frameRate = rate.value(),
+                .frameCount =
+                    domain::FrameCountInfo{
+                        .value = 5,
+                        .origin = domain::FrameCountOrigin::kReported,
+                    },
+                .duration = domain::MediaTime{166'666},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8U,
+                .decodeCapabilities =
+                    domain::DecodeCapabilities{
+                        .softwareDecode = true,
+                        .d3d11VaDecode = false,
+                    },
+                .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+                .sourceIdentity = identityA,
+            },
         .displayName = "Source A",
     });
     sources.push_back(domain::ComparisonSource{
         .id = 1,
         .role = domain::ComparisonRole::kPrediction,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = sourceBPath,
-            .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
-            .frameRate = rate.value(),
-            .frameCount =
-                domain::FrameCountInfo{
-                    .value = 5,
-                    .origin = domain::FrameCountOrigin::kReported,
-                },
-            .duration = domain::MediaTime{166'666},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8U,
-            .decodeCapabilities =
-                domain::DecodeCapabilities{
-                    .softwareDecode = true,
-                    .d3d11VaDecode = false,
-                },
-            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-            .sourceIdentity = identityB,
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = sourceBPath,
+                .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
+                .frameRate = rate.value(),
+                .frameCount =
+                    domain::FrameCountInfo{
+                        .value = 5,
+                        .origin = domain::FrameCountOrigin::kReported,
+                    },
+                .duration = domain::MediaTime{166'666},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8U,
+                .decodeCapabilities =
+                    domain::DecodeCapabilities{
+                        .softwareDecode = true,
+                        .d3d11VaDecode = false,
+                    },
+                .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+                .sourceIdentity = identityB,
+            },
         .displayName = "Source B",
     });
     const auto validated = domain::ComparisonValidator::validate(std::move(sources));
@@ -302,59 +303,61 @@ TEST_F(ProjectRepositoryTests, SavesThenLoadsWithPayloadBeforeTerminal) {
     sources.push_back(domain::ComparisonSource{
         .id = 0,
         .role = domain::ComparisonRole::kReference,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = sourceAPath,
-            .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
-            .frameRate = rate.value(),
-            .frameCount =
-                domain::FrameCountInfo{
-                    .value = 5,
-                    .origin = domain::FrameCountOrigin::kReported,
-                },
-            .duration = domain::MediaTime{166'666},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8U,
-            .decodeCapabilities =
-                domain::DecodeCapabilities{
-                    .softwareDecode = true,
-                    .d3d11VaDecode = false,
-                },
-            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-            .sourceIdentity = identityA.value(),
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = sourceAPath,
+                .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
+                .frameRate = rate.value(),
+                .frameCount =
+                    domain::FrameCountInfo{
+                        .value = 5,
+                        .origin = domain::FrameCountOrigin::kReported,
+                    },
+                .duration = domain::MediaTime{166'666},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8U,
+                .decodeCapabilities =
+                    domain::DecodeCapabilities{
+                        .softwareDecode = true,
+                        .d3d11VaDecode = false,
+                    },
+                .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+                .sourceIdentity = identityA.value(),
+            },
         .displayName = "Source A",
     });
     sources.push_back(domain::ComparisonSource{
         .id = 1,
         .role = domain::ComparisonRole::kPrediction,
-        .descriptor = domain::MediaDescriptor{
-            .normalizedPath = sourceBPath,
-            .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
-            .frameRate = rate.value(),
-            .frameCount =
-                domain::FrameCountInfo{
-                    .value = 5,
-                    .origin = domain::FrameCountOrigin::kReported,
-                },
-            .duration = domain::MediaTime{166'666},
-            .codecId = "h264",
-            .pixelFormatId = "yuv420p",
-            .bitDepth = 8U,
-            .decodeCapabilities =
-                domain::DecodeCapabilities{
-                    .softwareDecode = true,
-                    .d3d11VaDecode = false,
-                },
-            .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
-            .sourceIdentity = identityB.value(),
-        },
+        .descriptor =
+            domain::MediaDescriptor{
+                .normalizedPath = sourceBPath,
+                .extent = domain::MediaExtent{.width = 1'280U, .height = 720U},
+                .frameRate = rate.value(),
+                .frameCount =
+                    domain::FrameCountInfo{
+                        .value = 5,
+                        .origin = domain::FrameCountOrigin::kReported,
+                    },
+                .duration = domain::MediaTime{166'666},
+                .codecId = "h264",
+                .pixelFormatId = "yuv420p",
+                .bitDepth = 8U,
+                .decodeCapabilities =
+                    domain::DecodeCapabilities{
+                        .softwareDecode = true,
+                        .d3d11VaDecode = false,
+                    },
+                .timingConfidence = domain::TimingConfidence::kDeclaredCfr,
+                .sourceIdentity = identityB.value(),
+            },
         .displayName = "Source B",
     });
     const auto validated = domain::ComparisonValidator::validate(std::move(sources));
     ASSERT_TRUE(validated);
-    const auto project =
-        domain::Project::create(domain::ProjectId{"project-1"}, "Round-trip project", validated.value().set);
+    const auto project = domain::Project::create(
+        domain::ProjectId{"project-1"}, "Round-trip project", validated.value().set);
     ASSERT_TRUE(project);
 
     const auto saveEvents = std::make_shared<RecordingEventSink>();

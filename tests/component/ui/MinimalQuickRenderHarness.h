@@ -88,9 +88,9 @@ private:
     std::atomic<ui::GraphicsBackendResult>& latestResult_;
 };
 
-// Boots the real Qt Quick scene graph through an exposed 16x16 top-level window. The window is
-// moved off-screen instead of being hidden because a hidden QQuickWindow does not reliably create
-// renderer resources. setPreferSoftwareDevice(true) makes the D3D11 backend use WARP.
+// Boots the real Qt Quick scene graph through an exposed, transparent 16x16 top-level window.
+// Recent Qt/DXGI versions reject exposed windows outside the virtual desktop, so the transparent
+// window stays inside the primary screen while setPreferSoftwareDevice(true) selects WARP.
 class MinimalQuickRenderHarness final {
 public:
     explicit MinimalQuickRenderHarness(platform::GraphicsDeviceBroker& broker)
@@ -124,14 +124,15 @@ public:
         if (screen == nullptr) {
             return false;
         }
-        virtualDesktop_ = screen->virtualGeometry();
-        window_.setPosition(virtualDesktop_.right() + 32, virtualDesktop_.bottom() + 32);
+        const QRect available = screen->availableGeometry();
+        window_.setPosition(available.right() - window_.width() + 1,
+                            available.bottom() - window_.height() + 1);
         item_.setVisible(true);
         window_.requestUpdate();
         item_.update();
         return waitUntil(
             [this] {
-                return window_.isExposed() && isOffscreen() &&
+                return window_.isExposed() && isUnobtrusive() &&
                        renderCount_.load(std::memory_order_acquire) > 0U;
             },
             timeoutMilliseconds);
@@ -158,8 +159,8 @@ public:
         return window_.isExposed();
     }
 
-    [[nodiscard]] bool isOffscreen() const noexcept {
-        return !virtualDesktop_.isNull() && !virtualDesktop_.intersects(window_.geometry());
+    [[nodiscard]] bool isUnobtrusive() const noexcept {
+        return window_.opacity() == 0.0;
     }
 
     [[nodiscard]] std::uint64_t renderCount() const noexcept {
@@ -191,7 +192,6 @@ private:
     std::atomic<ui::GraphicsBackendResult> firstResult_{ui::GraphicsBackendResult::Closed};
     std::atomic<ui::GraphicsBackendResult> latestResult_{ui::GraphicsBackendResult::Closed};
     BrokerRenderItem item_;
-    QRect virtualDesktop_;
 };
 
 } // namespace dvs::test

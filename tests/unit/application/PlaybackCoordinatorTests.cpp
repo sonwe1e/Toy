@@ -526,6 +526,92 @@ private:
     std::vector<PlaybackRequestContext> canceledContexts_;
 };
 
+class FakeAlignmentAnalysisService final : public IAlignmentAnalysisService {
+public:
+    [[nodiscard]] PortSubmitResult submit(const AlignmentEstimateRequest& request,
+                                          std::shared_ptr<IApplicationEventSink> events) override {
+        {
+            std::scoped_lock lock(mutex_);
+            alignmentRequests_.push_back(request);
+            events_ = std::move(events);
+        }
+        condition_.notify_all();
+        return PortSubmitResult::Accepted;
+    }
+
+    [[nodiscard]] PortSubmitResult submit(const SequenceAlignmentRequest& request,
+                                          std::shared_ptr<IApplicationEventSink> events) override {
+        {
+            std::scoped_lock lock(mutex_);
+            sequenceRequests_.push_back(request);
+            events_ = std::move(events);
+        }
+        condition_.notify_all();
+        return PortSubmitResult::Accepted;
+    }
+
+    void cancel(const AlignmentAnalysisJobId jobId) noexcept override {
+        {
+            std::scoped_lock lock(mutex_);
+            canceled_.push_back(jobId);
+        }
+        condition_.notify_all();
+    }
+
+    [[nodiscard]] bool waitForSequenceRequestCount(const std::size_t count) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(
+            lock, 5s, [this, count] { return sequenceRequests_.size() >= count; });
+    }
+
+    [[nodiscard]] std::optional<SequenceAlignmentRequest> sequenceRequest() const {
+        std::scoped_lock lock(mutex_);
+        return sequenceRequests_.empty() ? std::nullopt : std::optional{sequenceRequests_.back()};
+    }
+
+    [[nodiscard]] bool waitForCancelCount(const std::size_t count) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(lock, 5s, [this, count] { return canceled_.size() >= count; });
+    }
+
+    [[nodiscard]] bool postStarted(const SequenceAlignmentRequest& request,
+                                   const std::uint64_t totalFrames) {
+        const std::shared_ptr<IApplicationEventSink> sink = events();
+        return sink && sink->postCritical(ApplicationEvent{AlignmentAnalysisStarted{
+                           .jobId = request.jobId,
+                           .context = request.context,
+                           .kind = AlignmentAnalysisKind::Sequence,
+                           .totalFrames = totalFrames,
+                       }}) == EventPostResult::Accepted;
+    }
+
+    [[nodiscard]] bool postProgress(const SequenceAlignmentRequest& request,
+                                    const std::uint64_t completedFrames,
+                                    const std::uint64_t totalFrames) {
+        const std::shared_ptr<IApplicationEventSink> sink = events();
+        return sink && sink->postRealtime(ApplicationEvent{AlignmentAnalysisProgress{
+                           .jobId = request.jobId,
+                           .context = request.context,
+                           .kind = AlignmentAnalysisKind::Sequence,
+                           .completedFrames = completedFrames,
+                           .totalFrames = totalFrames,
+                       }}) == EventPostResult::Accepted;
+    }
+
+private:
+    [[nodiscard]] std::shared_ptr<IApplicationEventSink> events() const {
+        std::scoped_lock lock(mutex_);
+        return events_;
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable condition_;
+    std::vector<AlignmentEstimateRequest> alignmentRequests_;
+    std::vector<SequenceAlignmentRequest> sequenceRequests_;
+    std::vector<AlignmentAnalysisJobId> canceled_;
+    std::shared_ptr<IApplicationEventSink> events_;
+};
+
 class FakeRenderChannel final : public IRenderChannel {
 public:
     [[nodiscard]] RenderPublishResult publish(const FrameRequestContext& context,
@@ -1007,11 +1093,58 @@ makeCoordinator(const std::shared_ptr<FakeFrameProvider>& provider,
                 const std::shared_ptr<FakeRenderChannel>& render,
                 std::shared_ptr<IMediaProbe> mediaProbe,
                 std::shared_ptr<IDeadlineScheduler> deadlineScheduler,
-                std::shared_ptr<ISteadyClock> clock);
+                std::shared_ptr<ISteadyClock> clock,
+                std::shared_ptr<IAlignmentAnalysisService> analysisService = {});
 void markGraphicsReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                        domain::DeviceGeneration generation);
 [[nodiscard]] CommandContext commandContext(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                                             domain::CommandId commandId);
+
+TEST(PlaybackCoordinatorTests, CarriesNonFirstReferenceIdentityIntoProviderOpen) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    const std::shared_ptr<const SessionSnapshot> initial = coordinator->snapshot();
+    ASSERT_NE(initial, nullptr);
+
+    ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = initial->sessionId,
+                          .sessionEpoch = initial->sessionEpoch,
+                          .commandId = domain::CommandId{1},
+                      },
+                  .sources =
+                      {
+                          domain::ComparisonSource{
+                              .id = 0U,
+                              .role = domain::ComparisonRole::kPrediction,
+                              .descriptor = makeDescriptor(
+                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .displayName = "Prediction",
+                          },
+                          domain::ComparisonSource{
+                              .id = 1U,
+                              .role = domain::ComparisonRole::kReference,
+                              .descriptor = makeDescriptor(
+                                  "b.mp4", domain::MediaExtent{.width = 160, .height = 90}),
+                              .displayName = "Reference",
+                          },
+                      },
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForOpenRequestCount(1U));
+    const std::optional<FrameProviderOpenRequest> open = provider->openRequest();
+    ASSERT_TRUE(open.has_value());
+    EXPECT_EQ(open->canonicalSourceId, 1U);
+    ASSERT_EQ(open->sources.size(), 2U);
+    EXPECT_EQ(open->sources[0U].id, 0U);
+    EXPECT_EQ(open->sources[1U].id, 1U);
+}
 
 TEST(PlaybackCoordinatorAlignmentTests, AppliesOffsetsWithoutReopeningAndReseeksAtomically) {
     auto provider = std::make_shared<FakeFrameProvider>();
@@ -1398,11 +1531,13 @@ makeCoordinator(const std::shared_ptr<FakeFrameProvider>& provider,
                 std::shared_ptr<IMediaProbe> mediaProbe = std::make_shared<FakeMediaProbe>(),
                 std::shared_ptr<IDeadlineScheduler> deadlineScheduler =
                     std::make_shared<FakeDeadlineScheduler>(),
-                std::shared_ptr<ISteadyClock> clock = std::make_shared<FakeSteadyClock>()) {
+                std::shared_ptr<ISteadyClock> clock = std::make_shared<FakeSteadyClock>(),
+                std::shared_ptr<IAlignmentAnalysisService> analysisService) {
     return PlaybackCoordinator::create(domain::SessionId{91},
                                        PlaybackCoordinator::Dependencies{
                                            .mediaProbe = std::move(mediaProbe),
                                            .directFrameProvider = provider,
+                                           .alignmentAnalysisService = std::move(analysisService),
                                            .deadlineScheduler = std::move(deadlineScheduler),
                                            .clock = std::move(clock),
                                            .renderChannel = render,
@@ -1419,6 +1554,52 @@ void markGraphicsReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
         const auto snapshot = coordinator->snapshot();
         return snapshot->graphicsReady && snapshot->deviceGeneration == generation;
     }));
+}
+
+TEST(PlaybackCoordinatorAlignmentTests, BackgroundSequenceAnalysisReportsProgressAndAllowsSeek) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto analysis = std::make_shared<FakeAlignmentAnalysisService>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>(),
+                                             analysis);
+    markGraphicsReady(coordinator);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(AnalyzeSequenceAlignmentCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(analysis->waitForSequenceRequestCount(1U));
+    const auto request = analysis->sequenceRequest();
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(provider->sequenceRequest().has_value(), false);
+    EXPECT_EQ(request->sources.size(), 2U);
+    EXPECT_TRUE(request->timeline.has_value());
+    ASSERT_TRUE(analysis->postStarted(*request, 20U));
+    ASSERT_TRUE(analysis->postProgress(*request, 5U, 20U));
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        const auto snapshot = coordinator->snapshot();
+        return snapshot->alignmentAnalysisJobId.has_value() &&
+               snapshot->alignmentAnalysisCompletedFrames == 5U &&
+               snapshot->alignmentAnalysisTotalFrames == 20U;
+    }));
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+
+    ASSERT_EQ(coordinator->submit(CancelAlignmentAnalysisCommand{
+                  .context = commandContext(coordinator, domain::CommandId{4}),
+              }),
+              PortSubmitResult::Accepted);
+    EXPECT_TRUE(analysis->waitForCancelCount(1U));
 }
 
 [[nodiscard]] CommandContext commandContext(const std::shared_ptr<PlaybackCoordinator>& coordinator,

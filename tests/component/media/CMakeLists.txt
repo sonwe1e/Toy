@@ -3,9 +3,11 @@ include(GoogleTest)
 add_executable(
     dvs_media_component_tests
     MultiSourceFrameProviderTests.cpp
+    FrameSetAssemblerTests.cpp
     FrameTimelineIndexTests.cpp
     MediaProbeTests.cpp
-     ProbeTimelineContractTests.cpp
+    ProbeTimelineContractTests.cpp
+    SourceDecodeActorTests.cpp
     SoftwareDecoderTests.cpp
 )
 target_link_libraries(

@@ -4,8 +4,13 @@
 #include "dvs/platform/CpuNv12FrameResource.h"
 #include "dvs/platform/FrameBudget.h"
 
-#include "SoftwareDecoder.h"
+#include "FrameSetAssembler.h"
+#include "SourceDecodeActor.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -15,9 +20,11 @@
 #include <deque>
 #include <exception>
 #include <future>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <thread>
@@ -156,6 +163,25 @@ void postCritical(const std::weak_ptr<application::IApplicationEventSink>& event
                   application::ApplicationEvent event) noexcept {
     if (const std::shared_ptr<application::IApplicationEventSink> sink = events.lock()) {
         static_cast<void>(sink->postCritical(std::move(event)));
+    }
+}
+
+void postSequenceProgress(const std::shared_ptr<ProviderOperation>& operation,
+                          const std::uint64_t completedFrames,
+                          const std::uint64_t totalFrames) noexcept {
+    const auto& request = std::get<application::SequenceAlignmentRequest>(operation->request);
+    if (request.jobId.value == 0U) {
+        return;
+    }
+    if (const std::shared_ptr<application::IApplicationEventSink> sink = operation->events.lock()) {
+        static_cast<void>(
+            sink->postRealtime(application::ApplicationEvent{application::AlignmentAnalysisProgress{
+                .jobId = request.jobId,
+                .context = request.context,
+                .kind = application::AlignmentAnalysisKind::Sequence,
+                .completedFrames = completedFrames,
+                .totalFrames = totalFrames,
+            }}));
     }
 }
 
@@ -307,13 +333,33 @@ signatureFromFrame(const domain::FrameId frameId, const application::FrameHandle
                                          : static_cast<std::uint64_t>(right.value() - left.value());
 }
 
+[[nodiscard]] internal::SourceDecodePriority
+decodePriority(const application::FrameRequestPriority priority) noexcept {
+    switch (priority) {
+    case application::FrameRequestPriority::Exact:
+        return internal::SourceDecodePriority::Exact;
+    case application::FrameRequestPriority::Sequential:
+        return internal::SourceDecodePriority::Sequential;
+    case application::FrameRequestPriority::Prefetch:
+        return internal::SourceDecodePriority::Prefetch;
+    }
+    std::terminate();
+}
+
 } // namespace
 
 class MultiSourceFrameProvider::Impl final {
 public:
-    explicit Impl(platform::FrameBudget& frameBudget, const std::size_t requestCapacity)
+    explicit Impl(platform::FrameBudget& frameBudget,
+                  const std::size_t requestCapacity,
+                  const bool lowPriority)
         : frameBudget_(frameBudget), queueCapacity_(std::max(kSetTableCapacity, requestCapacity)),
-          worker_([this] { run(); }) {}
+          lowPriority_(lowPriority), worker_([this] { run(); }) {
+        if (lowPriority_) {
+            static_cast<void>(
+                SetThreadPriority(worker_.native_handle(), THREAD_PRIORITY_BELOW_NORMAL));
+        }
+    }
 
     ~Impl() {
         shutdown();
@@ -560,10 +606,20 @@ public:
         condition_.notify_one();
     }
 
+    [[nodiscard]] std::vector<std::thread::id> decodeWorkerIdsForTesting() const {
+        std::vector<std::thread::id> ids;
+        ids.reserve(decodeActors_.size());
+        for (const auto& actor : decodeActors_) {
+            ids.push_back(actor->workerThreadId());
+        }
+        return ids;
+    }
+
 private:
     struct ActiveSession final {
         application::PlaybackRequestContext context;
         std::vector<domain::ComparisonSource> sources;
+        domain::SourceId canonicalSourceId = 0;
         domain::CanonicalTimeline timeline;
     };
 
@@ -760,17 +816,40 @@ private:
                !prefetchQueue_.empty();
     }
 
-    void closeDecoders() noexcept {
-        for (auto& decoder : decoders_) {
-            if (decoder != nullptr) {
-                decoder->close();
+    void closeDecodeActors() noexcept {
+        for (auto& actor : decodeActors_) {
+            if (actor != nullptr) {
+                actor->close();
             }
         }
-        decoders_.clear();
+        decodeActors_.clear();
         activeSession_.reset();
         setTable_.clear();
         sequentialSetFrame_.reset();
         sequentialSetReady_ = false;
+    }
+
+    [[nodiscard]] domain::Result<internal::DecodedFrame>
+    decodeBlocking(const std::size_t slot,
+                   const domain::FrameId frameId,
+                   const bool continueSequentially,
+                   const std::shared_ptr<ProviderOperation>& operation) {
+        internal::SourceDecodeSubmission submitted =
+            decodeActors_[slot]->submit(internal::SourceDecodeRequest{
+                .frameId = frameId,
+                .priority = internal::SourceDecodePriority::Analysis,
+                .continueSequentially = continueSequentially,
+                .cancellationRequested = &operation->cancellationRequested,
+            });
+        if (submitted.status != application::PortSubmitResult::Accepted ||
+            !submitted.completion.valid()) {
+            return domain::Result<internal::DecodedFrame>::failure(
+                providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                              activeSession_->sources[slot].id,
+                              "The source decode actor rejected an analysis request.",
+                              true));
+        }
+        return submitted.completion.get();
     }
 
     void executeOpen(const std::shared_ptr<ProviderOperation>& operation) noexcept {
@@ -789,7 +868,18 @@ private:
             return;
         }
 
-        const domain::MediaDescriptor& canonicalDescriptor = request.sources.front().descriptor;
+        const auto canonical = std::find_if(
+            request.sources.begin(), request.sources.end(), [&request](const auto& source) {
+                return source.id == request.canonicalSourceId;
+            });
+        if (canonical == request.sources.end()) {
+            postFailed(operation,
+                       providerError(domain::MediaErrorCode::kInvalidArgument,
+                                     request.canonicalSourceId,
+                                     "The canonical source is not present in the open request."));
+            return;
+        }
+        const domain::MediaDescriptor& canonicalDescriptor = canonical->descriptor;
         if (domain::isVariableFrameRate(request.timeline)) {
             const auto& variableTimeline =
                 std::get<std::shared_ptr<const domain::FrameTimeline>>(request.timeline);
@@ -828,28 +918,29 @@ private:
             return;
         }
 
-        closeDecoders();
+        closeDecodeActors();
         interruptRequested_.store(false, std::memory_order_release);
         try {
-            decoders_.reserve(request.sources.size());
+            decodeActors_.reserve(request.sources.size());
             for (std::size_t slot = 0; slot < request.sources.size(); ++slot) {
-                decoders_.push_back(
-                    std::make_unique<internal::SoftwareDecoder>(request.sources[slot].id,
-                                                                request.sources[slot].descriptor,
-                                                                frameBudget_,
-                                                                &interruptRequested_));
+                decodeActors_.push_back(
+                    std::make_unique<internal::SourceDecodeActor>(request.sources[slot].id,
+                                                                  request.sources[slot].descriptor,
+                                                                  frameBudget_,
+                                                                  &interruptRequested_,
+                                                                  lowPriority_));
             }
 
-            for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
+            for (std::size_t slot = 0; slot < decodeActors_.size(); ++slot) {
                 const domain::Status opened =
-                    decoders_[slot]->open(operation->cancellationRequested);
+                    decodeActors_[slot]->open(operation->cancellationRequested);
                 if (operation->isCanceled()) {
-                    closeDecoders();
+                    closeDecodeActors();
                     postCanceled(operation);
                     return;
                 }
                 if (!opened) {
-                    closeDecoders();
+                    closeDecodeActors();
                     postFailed(operation, opened.error());
                     return;
                 }
@@ -858,6 +949,7 @@ private:
             activeSession_ = ActiveSession{
                 .context = request.context,
                 .sources = request.sources,
+                .canonicalSourceId = request.canonicalSourceId,
                 .timeline = request.timeline,
             };
             {
@@ -871,7 +963,7 @@ private:
             }
             postSucceeded(operation);
         } catch (const std::exception& exception) {
-            closeDecoders();
+            closeDecodeActors();
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
@@ -879,7 +971,7 @@ private:
                                          std::string{exception.what()},
                                      true));
         } catch (...) {
-            closeDecoders();
+            closeDecodeActors();
             postFailed(
                 operation,
                 providerError(domain::MediaErrorCode::kMediaDecodeFailed,
@@ -962,7 +1054,7 @@ private:
             return;
         }
         const auto& request = std::get<application::FrameRequest>(operation->request);
-        if (!activeSession_.has_value() || decoders_.empty()) {
+        if (!activeSession_.has_value() || decodeActors_.empty()) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
@@ -1023,10 +1115,30 @@ private:
                 float alignmentConfidence;
                 std::future<domain::Result<internal::DecodedFrame>> result;
             };
-            std::vector<application::MappedSourceFrame> entries;
-            entries.reserve(decoders_.size());
+            std::vector<domain::SourceId> sourceOrder;
+            sourceOrder.reserve(activeSession_->sources.size());
+            std::transform(activeSession_->sources.begin(),
+                           activeSession_->sources.end(),
+                           std::back_inserter(sourceOrder),
+                           [](const domain::ComparisonSource& source) { return source.id; });
+            internal::FrameSetAssembler assembler{
+                request.frameId,
+                canonicalTime.value(),
+                std::move(sourceOrder),
+            };
+            const auto completeSlot = [&assembler,
+                                       &operation](application::MappedSourceFrame entry) {
+                if (assembler.complete(std::move(entry))) {
+                    return true;
+                }
+                postFailed(operation,
+                           providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                         std::nullopt,
+                                         "A source worker reported an unknown or duplicate slot."));
+                return false;
+            };
             std::vector<SlotDecode> decoding;
-            decoding.reserve(decoders_.size());
+            decoding.reserve(decodeActors_.size());
 
             const auto alignmentFor =
                 [&request](
@@ -1065,7 +1177,7 @@ private:
                 }
             }
 
-            for (std::size_t slot = 0; slot < decoders_.size(); ++slot) {
+            for (std::size_t slot = 0; slot < decodeActors_.size(); ++slot) {
                 const domain::ComparisonSource& source = activeSession_->sources[slot];
                 const domain::SourceId sourceId = source.id;
                 const std::int64_t sourceFrameCount = source.descriptor.frameCount.value;
@@ -1074,14 +1186,17 @@ private:
                 const std::int64_t offset = alignment == nullptr ? 0 : alignment->frames;
                 if (alignment != nullptr &&
                     alignment->matchKind == application::FrameMatchKind::Missing) {
-                    entries.push_back(application::MappedSourceFrame{
-                        .sourceId = sourceId,
-                        .sourceFrameId = std::nullopt,
-                        .frame = std::nullopt,
-                        .presentationTime = domain::MediaTime{0},
-                        .matchKind = application::FrameMatchKind::Missing,
-                        .alignmentConfidence = alignment->confidence,
-                    });
+                    if (!completeSlot(application::MappedSourceFrame{
+                            .sourceId = sourceId,
+                            .sourceFrameId = std::nullopt,
+                            .frame = std::nullopt,
+                            .presentationTime = domain::MediaTime{0},
+                            .matchKind = application::FrameMatchKind::Missing,
+                            .alignmentConfidence = alignment->confidence,
+                            .missingReason = application::MissingReason::AlignmentGap,
+                        })) {
+                        return;
+                    }
                     continue;
                 }
                 const bool underflow = offset < 0 && offset < -canonicalFrame;
@@ -1093,21 +1208,43 @@ private:
 
                 if (!request.frameId.isValid() || mappedFrame < 0 ||
                     mappedFrame >= sourceFrameCount) {
-                    entries.push_back(application::MappedSourceFrame{
-                        .sourceId = sourceId,
-                        .sourceFrameId = std::nullopt,
-                        .frame = std::nullopt,
-                        .presentationTime = domain::MediaTime{0},
-                        .matchKind = application::FrameMatchKind::Missing,
-                        .alignmentConfidence = alignment == nullptr ? 1.0F : alignment->confidence,
-                    });
+                    if (!completeSlot(application::MappedSourceFrame{
+                            .sourceId = sourceId,
+                            .sourceFrameId = std::nullopt,
+                            .frame = std::nullopt,
+                            .presentationTime = domain::MediaTime{0},
+                            .matchKind = application::FrameMatchKind::Missing,
+                            .alignmentConfidence =
+                                alignment == nullptr ? 1.0F : alignment->confidence,
+                            .missingReason = mappedFrame < 0
+                                                 ? application::MissingReason::BeforeSourceStart
+                                                 : application::MissingReason::AfterSourceEnd,
+                        })) {
+                        return;
+                    }
                     continue;
                 }
 
-                internal::SoftwareDecoder* const decoder = decoders_[slot].get();
                 const bool sequential = continueSequentially;
                 const domain::FrameId frameId{mappedFrame};
-                std::atomic<bool>& cancellation = operation->cancellationRequested;
+                internal::SourceDecodeSubmission submitted =
+                    decodeActors_[slot]->submit(internal::SourceDecodeRequest{
+                        .frameId = frameId,
+                        .priority = decodePriority(request.priority),
+                        .continueSequentially = sequential,
+                        .cancellationRequested = &operation->cancellationRequested,
+                        .context = request.context,
+                    });
+                if (submitted.status != application::PortSubmitResult::Accepted ||
+                    !submitted.completion.valid()) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                             sourceId,
+                                             "A source decode actor mailbox rejected the frame "
+                                             "request.",
+                                             true));
+                    return;
+                }
                 decoding.push_back(SlotDecode{
                     .sourceId = sourceId,
                     .sourceFrameId = frameId,
@@ -1118,52 +1255,37 @@ private:
                                             ? application::FrameMatchKind::ExactIndex
                                             : alignment->matchKind),
                     .alignmentConfidence = alignment == nullptr ? 1.0F : alignment->confidence,
-                    .result =
-                        std::async(std::launch::async,
-                                   [decoder, frameId, sequential, &cancellation] {
-                                       return sequential
-                                                  ? decoder->decodeSequential(frameId, cancellation)
-                                                  : decoder->decodeExact(frameId, cancellation);
-                                   }),
+                    .result = std::move(submitted.completion),
                 });
             }
 
             for (SlotDecode& slotDecode : decoding) {
                 domain::Result<internal::DecodedFrame> decoded = slotDecode.result.get();
                 if (!decoded) {
-                    if (decoded.error().code == domain::MediaErrorCode::kFrameBudgetExceeded) {
-                        // Budget exhaustion is session pressure, not a missing frame: fail the
-                        // whole request instead of publishing a silently incomplete set.
-                        postFailed(operation, decoded.error());
-                        return;
-                    }
-                    entries.push_back(application::MappedSourceFrame{
-                        .sourceId = slotDecode.sourceId,
-                        .sourceFrameId = std::nullopt,
-                        .frame = std::nullopt,
-                        .presentationTime = domain::MediaTime{0},
-                        .matchKind = application::FrameMatchKind::Missing,
-                        .alignmentConfidence = slotDecode.alignmentConfidence,
-                    });
-                    continue;
+                    // Missing is exclusively a mapping-layer result. Any decoder failure,
+                    // including budget pressure, fails the whole atomic request and leaves the
+                    // previously presented FrameSet untouched.
+                    postFailed(operation, decoded.error());
+                    return;
                 }
 
-                entries.push_back(application::MappedSourceFrame{
-                    .sourceId = slotDecode.sourceId,
-                    .sourceFrameId = slotDecode.sourceFrameId,
-                    .frame = std::move(decoded.value().handle),
-                    .presentationTime = decoded.value().presentationTime,
-                    .matchKind = slotDecode.matchKind,
-                    .alignmentConfidence = slotDecode.alignmentConfidence,
-                });
+                if (!completeSlot(application::MappedSourceFrame{
+                        .sourceId = slotDecode.sourceId,
+                        .sourceFrameId = slotDecode.sourceFrameId,
+                        .frame = std::move(decoded.value().handle),
+                        .presentationTime = decoded.value().presentationTime,
+                        .matchKind = slotDecode.matchKind,
+                        .alignmentConfidence = slotDecode.alignmentConfidence,
+                    })) {
+                    return;
+                }
             }
             if (operation->isCanceled()) {
                 postCanceled(operation);
                 return;
             }
 
-            auto set = application::FrameSet::create(
-                request.frameId, canonicalTime.value(), std::move(entries));
+            std::optional<application::FrameSet> set = assembler.finish();
             if (!set) {
                 postFailed(
                     operation,
@@ -1203,7 +1325,7 @@ private:
             return;
         }
         const auto& request = std::get<application::AlignmentEstimateRequest>(operation->request);
-        if (!activeSession_.has_value() || decoders_.size() != activeSession_->sources.size()) {
+        if (!activeSession_.has_value() || decodeActors_.size() != activeSession_->sources.size()) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
@@ -1284,8 +1406,7 @@ private:
             reference.reserve(anchors.size());
             for (const domain::FrameId frameId : anchors) {
                 domain::Result<internal::DecodedFrame> decoded =
-                    decoders_[canonicalSlot]->decodeExact(frameId,
-                                                          operation->cancellationRequested);
+                    decodeBlocking(canonicalSlot, frameId, false, operation);
                 if (!decoded) {
                     postFailed(operation, decoded.error());
                     return;
@@ -1334,11 +1455,10 @@ private:
                 for (const std::int64_t frame : targetFrames) {
                     const domain::FrameId frameId{frame};
                     domain::Result<internal::DecodedFrame> decoded =
-                        previousFrame.has_value() && frame == *previousFrame + 1
-                            ? decoders_[slot]->decodeSequential(frameId,
-                                                                operation->cancellationRequested)
-                            : decoders_[slot]->decodeExact(frameId,
-                                                           operation->cancellationRequested);
+                        decodeBlocking(slot,
+                                       frameId,
+                                       previousFrame.has_value() && frame == *previousFrame + 1,
+                                       operation);
                     if (!decoded) {
                         postFailed(operation, decoded.error());
                         return;
@@ -1396,7 +1516,7 @@ private:
             return;
         }
         const auto& request = std::get<application::SequenceAlignmentRequest>(operation->request);
-        if (!activeSession_.has_value() || decoders_.size() != activeSession_->sources.size()) {
+        if (!activeSession_.has_value() || decodeActors_.size() != activeSession_->sources.size()) {
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
@@ -1467,6 +1587,14 @@ private:
         setTable_.clear();
         try {
             std::optional<domain::MediaError> collectionFailure;
+            const std::uint64_t totalFrames = std::accumulate(
+                activeSession_->sources.begin(),
+                activeSession_->sources.end(),
+                std::uint64_t{0U},
+                [](const std::uint64_t total, const auto& source) {
+                    return total + static_cast<std::uint64_t>(source.descriptor.frameCount.value);
+                });
+            std::uint64_t completedFrames = 0U;
             const auto collect = [&](const std::size_t slot)
                 -> std::optional<std::vector<application::FrameLumaSignature>> {
                 const domain::ComparisonSource& source = activeSession_->sources[slot];
@@ -1475,10 +1603,7 @@ private:
                 for (std::int64_t frame = 0; frame < source.descriptor.frameCount.value; ++frame) {
                     const domain::FrameId frameId{frame};
                     domain::Result<internal::DecodedFrame> decoded =
-                        frame == 0 ? decoders_[slot]->decodeExact(frameId,
-                                                                  operation->cancellationRequested)
-                                   : decoders_[slot]->decodeSequential(
-                                         frameId, operation->cancellationRequested);
+                        decodeBlocking(slot, frameId, frame != 0, operation);
                     if (!decoded) {
                         collectionFailure = decoded.error();
                         return std::nullopt;
@@ -1493,6 +1618,10 @@ private:
                         return std::nullopt;
                     }
                     signatures.push_back(*signature);
+                    ++completedFrames;
+                    if ((completedFrames % 32U) == 0U || completedFrames == totalFrames) {
+                        postSequenceProgress(operation, completedFrames, totalFrames);
+                    }
                 }
                 return signatures;
             };
@@ -1569,7 +1698,7 @@ private:
             postCanceled(operation);
             return;
         }
-        closeDecoders();
+        closeDecodeActors();
         {
             std::scoped_lock lock(mutex_);
             if (latestFrameContext_.has_value() &&
@@ -1650,11 +1779,12 @@ private:
         if (worker_.joinable()) {
             worker_.join();
         }
-        closeDecoders();
+        closeDecodeActors();
     }
 
     platform::FrameBudget& frameBudget_;
     std::size_t queueCapacity_;
+    bool lowPriority_;
     std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<std::shared_ptr<ProviderOperation>> controlQueue_;
@@ -1670,15 +1800,16 @@ private:
     std::atomic<bool> interruptRequested_ = false;
     std::thread worker_;
 
-    std::vector<std::unique_ptr<internal::SoftwareDecoder>> decoders_;
+    std::vector<std::unique_ptr<internal::SourceDecodeActor>> decodeActors_;
     std::optional<ActiveSession> activeSession_;
     std::deque<SetTableEntry> setTable_;
     std::uint64_t nextSetInsertionOrder_ = 0;
 };
 
 MultiSourceFrameProvider::MultiSourceFrameProvider(platform::FrameBudget& frameBudget,
-                                                   const std::size_t requestCapacity)
-    : impl_(std::make_unique<Impl>(frameBudget, requestCapacity)) {}
+                                                   const std::size_t requestCapacity,
+                                                   const bool lowPriority)
+    : impl_(std::make_unique<Impl>(frameBudget, requestCapacity, lowPriority)) {}
 
 MultiSourceFrameProvider::~MultiSourceFrameProvider() = default;
 
@@ -1714,6 +1845,10 @@ MultiSourceFrameProvider::submit(const application::FrameProviderCloseRequest& r
 
 void MultiSourceFrameProvider::cancel(const application::PlaybackRequestContext& context) noexcept {
     impl_->cancel(context);
+}
+
+std::vector<std::thread::id> MultiSourceFrameProvider::decodeWorkerIdsForTesting() const {
+    return impl_->decodeWorkerIdsForTesting();
 }
 
 } // namespace dvs::media

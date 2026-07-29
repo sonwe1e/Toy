@@ -113,6 +113,43 @@ struct SequenceAlignmentAnalyzed final {
     std::vector<SequenceAlignmentResult> results;
 };
 
+struct AlignmentAnalysisStarted final {
+    AlignmentAnalysisJobId jobId;
+    PlaybackRequestContext context;
+    AlignmentAnalysisKind kind;
+    std::uint64_t totalFrames = 0U;
+};
+
+struct AlignmentAnalysisProgress final {
+    AlignmentAnalysisJobId jobId;
+    PlaybackRequestContext context;
+    AlignmentAnalysisKind kind;
+    std::uint64_t completedFrames = 0U;
+    std::uint64_t totalFrames = 0U;
+};
+
+struct AlignmentAnalysisCompleted final {
+    AlignmentAnalysisJobId jobId;
+    PlaybackRequestContext context;
+    AlignmentAnalysisKind kind;
+    std::vector<GlobalOffsetEstimate> estimates;
+    std::vector<SequenceAlignmentResult> sequenceResults;
+};
+
+struct AlignmentAnalysisCanceled final {
+    AlignmentAnalysisJobId jobId;
+    PlaybackRequestContext context;
+    AlignmentAnalysisKind kind;
+    CancellationReason reason;
+};
+
+struct AlignmentAnalysisFailed final {
+    AlignmentAnalysisJobId jobId;
+    PlaybackRequestContext context;
+    AlignmentAnalysisKind kind;
+    domain::MediaError error;
+};
+
 struct GraphicsDeviceReady final {
     GraphicsEventContext context;
 };
@@ -178,6 +215,11 @@ using ApplicationEvent = std::variant<RequestTerminal,
                                       FrameSetPresented,
                                       AlignmentEstimated,
                                       SequenceAlignmentAnalyzed,
+                                      AlignmentAnalysisStarted,
+                                      AlignmentAnalysisProgress,
+                                      AlignmentAnalysisCompleted,
+                                      AlignmentAnalysisCanceled,
+                                      AlignmentAnalysisFailed,
                                       GraphicsDeviceReady,
                                       GraphicsDeviceUnavailable,
                                       GraphicsDeviceLost,

@@ -11,6 +11,17 @@
 
 namespace dvs::application {
 
+struct AlignmentAnalysisJobId final {
+    std::uint64_t value = 0U;
+
+    [[nodiscard]] constexpr bool operator==(const AlignmentAnalysisJobId&) const = default;
+};
+
+enum class AlignmentAnalysisKind {
+    GlobalOffset,
+    Sequence,
+};
+
 inline constexpr std::size_t kAlignmentSignatureWidth = 16U;
 inline constexpr std::size_t kAlignmentSignatureHeight = 9U;
 inline constexpr std::size_t kAlignmentSignaturePixels =
@@ -116,6 +127,30 @@ struct SequenceAlignmentResult final {
     bool autoApplicable = false;
 
     [[nodiscard]] bool operator==(const SequenceAlignmentResult&) const = default;
+};
+
+// UI-facing analysis projection. It intentionally excludes the O(N) entries vector; the
+// coordinator retains that immutable mapping internally and snapshots carry only bounded review
+// evidence needed by the 16 ms projection path.
+struct SequenceAlignmentLowConfidenceRun final {
+    domain::FrameId firstCanonicalFrame{0};
+    domain::FrameId lastCanonicalFrame{0};
+    float minimumConfidence = 0.0F;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentLowConfidenceRun&) const = default;
+};
+
+struct SequenceAlignmentSummary final {
+    domain::SourceId sourceId = 0;
+    std::vector<SequenceAlignmentAnomaly> anomalies;
+    std::size_t anomalyCount = 0U;
+    std::vector<SequenceAlignmentLowConfidenceRun> lowConfidenceRuns;
+    float totalCost = 0.0F;
+    float meanMatchCost = 1.0F;
+    float confidence = 0.0F;
+    bool autoApplicable = false;
+
+    [[nodiscard]] bool operator==(const SequenceAlignmentSummary&) const = default;
 };
 
 struct ManualAlignmentAnchor final {
