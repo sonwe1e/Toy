@@ -1,0 +1,468 @@
+#include "SourceDecodeActor.h"
+
+#include "dvs/domain/MediaError.h"
+
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <algorithm>
+#include <chrono>
+#include <exception>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace dvs::media::internal {
+namespace {
+
+constexpr std::size_t kExactCapacity = 1U;
+constexpr std::size_t kSequentialCapacity = 2U;
+constexpr std::size_t kPrefetchCapacity = 8U;
+constexpr std::uint8_t kMaximumReadAheadCount = 4U;
+
+[[nodiscard]] domain::MediaError
+actorError(const domain::SourceId sourceId, std::string detail, const bool recoverable = true) {
+    return domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                  domain::MediaOperation::kMediaDecode,
+                                  sourceId,
+                                  recoverable,
+                                  std::move(detail));
+}
+
+[[nodiscard]] std::size_t capacityFor(const SourceDecodePriority priority) noexcept {
+    switch (priority) {
+    case SourceDecodePriority::Exact:
+        return kExactCapacity;
+    case SourceDecodePriority::Sequential:
+        return kSequentialCapacity;
+    case SourceDecodePriority::Prefetch:
+        return kPrefetchCapacity;
+    }
+    std::terminate();
+}
+
+[[nodiscard]] bool olderPlaybackContext(const application::FrameRequestContext& candidate,
+                                        const application::FrameRequestContext& newest) noexcept {
+    const auto& candidatePlayback = candidate.playback;
+    const auto& newestPlayback = newest.playback;
+    return candidatePlayback.request.sessionId == newestPlayback.request.sessionId &&
+           candidatePlayback.request.sessionEpoch == newestPlayback.request.sessionEpoch &&
+           candidatePlayback.playbackGeneration.value() < newestPlayback.playbackGeneration.value();
+}
+
+} // namespace
+
+SourceDecodeActor::SourceDecodeActor(const domain::SourceId sourceId,
+                                     domain::MediaDescriptor descriptor,
+                                     platform::FrameBudget& frameBudget,
+                                     const std::atomic<bool>* const externalInterrupt,
+                                     const bool lowPriority,
+                                     const std::size_t cacheCapacityBytes,
+                                     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
+    : sourceId_(sourceId), sourceFrameCount_(descriptor.frameCount.value),
+      decoder_(std::make_unique<SoftwareDecoder>(
+          sourceId, descriptor, frameBudget, externalInterrupt, std::move(deviceBroker))),
+      worker_([this] { run(); }), backendStatus_{.sourceId = sourceId}, cache_(cacheCapacityBytes),
+      cacheKey_{
+          .sourceFingerprint = descriptor.sourceIdentity.has_value()
+                                   ? descriptor.sourceIdentity->fingerprintSha256
+                                   : descriptor.normalizedPath.generic_string(),
+          .sourceFrame = domain::FrameId{0},
+          .profile =
+              NormalizationProfile{
+                  .format = descriptor.bitDepth == 10U ? application::NormalizedFrameFormat::P010_10
+                                                       : application::NormalizedFrameFormat::Nv12_8,
+                  .width = descriptor.extent.width,
+                  .height = descriptor.extent.height,
+              },
+      } {
+    if (lowPriority) {
+        static_cast<void>(SetThreadPriority(worker_.native_handle(), THREAD_PRIORITY_BELOW_NORMAL));
+    }
+    std::unique_lock lock{mutex_};
+    condition_.wait(lock, [this] { return started_; });
+}
+
+SourceDecodeActor::~SourceDecodeActor() {
+    shutdown();
+}
+
+domain::Status SourceDecodeActor::open(const std::atomic<bool>& cancellationRequested) {
+    ControlJob job{
+        .kind = ControlKind::Open,
+        .cancellationRequested = &cancellationRequested,
+    };
+    std::future<domain::Status> completion = job.completion.get_future();
+    {
+        std::scoped_lock lock{mutex_};
+        if (stopping_) {
+            return domain::Status::failure(
+                actorError(sourceId_, "The source decode actor is closed."));
+        }
+        controlQueue_.push_back(std::move(job));
+    }
+    condition_.notify_one();
+    return completion.get();
+}
+
+SourceDecodeSubmission SourceDecodeActor::submit(SourceDecodeRequest request) {
+    if (request.cancellationRequested == nullptr || !request.frameId.isValid() ||
+        request.readAheadCount > kMaximumReadAheadCount) {
+        return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+    }
+
+    DecodeJob job{.request = std::move(request)};
+    std::future<domain::Result<DecodedFrame>> completion = job.completion.get_future();
+    std::vector<DecodeJob> displaced;
+    {
+        std::scoped_lock lock{mutex_};
+        if (stopping_) {
+            return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+        }
+
+        if (job.request.context.has_value()) {
+            if (latestContext_.has_value() &&
+                olderPlaybackContext(*job.request.context, *latestContext_)) {
+                return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+            }
+            if (!latestContext_.has_value() ||
+                olderPlaybackContext(*latestContext_, *job.request.context)) {
+                latestContext_ = job.request.context;
+                const auto discardOlder = [this, &displaced](std::deque<DecodeJob>& queue) {
+                    auto iterator = queue.begin();
+                    while (iterator != queue.end()) {
+                        if (iterator->request.context.has_value() &&
+                            olderPlaybackContext(*iterator->request.context, *latestContext_)) {
+                            displaced.push_back(std::move(*iterator));
+                            iterator = queue.erase(iterator);
+                        } else {
+                            ++iterator;
+                        }
+                    }
+                };
+                discardOlder(exactQueue_);
+                discardOlder(sequentialQueue_);
+                discardOlder(prefetchQueue_);
+            }
+        }
+
+        if (job.request.priority == SourceDecodePriority::Exact) {
+            while (!prefetchQueue_.empty()) {
+                displaced.push_back(std::move(prefetchQueue_.front()));
+                prefetchQueue_.pop_front();
+            }
+        }
+
+        std::deque<DecodeJob>& queue = queueFor(job.request.priority);
+        while (queue.size() >= capacityFor(job.request.priority)) {
+            displaced.push_back(std::move(queue.front()));
+            queue.pop_front();
+        }
+        queue.push_back(std::move(job));
+    }
+    for (DecodeJob& canceled : displaced) {
+        completeCanceled(std::move(canceled));
+    }
+    condition_.notify_one();
+    return SourceDecodeSubmission{
+        .status = application::PortSubmitResult::Accepted,
+        .completion = std::move(completion),
+    };
+}
+
+void SourceDecodeActor::close() noexcept {
+    ControlJob job{.kind = ControlKind::Close};
+    std::future<domain::Status> completion = job.completion.get_future();
+    {
+        std::scoped_lock lock{mutex_};
+        if (stopping_) {
+            return;
+        }
+        cancelQueuedLocked();
+        controlQueue_.push_back(std::move(job));
+    }
+    requestInterrupt();
+    condition_.notify_one();
+    static_cast<void>(completion.get());
+}
+
+void SourceDecodeActor::requestInterrupt() noexcept {
+    decoder_->requestInterrupt();
+}
+
+void SourceDecodeActor::shutdown() noexcept {
+    {
+        std::scoped_lock lock{mutex_};
+        if (stopping_) {
+            return;
+        }
+        stopping_ = true;
+        cancelQueuedLocked();
+    }
+    requestInterrupt();
+    condition_.notify_all();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
+}
+
+std::thread::id SourceDecodeActor::workerThreadId() const noexcept {
+    std::scoped_lock lock{mutex_};
+    return workerThreadId_;
+}
+
+std::thread::id SourceDecodeActor::lastDecodeThreadId() const noexcept {
+    std::scoped_lock lock{mutex_};
+    return lastDecodeThreadId_;
+}
+
+std::uint64_t SourceDecodeActor::completedDecodeCount() const noexcept {
+    std::scoped_lock lock{mutex_};
+    return completedDecodeCount_;
+}
+
+media::DecoderBackendStatus SourceDecodeActor::backendStatus() const {
+    std::scoped_lock lock{mutex_};
+    return backendStatus_;
+}
+
+std::deque<SourceDecodeActor::DecodeJob>&
+SourceDecodeActor::queueFor(const SourceDecodePriority priority) noexcept {
+    switch (priority) {
+    case SourceDecodePriority::Exact:
+        return exactQueue_;
+    case SourceDecodePriority::Sequential:
+        return sequentialQueue_;
+    case SourceDecodePriority::Prefetch:
+        return prefetchQueue_;
+    }
+    std::terminate();
+}
+
+bool SourceDecodeActor::hasPendingLocked() const noexcept {
+    return !controlQueue_.empty() || !exactQueue_.empty() || !sequentialQueue_.empty() ||
+           !prefetchQueue_.empty();
+}
+
+std::optional<SourceDecodeActor::DecodeJob> SourceDecodeActor::takeNextDecodeLocked() {
+    const auto take = [](std::deque<DecodeJob>& queue) -> std::optional<DecodeJob> {
+        if (queue.empty()) {
+            return std::nullopt;
+        }
+        DecodeJob job = std::move(queue.front());
+        queue.pop_front();
+        return job;
+    };
+    if (std::optional<DecodeJob> job = take(exactQueue_)) {
+        return job;
+    }
+    if (std::optional<DecodeJob> job = take(sequentialQueue_)) {
+        return job;
+    }
+    return take(prefetchQueue_);
+}
+
+void SourceDecodeActor::run() noexcept {
+    {
+        std::scoped_lock lock{mutex_};
+        workerThreadId_ = std::this_thread::get_id();
+        started_ = true;
+    }
+    condition_.notify_all();
+
+    for (;;) {
+        std::optional<ControlJob> control;
+        std::optional<DecodeJob> decode;
+        {
+            std::unique_lock lock{mutex_};
+            condition_.wait(lock, [this] { return stopping_ || hasPendingLocked(); });
+            if (stopping_) {
+                break;
+            }
+            if (!controlQueue_.empty()) {
+                control = std::move(controlQueue_.front());
+                controlQueue_.pop_front();
+            } else {
+                decode = takeNextDecodeLocked();
+            }
+        }
+
+        if (control.has_value()) {
+            if (control->kind == ControlKind::Open && control->cancellationRequested != nullptr) {
+                domain::Status status = decoder_->open(*control->cancellationRequested);
+                {
+                    std::scoped_lock lock{mutex_};
+                    completedDecodeCount_ = 0U;
+                    cacheHitCount_ = 0U;
+                    totalDecodeMicroseconds_ = 0U;
+                    maximumDecodeMicroseconds_ = 0U;
+                    backendStatus_ = media::DecoderBackendStatus{
+                        .sourceId = sourceId_,
+                        .backend = decoder_->backend(),
+                        .fallbackReason = decoder_->fallbackReason(),
+                        .deviceGeneration = decoder_->deviceGeneration(),
+                    };
+                }
+                control->completion.set_value(std::move(status));
+            } else {
+                decoder_->close();
+                cache_.clear();
+                {
+                    std::scoped_lock lock{mutex_};
+                    backendStatus_ = media::DecoderBackendStatus{.sourceId = sourceId_};
+                }
+                control->completion.set_value(domain::Status::success());
+            }
+            continue;
+        }
+        if (!decode.has_value()) {
+            continue;
+        }
+
+        const bool retainInCache = decode->request.priority == SourceDecodePriority::Exact ||
+                                   decode->request.priority == SourceDecodePriority::Prefetch;
+        const auto recordDecode = [this](const std::uint64_t decodeMicroseconds) {
+            std::scoped_lock lock{mutex_};
+            lastDecodeThreadId_ = std::this_thread::get_id();
+            ++completedDecodeCount_;
+            totalDecodeMicroseconds_ += decodeMicroseconds;
+            maximumDecodeMicroseconds_ = std::max(maximumDecodeMicroseconds_, decodeMicroseconds);
+            backendStatus_ = media::DecoderBackendStatus{
+                .sourceId = sourceId_,
+                .backend = decoder_->backend(),
+                .fallbackReason = decoder_->fallbackReason(),
+                .deviceGeneration = decoder_->deviceGeneration(),
+                .completedDecodeCount = completedDecodeCount_,
+                .cacheHitCount = cacheHitCount_,
+                .exactSeekCount = decoder_->exactSeekCount(),
+                .totalDecodeMicroseconds = totalDecodeMicroseconds_,
+                .maximumDecodeMicroseconds = maximumDecodeMicroseconds_,
+            };
+        };
+        const auto fillReadAhead = [this, &decode, &recordDecode](const std::size_t frameBytes) {
+            if (decode->request.priority != SourceDecodePriority::Sequential ||
+                decode->request.readAheadCount == 0U || frameBytes == 0U) {
+                return;
+            }
+            const std::size_t cacheFrameCapacity = cache_.capacityBytes() / frameBytes;
+            // A one-frame cache cannot provide meaningful look-ahead and requires an extra
+            // transient allocation before it can evict its current entry. At 4K P010 that
+            // transient overlaps render-generation retirement and can exhaust the shared budget.
+            if (cacheFrameCapacity < 2U) {
+                cache_.clear();
+                return;
+            }
+            const std::uint8_t effectiveReadAhead = static_cast<std::uint8_t>(
+                std::min<std::size_t>(decode->request.readAheadCount, cacheFrameCapacity));
+            for (std::uint8_t offset = 1U; offset <= effectiveReadAhead; ++offset) {
+                bool urgentWorkQueued = false;
+                {
+                    const std::scoped_lock lock{mutex_};
+                    urgentWorkQueued = stopping_ || !controlQueue_.empty() ||
+                                       !exactQueue_.empty() || !sequentialQueue_.empty();
+                }
+                if (urgentWorkQueued ||
+                    decode->request.cancellationRequested->load(std::memory_order_acquire)) {
+                    break;
+                }
+
+                const std::int64_t base = decode->request.frameId.value();
+                if (base > (std::numeric_limits<std::int64_t>::max)() - offset) {
+                    break;
+                }
+                const domain::FrameId candidate{base + offset};
+                if (candidate.value() >= sourceFrameCount_) {
+                    break;
+                }
+                cacheKey_.sourceFrame = candidate;
+                if (cache_.find(cacheKey_).has_value()) {
+                    continue;
+                }
+
+                const auto started = std::chrono::steady_clock::now();
+                domain::Result<DecodedFrame> result =
+                    decoder_->decodeSequential(candidate, *decode->request.cancellationRequested);
+                const auto elapsed = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        std::chrono::steady_clock::now() - started)
+                        .count());
+                recordDecode(elapsed);
+                if (!result) {
+                    break;
+                }
+                cache_.insert(cacheKey_,
+                              CachedSourceFrame{
+                                  .handle = result.value().handle,
+                                  .presentationTime = result.value().presentationTime,
+                              });
+            }
+        };
+        cacheKey_.sourceFrame = decode->request.frameId;
+        if (std::optional<CachedSourceFrame> cached = cache_.find(cacheKey_)) {
+            {
+                std::scoped_lock lock{mutex_};
+                ++cacheHitCount_;
+                backendStatus_.cacheHitCount = cacheHitCount_;
+            }
+            fillReadAhead(cached->handle.accountedBytes());
+            decode->completion.set_value(domain::Result<DecodedFrame>::success(DecodedFrame{
+                .handle = std::move(cached->handle),
+                .presentationTime = cached->presentationTime,
+            }));
+            continue;
+        }
+
+        const bool preferSequentialDecode =
+            decode->request.continueSequentially ||
+            decode->request.priority == SourceDecodePriority::Prefetch;
+        const auto decodeStarted = std::chrono::steady_clock::now();
+        domain::Result<DecodedFrame> result =
+            preferSequentialDecode
+                ? decoder_->decodeSequential(decode->request.frameId,
+                                             *decode->request.cancellationRequested)
+                : decoder_->decodeExact(decode->request.frameId,
+                                        *decode->request.cancellationRequested);
+        const auto decodeMicroseconds =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                           std::chrono::steady_clock::now() - decodeStarted)
+                                           .count());
+        if (retainInCache && result) {
+            cache_.insert(cacheKey_,
+                          CachedSourceFrame{
+                              .handle = result.value().handle,
+                              .presentationTime = result.value().presentationTime,
+                          });
+        }
+        recordDecode(decodeMicroseconds);
+        if (result) {
+            fillReadAhead(result.value().handle.accountedBytes());
+        }
+        decode->completion.set_value(std::move(result));
+    }
+    decoder_->close();
+}
+
+void SourceDecodeActor::cancelQueuedLocked() {
+    const auto cancel = [this](std::deque<DecodeJob>& queue) {
+        while (!queue.empty()) {
+            DecodeJob job = std::move(queue.front());
+            queue.pop_front();
+            completeCanceled(std::move(job));
+        }
+    };
+    cancel(exactQueue_);
+    cancel(sequentialQueue_);
+    cancel(prefetchQueue_);
+}
+
+void SourceDecodeActor::completeCanceled(DecodeJob job) noexcept {
+    try {
+        job.completion.set_value(domain::Result<DecodedFrame>::failure(
+            actorError(sourceId_, "The queued source decode request was superseded.")));
+    } catch (...) {
+    }
+}
+
+} // namespace dvs::media::internal

@@ -1,0 +1,194 @@
+#pragma once
+
+#include <QQuickItem>
+
+#include <memory>
+
+namespace dvs::platform {
+class FrameMailbox;
+class GraphicsDeviceBroker;
+class IRenderActivitySink;
+class PresentationAckMailbox;
+} // namespace dvs::platform
+
+namespace dvs::ui {
+
+class ComparisonRenderNode;
+
+// Thin Qt Quick synchronization boundary. All D3D resources and rendering behavior remain owned
+// by the platform renderer living in the scene-graph node.
+// Qt's QML type wrapper derives from registered C++ elements, so this visual boundary cannot be
+// final even though production code does not subclass it directly.
+class ComparisonSurface : public QQuickItem {
+    Q_OBJECT
+
+    Q_PROPERTY(ViewMode viewMode READ viewMode WRITE setViewMode NOTIFY viewModeChanged)
+    Q_PROPERTY(DifferenceMetric differenceMetric READ differenceMetric WRITE setDifferenceMetric
+                   NOTIFY differenceMetricChanged)
+    Q_PROPERTY(DifferenceGain differenceGain READ differenceGain WRITE setDifferenceGain NOTIFY
+                   differenceGainChanged)
+    Q_PROPERTY(DifferenceEdge differenceEdge READ differenceEdge WRITE setDifferenceEdge NOTIFY
+                   differenceEdgeChanged)
+    Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
+                   NOTIFY differenceFilterChanged)
+    Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
+                   exactPlaneAvailableChanged)
+    Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
+                   thresholdChanged)
+    Q_PROPERTY(qreal threshold READ threshold WRITE setThreshold NOTIFY thresholdChanged)
+    Q_PROPERTY(ThresholdPolicy thresholdPolicy READ thresholdPolicy WRITE setThresholdPolicy NOTIFY
+                   thresholdChanged)
+    Q_PROPERTY(qreal viewCenterX READ viewCenterX NOTIFY viewportChanged)
+    Q_PROPERTY(qreal viewCenterY READ viewCenterY NOTIFY viewportChanged)
+    Q_PROPERTY(qreal viewScale READ viewScale NOTIFY viewportChanged)
+    Q_PROPERTY(bool roiEnabled READ roiEnabled NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiLeft READ roiLeft NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiTop READ roiTop NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiRight READ roiRight NOTIFY viewportChanged)
+    Q_PROPERTY(qreal roiBottom READ roiBottom NOTIFY viewportChanged)
+    Q_PROPERTY(
+        int referenceSlot READ referenceSlot WRITE setReferenceSlot NOTIFY referenceSlotChanged)
+
+public:
+    enum ViewMode {
+        SideBySide,
+        ThreeUp,
+        ReferenceFocus,
+        Difference,
+        AnalysisGrid,
+    };
+    Q_ENUM(ViewMode)
+
+    enum DifferenceMetric {
+        RgbAbsolute,
+        Luma,
+        Chroma,
+        Heatmap,
+        ExactPlanes,
+    };
+    Q_ENUM(DifferenceMetric)
+
+    enum DifferenceGain {
+        Gain1x,
+        Gain2x,
+        Gain4x,
+        Gain8x,
+        Gain16x,
+    };
+    Q_ENUM(DifferenceGain)
+
+    // Selects which two source slots the difference view compares (slot order = session
+    // source order).
+    enum DifferenceEdge {
+        Edge0And1,
+        Edge0And2,
+        Edge1And2,
+    };
+    Q_ENUM(DifferenceEdge)
+
+    enum DifferenceFilter {
+        Nearest,
+        Bilinear,
+        Bicubic,
+    };
+    Q_ENUM(DifferenceFilter)
+
+    enum ThresholdPolicy {
+        ThresholdLumaOnly,
+        ThresholdAnyChannel,
+        ThresholdAllChannels,
+    };
+    Q_ENUM(ThresholdPolicy)
+
+    explicit ComparisonSurface(QQuickItem* parent = nullptr);
+    ~ComparisonSurface() override;
+
+    ComparisonSurface(const ComparisonSurface&) = delete;
+    ComparisonSurface& operator=(const ComparisonSurface&) = delete;
+
+    [[nodiscard]] ViewMode viewMode() const noexcept;
+    void setViewMode(ViewMode value);
+    [[nodiscard]] DifferenceMetric differenceMetric() const noexcept;
+    void setDifferenceMetric(DifferenceMetric value);
+    [[nodiscard]] DifferenceGain differenceGain() const noexcept;
+    void setDifferenceGain(DifferenceGain value);
+    [[nodiscard]] DifferenceEdge differenceEdge() const noexcept;
+    void setDifferenceEdge(DifferenceEdge value);
+    [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
+    void setDifferenceFilter(DifferenceFilter value);
+    [[nodiscard]] bool exactPlaneAvailable() const noexcept;
+    void setExactPlaneAvailable(bool value);
+    [[nodiscard]] bool thresholdEnabled() const noexcept;
+    void setThresholdEnabled(bool value);
+    [[nodiscard]] qreal threshold() const noexcept;
+    void setThreshold(qreal value);
+    [[nodiscard]] ThresholdPolicy thresholdPolicy() const noexcept;
+    void setThresholdPolicy(ThresholdPolicy value);
+    [[nodiscard]] qreal viewCenterX() const noexcept;
+    [[nodiscard]] qreal viewCenterY() const noexcept;
+    [[nodiscard]] qreal viewScale() const noexcept;
+    [[nodiscard]] bool roiEnabled() const noexcept;
+    [[nodiscard]] qreal roiLeft() const noexcept;
+    [[nodiscard]] qreal roiTop() const noexcept;
+    [[nodiscard]] qreal roiRight() const noexcept;
+    [[nodiscard]] qreal roiBottom() const noexcept;
+    [[nodiscard]] int referenceSlot() const noexcept;
+    void setReferenceSlot(int value);
+
+    Q_INVOKABLE void zoomAt(qreal normalizedX, qreal normalizedY, qreal factor);
+    Q_INVOKABLE void panBy(qreal normalizedDeltaX, qreal normalizedDeltaY);
+    Q_INVOKABLE void resetViewport();
+    Q_INVOKABLE void setRoiNormalized(qreal left, qreal top, qreal right, qreal bottom);
+    Q_INVOKABLE void clearRoi();
+
+    [[nodiscard]] bool
+    attachRendererServices(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
+                           std::shared_ptr<platform::FrameMailbox> frameMailbox,
+                           std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox,
+                           std::weak_ptr<platform::IRenderActivitySink> activitySink);
+    void detachRendererServices() noexcept;
+    [[nodiscard]] bool hasRendererServices() const noexcept;
+
+signals:
+    void viewModeChanged();
+    void differenceMetricChanged();
+    void differenceGainChanged();
+    void differenceEdgeChanged();
+    void differenceFilterChanged();
+    void exactPlaneAvailableChanged();
+    void thresholdChanged();
+    void viewportChanged();
+    void referenceSlotChanged();
+
+protected:
+    [[nodiscard]] QSGNode* updatePaintNode(QSGNode* oldNode,
+                                           UpdatePaintNodeData* updateData) override;
+    void geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) override;
+
+private:
+    friend class ComparisonRenderNode;
+
+    class Services;
+
+    std::shared_ptr<const Services> services_;
+    ViewMode viewMode_ = SideBySide;
+    DifferenceMetric differenceMetric_ = RgbAbsolute;
+    DifferenceGain differenceGain_ = Gain1x;
+    DifferenceEdge differenceEdge_ = Edge0And1;
+    DifferenceFilter differenceFilter_ = Bilinear;
+    bool exactPlaneAvailable_ = false;
+    bool thresholdEnabled_ = false;
+    qreal threshold_ = 0.0;
+    ThresholdPolicy thresholdPolicy_ = ThresholdAnyChannel;
+    qreal viewCenterX_ = 0.5;
+    qreal viewCenterY_ = 0.5;
+    qreal viewScale_ = 1.0;
+    bool roiEnabled_ = false;
+    qreal roiLeft_ = 0.0;
+    qreal roiTop_ = 0.0;
+    qreal roiRight_ = 1.0;
+    qreal roiBottom_ = 1.0;
+    int referenceSlot_ = 0;
+};
+
+} // namespace dvs::ui

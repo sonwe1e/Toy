@@ -1,0 +1,164 @@
+# DualVideoStudio
+
+DualVideoStudio is a Windows-only C++20 and Qt Quick application being rebuilt as a
+**VFI-dedicated video comparator**: it natively compares 2–3 videos on the same
+canonical frame position — a Reference and one or two model predictions — with
+explicit time alignment, frame-exact navigation, and pairwise difference maps for
+any two selected sources.
+
+The governing plan for this rebuild is [USERPLAN.md](USERPLAN.md). Progress is staged
+in phases on the `refactor/unified-comparator` branch:
+
+| Phase | Scope | Status |
+|---|---|---|
+| 0 | Repository root promotion, legacy archive, docs, CI split | done |
+| 1 | Prune export/clip/proxy scope | done |
+| 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | done |
+| 3 | Parallel per-source decode, three-up/reference-focus layouts, selectable difference edges | done |
+| 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | done |
+| 5 | Extended difference and analysis layouts | done |
+| 6 | Advanced analysis, 10-bit/P010, format normalization, D3D11VA, performance | done |
+
+`legacy/` contains the retired `DualVideoTool` and the `video-compare` fork as
+interaction and algorithm references only; neither is part of the CMake build.
+
+## Requirements
+
+- Windows x64 with Visual Studio 2022 (BuildTools suffice) and the MSVC v143 toolchain
+- CMake 4.4 or newer and single-config Ninja
+- Dependencies from the vcpkg manifest: FFmpeg 8.1.2 (avcodec/avformat/swscale),
+  Qt 6.11 (Base, Declarative, ShaderTools), GoogleTest, nlohmann-json
+
+Build output, downloaded tools, test results, and packages stay below the untracked
+`out/` directory. A populated `out/vcpkg` installed-tree is reused without rebuilding
+when present; otherwise manifest mode installs it on first configure.
+
+## Build and Test
+
+Run commands from a Visual Studio developer shell at the repository root:
+
+```powershell
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev --output-on-failure
+cmake --build --preset dev --target format-check
+cmake --build --preset dev --target lint
+```
+
+Launch the development build after it succeeds:
+
+```powershell
+.\out\build\dev\bin\DualVideoStudio.exe
+```
+
+The UI opens two required sources and one optional third source as one atomic comparison
+set. Choose which source is the Reference, then use side-by-side, three-up,
+reference-focus, or Difference view; Difference can compare A/B, A/C, or B/C. Navigation
+uses **First**, **Previous**, **Next**, **Last** or the Home, Left, Right, and End keys.
+The UI stays disabled until the D3D11 scene graph is ready and reports source-specific
+validation or decode errors without replacing a previously presented frame.
+
+Strict index is the default: canonical frame `i` maps to frame `i` in every source.
+The alignment bar can apply a signed global frame offset to non-reference sources without
+reopening the media, or run **Auto align**. Automatic estimation samples low-resolution
+luma evidence, searches a bounded offset window, and combines structural, edge, and
+perceptual-hash distances. A clear winner is applied and re-presented atomically; an
+ambiguous winner is shown only as a confidence-scored suggestion. Out-of-range mappings
+become an explicit `Missing` source slot and are never clamped or silently replaced by a
+neighboring frame. Frame-rate, duration, resolution, and color differences remain visible
+as non-blocking compatibility warnings.
+
+**Find drops** performs a bounded-band, full-sequence alignment to identify missing,
+extra, and duplicated target frames. Confident mappings are applied atomically; ambiguous
+results remain suggestions. The operation accepts at most 50,000 frames by default and has
+a hard safety cap of 100,000 frames per source. **Anchors...** adds or replaces manual
+canonical-to-source frame pairs; anchors override automatic mappings and interpolate
+monotonically between points. The timeline marks missing frames in red, duplicates in
+orange, extra frames in purple, manual anchors in cyan, and the start of each low-confidence
+region in yellow. Strict reset clears offsets and anchors.
+
+For a deterministic headless GUI check using the software D3D11 device:
+
+```powershell
+.\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
+  .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
+  .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4
+```
+
+Pass a third path to exercise the complete three-source path:
+
+```powershell
+.\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
+  .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
+  .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4 `
+  .\tests\fixtures\media\h265_a_320x180_30fps_12.mp4
+```
+
+Developer diagnostics use the console-subsystem executable, so output and exit codes
+remain scriptable without making the desktop executable open a terminal:
+
+```powershell
+.\out\build\dev\bin\DualVideoStudio.exe --startup-check
+.\out\build\dev\bin\DualVideoStudioCli.exe --probe .\video.mp4
+```
+
+Use `release`, `dev-coverage`, or `asan` in place of `dev` for the corresponding
+workflow. The hardware layer contains real D3D11VA and decoder-surface zero-copy tests.
+The performance layer contains visible-window, three-source 1080p60 and 4K30 Main10
+five-minute gates. Point them at the six long-running fixtures and run:
+
+```powershell
+$env:DVS_PERFORMANCE_FIXTURE_ROOT = 'D:\dvs-performance-fixtures'
+ctest --preset hardware-d3d11 --output-on-failure
+ctest --preset performance-d3d11 --output-on-failure
+```
+
+`tools/run-performance-gate.ps1` is the shared local/runner entry point. It validates
+real presentation ACK continuity, source atomicity, D3D11VA backend selection, frame
+budget, thread stability, cold seek P95, warm adjacent stepping, analysis throughput,
+and bounded shutdown. Packaged and shutdown-soak layers remain separate release gates.
+
+## Runtime Tool Pinning
+
+The application bundles the reviewed GPL-enabled Gyan FFmpeg/ffprobe 8.1.2 essentials
+runtime. Its immutable GitHub release URL, archive digest, executable digests, license,
+publisher release, and upstream source commit are pinned in
+`tools/dependencies/ffmpeg-runtime.json`. Coverage tools remain unconfigured until an
+exact artifact is reviewed.
+
+`tools/bootstrap-runtime.ps1` is deliberately fail-closed. It refuses an unconfigured
+manifest, an unpinned version, a non-HTTPS URL, an invalid SHA-256, an unsafe archive,
+or a destination outside `out/tools`. It never falls back to a tool on `PATH` and never
+selects a latest release.
+
+Bootstrap the pinned FFmpeg component explicitly:
+
+```powershell
+.\tools\bootstrap-runtime.ps1 -Component Ffmpeg
+```
+
+Do not use `-Component All` until the coverage manifest is pinned. Existing destinations are
+reused only when their provenance matches; `-Force` is required for a reviewed
+replacement. The initial CI workflows do not download unpinned runtime tools.
+
+Native CI jobs require a self-hosted Windows x64 runner labeled `dvs-toolchain-4.4`,
+with the requirements above and either `VCPKG_ROOT` or `VCPKG_INSTALLATION_ROOT`
+configured. The runner must be 2.327.1 or newer because the pinned checkout action
+uses Node 24. Hardware gates additionally require `dvs-gpu`, an interactive desktop,
+and the repository variable `DVS_PERFORMANCE_FIXTURE_ROOT`. See
+[docs/self-hosted-runner.md](docs/self-hosted-runner.md) for the pinned runner download,
+fixture contract, registration commands, and public-repository safety boundary.
+
+## Repository Layout
+
+Core rules live in `src/domain` and orchestration in `src/application`. Windows
+infrastructure lives in `platform_windows`; FFmpeg, persistence, job, and QML adapters
+may use its services. Tests are grouped by layer under `tests/`; build helpers live in
+`cmake/`, scripts in `tools/`, packaging definitions in `packaging/`, and user-facing
+assets in `assets/`. Design documents live under `docs/` — see
+[docs/architecture.md](docs/architecture.md), [docs/alignment.md](docs/alignment.md),
+and [docs/media-support.md](docs/media-support.md) for the target design, and
+`docs/superpowers/` for the historical slice specs.
+
+See [AGENTS.md](AGENTS.md) for contributor commands, module boundaries, coding style,
+test gates, and pull-request evidence requirements.
