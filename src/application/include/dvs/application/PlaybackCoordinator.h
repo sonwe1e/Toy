@@ -4,6 +4,7 @@
 #include "dvs/application/Ports.h"
 #include "dvs/application/SessionSnapshot.h"
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -18,6 +19,9 @@ public:
         std::shared_ptr<IDeadlineScheduler> deadlineScheduler;
         std::shared_ptr<ISteadyClock> clock;
         std::shared_ptr<IRenderChannel> renderChannel;
+        // Invoked after an immutable snapshot or command terminal is published. The callback may
+        // run on the coordinator worker and must only enqueue GUI work.
+        std::function<void()> statePublished;
     };
 
     [[nodiscard]] static std::shared_ptr<PlaybackCoordinator> create(domain::SessionId sessionId,

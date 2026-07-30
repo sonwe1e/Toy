@@ -103,7 +103,7 @@ struct PreparedSetDraw final {
 [[nodiscard]] bool isValid(const SurfaceViewMode value) noexcept {
     return value == SurfaceViewMode::SideBySide || value == SurfaceViewMode::ThreeUp ||
            value == SurfaceViewMode::ReferenceFocus || value == SurfaceViewMode::Difference ||
-           value == SurfaceViewMode::AnalysisGrid;
+           value == SurfaceViewMode::AnalysisGrid || value == SurfaceViewMode::Wipe;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceMetric value) noexcept {
@@ -431,7 +431,8 @@ bool SurfaceRenderState::isValid() const noexcept {
            dvs::platform::isValid(differenceEdge) && dvs::platform::isValid(differenceFilter) &&
            dvs::platform::isValid(thresholdPolicy) && std::isfinite(threshold) &&
            threshold >= 0.0F && threshold <= 1.0F && viewTransform.isValid() &&
-           (!roiEnabled || roi.isValid()) && referenceSlot < 3U;
+           (!roiEnabled || roi.isValid()) && std::isfinite(wipePosition) && wipePosition >= 0.05F &&
+           wipePosition <= 0.95F && referenceSlot < 3U;
 }
 
 SurfaceSplitLayout computeSurfaceSplit(const float logicalWidth,
@@ -1125,6 +1126,52 @@ private:
             appendLetterboxBars(state, bounds, destination, prepared);
             return true;
         };
+        const auto appendWipe = [&](const SurfaceRect& bounds) {
+            const GpuFrameResource* leftFrame = frameA.get();
+            const D3d11GpuFrameBacking* leftBacking = backingA;
+            const GpuFrameResource* rightFrame = frameB.get();
+            const D3d11GpuFrameBacking* rightBacking = backingB;
+            if (state.differenceEdge == SurfaceDifferenceEdge::Between0And2) {
+                rightFrame = frameC.get();
+                rightBacking = backingC;
+            } else if (state.differenceEdge == SurfaceDifferenceEdge::Between1And2) {
+                leftFrame = frameB.get();
+                leftBacking = backingB;
+                rightFrame = frameC.get();
+                rightBacking = backingC;
+            }
+            if (!backingUsable(leftFrame, leftBacking) ||
+                !backingUsable(rightFrame, rightBacking)) {
+                if (prepared.letterboxBarCount < prepared.letterboxBars.size()) {
+                    prepared.letterboxBars[prepared.letterboxBarCount] =
+                        makeComposeConstants(state, bounds, application::TextureRegion{});
+                    ++prepared.letterboxBarCount;
+                }
+                return true;
+            }
+
+            const auto [contentWidth, contentHeight] =
+                transformedExtent(leftFrame->geometry(), state.roiEnabled, state.roi);
+            const SurfaceRect destination = aspectFitRectFloat(bounds, contentWidth, contentHeight);
+            if (!destination.isValid()) {
+                return false;
+            }
+            appendLetterboxBars(state, bounds, destination, prepared);
+
+            const float position = std::clamp(state.wipePosition, 0.05F, 0.95F);
+            VideoDraw left = makeVideoDraw(state, destination, *leftFrame, *leftBacking);
+            VideoDraw right = makeVideoDraw(state, destination, *rightFrame, *rightBacking);
+            left.compose.destinationRect[2U] *= position;
+            left.compose.sourceUvRect[2U] *= position;
+            right.compose.destinationRect[0U] += destination.width * position;
+            right.compose.destinationRect[2U] *= 1.0F - position;
+            right.compose.sourceUvRect[0U] += right.compose.sourceUvRect[2U] * position;
+            right.compose.sourceUvRect[2U] *= 1.0F - position;
+            prepared.videoDraws[0U] = std::move(left);
+            prepared.videoDraws[1U] = std::move(right);
+            prepared.videoDrawCount = 2U;
+            return true;
+        };
 
         prepared.publication = publication;
         if (state.viewMode == SurfaceViewMode::Difference) {
@@ -1132,6 +1179,15 @@ private:
             // unavailable, draw an explicit black unavailable canvas; the QML projection names
             // the missing source and canonical frame above it.
             if (!appendDifference(SurfaceRect{
+                    .x = 0.0F,
+                    .y = 0.0F,
+                    .width = state.logicalWidth,
+                    .height = state.logicalHeight,
+                })) {
+                return false;
+            }
+        } else if (state.viewMode == SurfaceViewMode::Wipe) {
+            if (!appendWipe(SurfaceRect{
                     .x = 0.0F,
                     .y = 0.0F,
                     .width = state.logicalWidth,

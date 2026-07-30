@@ -98,9 +98,9 @@ void printError(const dvs::domain::MediaError& error) {
 
 void printUsage() {
     std::cerr << "Usage:\n"
-              << "  DualVideoStudioCli --startup-check\n"
-              << "  DualVideoStudioCli --probe <source>\n"
-              << "  DualVideoStudioCli --compare <source-a> <source-b> "
+              << "  VCStationCli --startup-check\n"
+              << "  VCStationCli --probe <source>\n"
+              << "  VCStationCli --compare <source-a> <source-b> "
                  "[--frame <zero-based-frame>]\n";
 }
 

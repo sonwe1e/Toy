@@ -34,5 +34,19 @@ TEST(PrefetchSchedulerTests, TargetsStayInsideTheCanonicalTimeline) {
               (std::vector<domain::FrameId>{domain::FrameId{2}}));
 }
 
+TEST(PrefetchSchedulerTests, ExpandsTheForwardWindowForHighFrameRateReview) {
+    PrefetchScheduler scheduler;
+    EXPECT_EQ(scheduler.afterExact(domain::FrameId{10}, 100U, 6U, 2U),
+              std::vector<domain::FrameId>({domain::FrameId{11},
+                                            domain::FrameId{12},
+                                            domain::FrameId{13},
+                                            domain::FrameId{14},
+                                            domain::FrameId{15},
+                                            domain::FrameId{16},
+                                            domain::FrameId{9},
+                                            domain::FrameId{8}}));
+    EXPECT_EQ(scheduler.afterExact(domain::FrameId{11}, 100U, 12U, 3U).size(), 15U);
+}
+
 } // namespace
 } // namespace dvs::application

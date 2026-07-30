@@ -32,7 +32,7 @@ function(_dvs_require_llvm_tool_version executable toolName)
 
     if(NOT "${dvs_tool_version}" STREQUAL "${dvs_required_llvm_tool_version}")
         message(FATAL_ERROR
-            "DualVideoStudio requires ${toolName} ${dvs_required_llvm_tool_version}, but '${executable}' "
+            "VCStation requires ${toolName} ${dvs_required_llvm_tool_version}, but '${executable}' "
             "reports ${dvs_tool_version}.")
     endif()
 endfunction()
@@ -128,8 +128,8 @@ function(dvs_add_quality_targets)
     # production targets, so make the standalone lint command establish that prerequisite.
     add_dependencies(
         lint
-        DualVideoStudio
-        DualVideoStudioCli
+        VCStation
+        VCStationCli
         dvs_check_no_playback_qimage
     )
 

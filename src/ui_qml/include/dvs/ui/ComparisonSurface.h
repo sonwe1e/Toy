@@ -31,6 +31,8 @@ class ComparisonSurface : public QQuickItem {
                    differenceEdgeChanged)
     Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
                    NOTIFY differenceFilterChanged)
+    Q_PROPERTY(
+        qreal wipePosition READ wipePosition WRITE setWipePosition NOTIFY wipePositionChanged)
     Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
                    exactPlaneAvailableChanged)
     Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
@@ -56,6 +58,7 @@ public:
         ReferenceFocus,
         Difference,
         AnalysisGrid,
+        Wipe,
     };
     Q_ENUM(ViewMode)
 
@@ -116,6 +119,8 @@ public:
     void setDifferenceEdge(DifferenceEdge value);
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
     void setDifferenceFilter(DifferenceFilter value);
+    [[nodiscard]] qreal wipePosition() const noexcept;
+    void setWipePosition(qreal value);
     [[nodiscard]] bool exactPlaneAvailable() const noexcept;
     void setExactPlaneAvailable(bool value);
     [[nodiscard]] bool thresholdEnabled() const noexcept;
@@ -155,6 +160,7 @@ signals:
     void differenceGainChanged();
     void differenceEdgeChanged();
     void differenceFilterChanged();
+    void wipePositionChanged();
     void exactPlaneAvailableChanged();
     void thresholdChanged();
     void viewportChanged();
@@ -176,6 +182,7 @@ private:
     DifferenceGain differenceGain_ = Gain1x;
     DifferenceEdge differenceEdge_ = Edge0And1;
     DifferenceFilter differenceFilter_ = Bilinear;
+    qreal wipePosition_ = 0.5;
     bool exactPlaneAvailable_ = false;
     bool thresholdEnabled_ = false;
     qreal threshold_ = 0.0;

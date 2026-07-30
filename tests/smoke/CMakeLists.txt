@@ -3,7 +3,7 @@ dvs_add_test(
     LAYER e2e
     MODULE app
     TIMEOUT 10
-    COMMAND $<TARGET_FILE:DualVideoStudioCli> --startup-check
+    COMMAND $<TARGET_FILE:VCStationCli> --startup-check
 )
 
 dvs_add_test(
@@ -13,7 +13,7 @@ dvs_add_test(
     TIMEOUT 10
     COMMAND
         ${CMAKE_COMMAND}
-        "-DDVS_PE_EXECUTABLE=$<TARGET_FILE:DualVideoStudio>"
+        "-DDVS_PE_EXECUTABLE=$<TARGET_FILE:VCStation>"
         -DDVS_PE_EXPECTED_SUBSYSTEM=WINDOWS_GUI
         -P
         "${PROJECT_SOURCE_DIR}/cmake/VerifyPeSubsystem.cmake"
@@ -26,7 +26,7 @@ dvs_add_test(
     TIMEOUT 10
     COMMAND
         ${CMAKE_COMMAND}
-        "-DDVS_PE_EXECUTABLE=$<TARGET_FILE:DualVideoStudioCli>"
+        "-DDVS_PE_EXECUTABLE=$<TARGET_FILE:VCStationCli>"
         -DDVS_PE_EXPECTED_SUBSYSTEM=WINDOWS_CUI
         -P
         "${PROJECT_SOURCE_DIR}/cmake/VerifyPeSubsystem.cmake"
@@ -39,7 +39,7 @@ dvs_add_test(
     TIMEOUT 10
     COMMAND
         ${CMAKE_COMMAND}
-        "-DDVS_GUI_EXECUTABLE=$<TARGET_FILE:DualVideoStudio>"
+        "-DDVS_GUI_EXECUTABLE=$<TARGET_FILE:VCStation>"
         "-DDVS_TEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/fatal-startup"
         -P
         "${CMAKE_CURRENT_SOURCE_DIR}/VerifyFatalStartup.cmake"
@@ -52,7 +52,7 @@ dvs_add_test(
     TIMEOUT 10
     COMMAND
         ${CMAKE_COMMAND}
-        "-DDVS_CLI_EXECUTABLE=$<TARGET_FILE:DualVideoStudioCli>"
+        "-DDVS_CLI_EXECUTABLE=$<TARGET_FILE:VCStationCli>"
         "-DDVS_SOURCE_A=${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
         "-DDVS_SOURCE_B=${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
         -P
@@ -65,7 +65,7 @@ dvs_add_test(
     MODULE app
     TIMEOUT 40
     COMMAND
-        $<TARGET_FILE:DualVideoStudio>
+        $<TARGET_FILE:VCStation>
         --ui-smoke
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
@@ -77,7 +77,7 @@ dvs_add_test(
     MODULE app
     TIMEOUT 40
     COMMAND
-        $<TARGET_FILE:DualVideoStudio>
+        $<TARGET_FILE:VCStation>
         --ui-smoke
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
@@ -91,7 +91,7 @@ dvs_add_test(
     LAYER e2e
     MODULE app
     TIMEOUT 9
-    COMMAND $<TARGET_FILE:DualVideoStudio> --ui-smoke
+    COMMAND $<TARGET_FILE:VCStation> --ui-smoke
 )
 
 dvs_add_test(
@@ -100,7 +100,7 @@ dvs_add_test(
     MODULE app
     TIMEOUT 9
     COMMAND
-        $<TARGET_FILE:DualVideoStudio>
+        $<TARGET_FILE:VCStation>
         --ui-shutdown-smoke
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
@@ -112,10 +112,46 @@ dvs_add_test(
     MODULE app
     TIMEOUT 10
     COMMAND
-        $<TARGET_FILE:DualVideoStudioCli>
+        $<TARGET_FILE:VCStationCli>
         --compare
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
         --frame
         11
+)
+
+dvs_add_test(
+    NAME package.msi-install-association
+    LAYER packaged
+    MODULE app
+    TIMEOUT 180
+    COMMAND
+        powershell.exe
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyMsiPackage.ps1"
+        -MsiPath "${PROJECT_SOURCE_DIR}/out/package/msi/VCStation-${PROJECT_VERSION}-windows-x64.msi"
+        -ExpectedVersion "${PROJECT_VERSION}"
+        -ProbeFixture
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+)
+
+dvs_add_test(
+    NAME app.shutdown-soak
+    LAYER soak
+    MODULE app
+    TIMEOUT 240
+    COMMAND
+        powershell.exe
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy Bypass
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/ShutdownSoak.ps1"
+        -Executable "$<TARGET_FILE:VCStation>"
+        -SourceA
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+        -SourceB
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
+        -Iterations 20
 )

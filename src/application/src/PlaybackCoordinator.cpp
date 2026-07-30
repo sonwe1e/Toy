@@ -637,6 +637,26 @@ private:
         }
     }
 
+    struct ExactPrefetchWindow final {
+        std::size_t ahead = 3U;
+        std::size_t behind = 1U;
+    };
+
+    [[nodiscard]] ExactPrefetchWindow exactPrefetchWindow() const noexcept {
+        if (!canonicalTimeline_.has_value()) {
+            return {};
+        }
+        const auto* const rate = std::get_if<domain::RationalRate>(&*canonicalTimeline_);
+        if (rate == nullptr) {
+            return {};
+        }
+        const double fps = rate->displayFps();
+        if (fps >= 100.0) {
+            return {.ahead = 12U, .behind = 3U};
+        }
+        return fps >= 50.0 ? ExactPrefetchWindow{.ahead = 6U, .behind = 2U} : ExactPrefetchWindow{};
+    }
+
     void publishSnapshot() {
         state_.alignmentOffsets = alignmentOffsets_;
         auto snapshot = std::make_shared<const SessionSnapshot>(state_);
@@ -645,23 +665,40 @@ private:
             sequenceMaps = std::make_shared<const std::vector<SequenceAlignmentResult>>(
                 sequenceAlignmentMaps_);
         }
-        std::scoped_lock lock(publicationMutex_);
-        if (sequenceMaps) {
-            publishedSequenceAlignmentMaps_ = std::move(sequenceMaps);
-            publishedSequenceAlignmentRevision_ = state_.alignmentRevision;
+        {
+            std::scoped_lock lock(publicationMutex_);
+            if (sequenceMaps) {
+                publishedSequenceAlignmentMaps_ = std::move(sequenceMaps);
+                publishedSequenceAlignmentRevision_ = state_.alignmentRevision;
+            }
+            publishedSnapshot_ = std::move(snapshot);
         }
-        publishedSnapshot_ = std::move(snapshot);
+        notifyStatePublished();
     }
 
     void completeCommand(const CommandContext& context,
                          const CommandOutcome outcome,
                          std::optional<domain::MediaError> error = std::nullopt) {
-        std::scoped_lock lock(publicationMutex_);
-        completedCommands_.push_back(CommandTerminal{
-            .context = context,
-            .outcome = outcome,
-            .error = std::move(error),
-        });
+        {
+            std::scoped_lock lock(publicationMutex_);
+            completedCommands_.push_back(CommandTerminal{
+                .context = context,
+                .outcome = outcome,
+                .error = std::move(error),
+            });
+        }
+        notifyStatePublished();
+    }
+
+    void notifyStatePublished() noexcept {
+        if (!dependencies_.statePublished) {
+            return;
+        }
+        try {
+            dependencies_.statePublished();
+        } catch (...) {
+            // Publishing state cannot be allowed to fail coordinator work.
+        }
     }
 
     void publishError(const domain::MediaError& error) {
@@ -2112,7 +2149,9 @@ private:
         state_.lastError.reset();
         publishSnapshot();
         completeCommand(command, CommandOutcome::Succeeded);
-        submitPrefetch(prefetchScheduler_.afterExact(displayedFrame, state_.canonicalFrameCount));
+        const ExactPrefetchWindow window = exactPrefetchWindow();
+        submitPrefetch(prefetchScheduler_.afterExact(
+            displayedFrame, state_.canonicalFrameCount, window.ahead, window.behind));
     }
 
     [[nodiscard]] bool matchesPlaybackFrame(const EventContext& context) const noexcept {

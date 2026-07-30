@@ -10,7 +10,7 @@ import Dvs.Ui 1.0
 
 // qmllint enable import
 
-Window {
+ApplicationWindow {
     id: root
 
     width: 1440
@@ -18,7 +18,7 @@ Window {
     minimumWidth: 960
     minimumHeight: 640
     visible: false
-    title: qsTr("Dual Video Studio")
+    title: qsTr("VCStation — VideoCompareStation")
     color: "#0d121b"
 
     readonly property color panelColor: "#171e2a"
@@ -40,8 +40,15 @@ Window {
     property url selectedSourceC: ""
     // -1 means prediction-only; otherwise the selected source defines the canonical timeline.
     property int referenceSourceIndex: 0
+    property bool inspectorOpen: false
+    property bool showFramePending: false
+    property real wipePosition: 0.5
+    property var pendingDroppedVideos: []
+    property string dropError: ""
+    property string exportMessage: ""
 
     readonly property bool busy: Boolean((controller && controller.busy) || (workspace && workspace.busy))
+    readonly property bool framePending: Boolean(controller && controller.framePending)
     readonly property bool projectDirty: Boolean(workspace && workspace.dirty)
     readonly property bool hasProject: Boolean(workspace && workspace.hasProject)
     readonly property bool canSaveProject: Boolean(workspace && workspace.canSave)
@@ -51,6 +58,7 @@ Window {
     readonly property bool graphicsReady: Boolean(controller && controller.graphicsReady)
     readonly property var currentFrame: controller ? controller.currentFrame : -1
     readonly property var totalFrames: controller ? controller.totalFrames : 0
+    readonly property int oneSecondStepFrames: controller ? controller.oneSecondStepFrames : 30
     readonly property string sourceAErrorKey: controller ? controller.sourceAErrorKey : ""
     readonly property string sourceBErrorKey: controller ? controller.sourceBErrorKey : ""
     readonly property string sourceCErrorKey: controller ? controller.sourceCErrorKey : ""
@@ -105,6 +113,8 @@ Window {
     // qmllint disable unqualified
     readonly property bool analysisGridMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.AnalysisGrid : false
     readonly property bool differenceMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Difference || analysisGridMode : false
+    readonly property bool wipeMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Wipe : false
+    readonly property bool sideBySideMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.SideBySide : false
     // qmllint enable unqualified
     readonly property int differenceEdge: preferences ? Number(preferences.differenceEdge) : 0
     property bool differenceThresholdEnabled: false
@@ -130,7 +140,7 @@ Window {
     readonly property int selectedDifferenceExactness: selectedDifferenceEdge ? Number(selectedDifferenceEdge.exactness) : 4
     readonly property bool exactPlaneMode: preferences ? Number(preferences.differenceMetric) === 4 : false
     readonly property string differenceUnavailableDetail: {
-        if (!differenceMode || currentFrame < 0)
+        if ((!differenceMode && !wipeMode) || currentFrame < 0)
             return "";
         const missing = [];
         if (sourceMissing(differenceFirstSlot))
@@ -139,7 +149,7 @@ Window {
             missing.push(sourceLabel(differenceSecondSlot));
         if (missing.length > 0)
             return qsTr("Frame %1 cannot be compared because %2 is missing.").arg(Number(currentFrame) + 1).arg(missing.join(qsTr(" and ")));
-        if (exactPlaneMode && selectedDifferenceExactness !== 0)
+        if (differenceMode && exactPlaneMode && selectedDifferenceExactness !== 0)
             return qsTr("Exact Plane Diff requires equal dimensions, pixel format, bit depth, color metadata, and ExactIndex mapping.");
         return "";
     }
@@ -160,14 +170,93 @@ Window {
     readonly property bool timelineEnabled: graphicsReady && !busy && Boolean(controller && controller.canFirst) && totalFrames > 0
     readonly property bool globalMediaShortcutsEnabled: !focusBlocksGlobalMediaShortcuts(root.activeFocusItem)
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
-    readonly property string overlayTitle: busy ? (currentFrame >= 0 ? qsTr("Loading frame...") : qsTr("Loading comparison...")) : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open comparison") : qsTr("No comparison open")))
+    readonly property string overlayTitle: busy ? qsTr("Loading comparison...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open comparison") : qsTr("Drop two or three videos here")))
     readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Select two or three sources, choose the Reference, then open the comparison.")))
-    readonly property bool overlayVisible: busy || !graphicsReady || currentFrame < 0 || (hasErrors && !frameErrorBannerVisible)
+    readonly property bool overlayVisible: (busy && currentFrame < 0) || !graphicsReady || currentFrame < 0 || (hasErrors && !frameErrorBannerVisible)
+
+    onFramePendingChanged: {
+        if (framePending)
+            framePendingDelay.restart();
+        else {
+            framePendingDelay.stop();
+            showFramePending = false;
+        }
+    }
 
     function fileName(fileUrl) {
         const decodedUrl = decodeURIComponent(fileUrl.toString());
         const separator = Math.max(decodedUrl.lastIndexOf("/"), decodedUrl.lastIndexOf("\\"));
         return decodedUrl.substring(separator + 1);
+    }
+
+    function setDroppedVideoOrder(urls) {
+        pendingDroppedVideos = urls.slice(0);
+    }
+
+    function swapDroppedVideos(first, second) {
+        if (first < 0 || second < 0 || first >= pendingDroppedVideos.length || second >= pendingDroppedVideos.length)
+            return;
+        const next = pendingDroppedVideos.slice(0);
+        const temporary = next[first];
+        next[first] = next[second];
+        next[second] = temporary;
+        pendingDroppedVideos = next;
+    }
+
+    function droppedUrlError(errorKey, detail) {
+        switch (errorKey) {
+        case "drop-empty":
+            return qsTr("No files were dropped.");
+        case "drop-too-many":
+            return qsTr("Drop at most three video files.");
+        case "drop-invalid-local":
+            return qsTr("Only local files can be dropped.");
+        case "drop-missing":
+            return qsTr("Dropped file is missing: %1").arg(detail);
+        case "drop-duplicate":
+            return qsTr("The same file was dropped more than once: %1").arg(detail);
+        case "drop-mixed":
+            return qsTr("Drop one project, or one to three videos—not a mixed set.");
+        default:
+            return qsTr("The dropped files could not be reviewed.");
+        }
+    }
+
+    function reviewDroppedUrls(urls) {
+        const reviewed = controller.handleDroppedUrls(urls);
+        if (!reviewed.accepted) {
+            dropError = droppedUrlError(reviewed.errorKey, reviewed.detail);
+            return;
+        }
+        const normalizedUrls = reviewed.urls;
+        if (reviewed.kind === "project") {
+            selectedSourceA = "";
+            selectedSourceB = "";
+            selectedSourceC = "";
+            sourceOffsetValues = {};
+            workspace.openProject(normalizedUrls[0]);
+            return;
+        }
+        if (normalizedUrls.length === 1) {
+            selectedSourceA = normalizedUrls[0];
+            selectedSourceB = "";
+            selectedSourceC = "";
+            sourceOffsetValues = {};
+            dropError = qsTr("Source A selected. Drop one or two more videos to compare.");
+            return;
+        }
+        dropError = "";
+        setDroppedVideoOrder(normalizedUrls);
+        dropReviewDialog.open();
+    }
+
+    function openDroppedComparison() {
+        selectedSourceA = pendingDroppedVideos[0];
+        selectedSourceB = pendingDroppedVideos[1];
+        selectedSourceC = pendingDroppedVideos.length > 2 ? pendingDroppedVideos[2] : "";
+        sourceOffsetValues = {};
+        referenceSourceIndex = dropReferenceCombo.currentIndex === pendingDroppedVideos.length ? -1 : dropReferenceCombo.currentIndex;
+        controller.openComparisonSet(selectedSourceA, selectedSourceB, selectedSourceC, referenceSourceIndex);
     }
 
     function sourceLabel(slot) {
@@ -180,6 +269,14 @@ Window {
         if (slot === 1)
             return sourceBMissing;
         return sourceCMissing;
+    }
+
+    function sourceFilename(slot) {
+        if (slot === 0)
+            return sourceAName;
+        if (slot === 1)
+            return sourceBName;
+        return sourceCName;
     }
 
     function differenceEdgeIndex(preferenceValue) {
@@ -422,6 +519,7 @@ Window {
         id: control
 
         property bool blocksGlobalMediaShortcuts: true
+        property string helpText: ""
 
         implicitWidth: Math.max(112, contentItem.implicitWidth + 34)
         implicitHeight: 40
@@ -445,6 +543,10 @@ Window {
             border.width: control.activeFocus ? 2 : 1
             border.color: control.activeFocus ? root.accentColor : (control.enabled ? "#3b4d67" : "#2a3444")
         }
+
+        ToolTip.visible: hovered && helpText.length > 0
+        ToolTip.delay: 500
+        ToolTip.text: helpText
     }
 
     component OffsetSpinBox: SpinBox {
@@ -472,6 +574,233 @@ Window {
             radius: 4
             color: root.raisedPanelColor
             border.color: offsetControl.activeFocus ? root.accentColor : root.borderColor
+        }
+    }
+
+    menuBar: MenuBar {
+        Menu {
+            title: qsTr("&File")
+
+            MenuItem {
+                text: qsTr("Open videos…")
+                onTriggered: videoFilesDialog.open()
+            }
+            MenuItem {
+                text: qsTr("Open review project…")
+                onTriggered: openProjectDialog.open()
+            }
+            MenuSeparator {}
+            MenuItem {
+                text: root.projectDirty ? qsTr("Save review project *") : qsTr("Save review project")
+                enabled: root.canSaveProject && root.hasProject && !root.busy
+                onTriggered: root.workspace.save()
+            }
+            MenuItem {
+                text: qsTr("另存评测项目…")
+                enabled: root.canSaveProject && !root.busy
+                onTriggered: saveProjectDialog.open()
+            }
+            MenuSeparator {}
+            MenuItem {
+                text: qsTr("Export Bad Case…")
+                enabled: root.currentFrame >= 0 && !root.framePending
+                onTriggered: badCaseFolderDialog.open()
+            }
+        }
+
+        Menu {
+            title: qsTr("&Compare")
+
+            MenuItem {
+                text: qsTr("Side by side")
+                checked: Number(root.preferences.viewMode) === 0
+                checkable: true
+                onTriggered: root.preferences.viewMode = 0
+            }
+            MenuItem {
+                text: qsTr("Wipe compare")
+                checked: Number(root.preferences.viewMode) === 5
+                checkable: true
+                onTriggered: root.preferences.viewMode = 5
+            }
+            MenuItem {
+                text: qsTr("Difference")
+                checked: Number(root.preferences.viewMode) === 3
+                checkable: true
+                onTriggered: root.preferences.viewMode = 3
+            }
+            MenuItem {
+                text: qsTr("Analysis grid")
+                checked: Number(root.preferences.viewMode) === 4
+                checkable: true
+                onTriggered: root.preferences.viewMode = 4
+            }
+            MenuSeparator {}
+            MenuItem {
+                text: root.inspectorOpen ? qsTr("Hide Advanced Alignment Inspector") : qsTr("Show Advanced Alignment Inspector")
+                onTriggered: root.inspectorOpen = !root.inspectorOpen
+            }
+        }
+
+        Menu {
+            title: qsTr("&Analyze")
+
+            MenuItem {
+                text: qsTr("Estimate global frame offset")
+                enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning && Boolean(root.controller && root.controller.canFirst)
+                onTriggered: root.controller.estimateAlignment()
+            }
+            MenuItem {
+                text: root.alignmentAnalysisRunning ? qsTr("Cancel analysis") : qsTr("Analyze missing / duplicate frames")
+                enabled: root.graphicsReady && !root.busy && Boolean(root.controller && (root.alignmentAnalysisRunning || root.controller.canFirst))
+                onTriggered: root.alignmentAnalysisRunning ? root.controller.cancelAlignmentAnalysis() : root.controller.analyzeSequenceAlignment()
+            }
+        }
+    }
+
+    Timer {
+        id: framePendingDelay
+
+        interval: 140
+        repeat: false
+        onTriggered: root.showFramePending = root.framePending
+    }
+
+    Timer {
+        id: exportMessageTimer
+
+        interval: 5000
+        repeat: false
+        onTriggered: root.exportMessage = ""
+    }
+
+    Connections {
+        target: root.controller
+
+        function onBadCaseExported(folder) {
+            root.exportMessage = qsTr("Bad Case exported to %1").arg(folder);
+            exportMessageTimer.restart();
+        }
+
+        function onBadCaseExportFailed(detail) {
+            root.exportMessage = qsTr("Bad Case export failed: %1").arg(detail);
+            exportMessageTimer.restart();
+        }
+    }
+
+    FolderDialog {
+        id: badCaseFolderDialog
+
+        objectName: "badCaseFolderDialog"
+        title: qsTr("Choose a folder for Bad Case evidence")
+        onAccepted: {
+            if (!root.controller.exportBadCase(dualVideoSurface, selectedFolder)) {
+                root.exportMessage = qsTr("Bad Case export requires a displayed frame and a local folder.");
+                exportMessageTimer.restart();
+            }
+        }
+    }
+
+    FileDialog {
+        id: videoFilesDialog
+
+        objectName: "videoFilesDialog"
+        title: qsTr("Open two or three videos")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
+        onAccepted: root.reviewDroppedUrls(selectedFiles)
+    }
+
+    Dialog {
+        id: dropReviewDialog
+
+        objectName: "dropReviewDialog"
+        width: 560
+        modal: true
+        title: qsTr("Confirm source order and Reference")
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+        anchors.centerIn: parent
+        onAccepted: root.openDroppedComparison()
+
+        background: Rectangle {
+            radius: 10
+            color: root.panelColor
+            border.color: root.borderColor
+        }
+
+        contentItem: Column {
+            spacing: 12
+
+            Text {
+                width: parent.width
+                text: qsTr("The order below becomes Source A/B/C. Choose which stream owns the canonical frame index before opening.")
+                color: root.mutedTextColor
+                wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+                model: root.pendingDroppedVideos
+
+                delegate: Row {
+                    id: droppedRow
+
+                    required property int index
+                    required property var modelData
+
+                    width: parent.width
+                    spacing: 8
+
+                    Text {
+                        width: 34
+                        text: String.fromCharCode(65 + droppedRow.index)
+                        color: "#9fc3ff"
+                        font.bold: true
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    Text {
+                        width: parent.width - 162
+                        text: root.fileName(droppedRow.modelData)
+                        color: root.primaryTextColor
+                        elide: Text.ElideMiddle
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                    ActionButton {
+                        implicitWidth: 52
+                        implicitHeight: 30
+                        text: "↑"
+                        enabled: droppedRow.index > 0
+                        helpText: qsTr("Move this source earlier in A/B/C order.")
+                        onClicked: root.swapDroppedVideos(droppedRow.index, droppedRow.index - 1)
+                    }
+                    ActionButton {
+                        implicitWidth: 52
+                        implicitHeight: 30
+                        text: "↓"
+                        enabled: droppedRow.index + 1 < root.pendingDroppedVideos.length
+                        helpText: qsTr("Move this source later in A/B/C order.")
+                        onClicked: root.swapDroppedVideos(droppedRow.index, droppedRow.index + 1)
+                    }
+                }
+            }
+
+            Row {
+                spacing: 12
+
+                Text {
+                    text: qsTr("Reference")
+                    color: root.primaryTextColor
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+                ComboBox {
+                    id: dropReferenceCombo
+
+                    objectName: "dropReferenceCombo"
+                    width: 220
+                    model: root.pendingDroppedVideos.length === 3 ? [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None (prediction-only)")] : [qsTr("Source A"), qsTr("Source B"), qsTr("None (prediction-only)")]
+                    currentIndex: 0
+                }
+            }
         }
     }
 
@@ -511,7 +840,7 @@ Window {
         objectName: "openProjectDialog"
         title: qsTr("Open review project")
         fileMode: FileDialog.OpenFile
-        nameFilters: [qsTr("Dual Video Studio projects (*.dvsproj)"), qsTr("All files (*)")]
+        nameFilters: [qsTr("VCStation projects (*.dvsproj)"), qsTr("All files (*)")]
         onAccepted: {
             root.selectedSourceA = "";
             root.selectedSourceB = "";
@@ -525,10 +854,10 @@ Window {
         id: saveProjectDialog
 
         objectName: "saveProjectDialog"
-        title: qsTr("Save review project")
+        title: qsTr("另存评测项目")
         fileMode: FileDialog.SaveFile
         defaultSuffix: "dvsproj"
-        nameFilters: [qsTr("Dual Video Studio projects (*.dvsproj)")]
+        nameFilters: [qsTr("VCStation projects (*.dvsproj)")]
         onAccepted: root.workspace.saveAs(selectedFile)
     }
 
@@ -672,7 +1001,7 @@ Window {
     Rectangle {
         id: commandBar
 
-        height: 64
+        height: 56
         color: root.panelColor
         border.color: root.borderColor
         anchors {
@@ -693,11 +1022,12 @@ Window {
                 color: root.primaryTextColor
                 font.bold: true
                 font.pixelSize: 18
-                text: qsTr("DUAL VIDEO STUDIO")
+                text: qsTr("VCSTATION")
                 anchors.verticalCenter: parent.verticalCenter
             }
 
             Rectangle {
+                visible: root.width >= 1160
                 width: 1
                 height: 24
                 color: root.borderColor
@@ -705,9 +1035,10 @@ Window {
             }
 
             Text {
+                visible: root.width >= 1160
                 color: root.mutedTextColor
                 font.pixelSize: 13
-                text: qsTr("Frame-accurate direct comparison")
+                text: qsTr("VideoCompareStation · frame-exact review")
                 anchors.verticalCenter: parent.verticalCenter
             }
         }
@@ -725,6 +1056,7 @@ Window {
             ActionButton {
                 objectName: "openProjectButton"
                 text: qsTr("Open project")
+                visible: false
                 enabled: !root.busy
                 onClicked: openProjectDialog.open()
             }
@@ -732,13 +1064,15 @@ Window {
             ActionButton {
                 objectName: "saveProjectButton"
                 text: root.projectDirty ? qsTr("Save *") : qsTr("Save")
+                visible: false
                 enabled: root.canSaveProject && root.hasProject && !root.busy
                 onClicked: root.workspace.save()
             }
 
             ActionButton {
                 objectName: "saveProjectAsButton"
-                text: qsTr("Save as")
+                text: qsTr("另存评测项目")
+                visible: false
                 enabled: root.canSaveProject && !root.busy
                 onClicked: saveProjectDialog.open()
             }
@@ -750,19 +1084,39 @@ Window {
                 enabled: root.relinkRequired && !root.busy
                 onClicked: relinkSourceDialog.open()
             }
+
+            ActionButton {
+                objectName: "openVideosButton"
+                implicitWidth: 126
+                implicitHeight: 36
+                text: qsTr("Open videos…")
+                helpText: qsTr("Choose two or three videos, then confirm their A/B/C order and Reference.")
+                enabled: root.graphicsReady && !root.busy
+                onClicked: videoFilesDialog.open()
+            }
+
+            ActionButton {
+                objectName: "advancedInspectorButton"
+                implicitWidth: 142
+                implicitHeight: 36
+                text: root.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Advanced Inspector")
+                helpText: qsTr("Show frame offsets, automatic alignment, sequence analysis, and manual anchors.")
+                enabled: root.graphicsReady
+                onClicked: root.inspectorOpen = !root.inspectorOpen
+            }
         }
 
         Rectangle {
             id: graphicsStatusBadge
 
-            implicitWidth: graphicsStatus.implicitWidth + 24
+            implicitWidth: graphicsStatus.implicitWidth + 20
             implicitHeight: 28
             radius: 14
             color: root.graphicsReady ? "#173c31" : "#3d2c1e"
             border.color: root.graphicsReady ? "#2c7a61" : "#79522d"
             anchors {
                 right: parent.right
-                rightMargin: 20
+                rightMargin: 12
                 verticalCenter: parent.verticalCenter
             }
 
@@ -1000,163 +1354,168 @@ Window {
             right: parent.right
         }
 
-        Row {
-            id: comparisonControls
+        Flickable {
+            id: comparisonScroller
 
-            spacing: 8
+            objectName: "comparisonScroller"
+            clip: true
+            contentWidth: comparisonControls.implicitWidth
+            contentHeight: height
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.HorizontalFlick
             anchors {
-                left: parent.left
-                leftMargin: 20
-                verticalCenter: parent.verticalCenter
+                fill: parent
+                leftMargin: 14
+                rightMargin: 14
             }
 
-            Text {
-                text: qsTr("Reference")
-                color: root.mutedTextColor
-                font.pixelSize: 11
+            Row {
+                id: comparisonControls
+
+                spacing: 8
                 anchors.verticalCenter: parent.verticalCenter
-            }
 
-            ToolbarCombo {
-                id: referenceSourceCombo
+                Text {
+                    text: qsTr("Reference")
+                    color: root.mutedTextColor
+                    font.pixelSize: 11
+                    anchors.verticalCenter: parent.verticalCenter
+                }
 
-                objectName: "referenceSourceCombo"
-                implicitWidth: 112
-                model: [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None")]
-                currentIndex: root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 3
-                Accessible.name: qsTr("Canonical reference source")
-                onActivated: index => {
-                    if (index === 2 && !root.hasSelectedSourceC) {
-                        currentIndex = root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 3;
-                        return;
+                ToolbarCombo {
+                    id: referenceSourceCombo
+
+                    objectName: "referenceSourceCombo"
+                    implicitWidth: 112
+                    model: [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None")]
+                    currentIndex: root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 3
+                    Accessible.name: qsTr("Canonical reference source")
+                    onActivated: index => {
+                        if (index === 2 && !root.hasSelectedSourceC) {
+                            currentIndex = root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 3;
+                            return;
+                        }
+                        root.referenceSourceIndex = index === 3 ? -1 : index;
+                        root.resetCanonicalSourceOffset();
                     }
-                    root.referenceSourceIndex = index === 3 ? -1 : index;
-                    root.resetCanonicalSourceOffset();
                 }
-            }
 
-            Text {
-                text: qsTr("View")
-                color: root.mutedTextColor
-                font.pixelSize: 11
-                anchors.verticalCenter: parent.verticalCenter
-            }
-
-            ToolbarCombo {
-                id: viewModeCombo
-
-                objectName: "viewModeCombo"
-                model: [qsTr("Side by side"), qsTr("Three up"), qsTr("Reference focus"), qsTr("Diff"), qsTr("Analysis grid")]
-                currentIndex: root.preferences ? Number(root.preferences.viewMode) : 0
-                Accessible.name: qsTr("Comparison view")
-                onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.viewMode = index;
+                Text {
+                    text: qsTr("View")
+                    color: root.mutedTextColor
+                    font.pixelSize: 11
+                    anchors.verticalCenter: parent.verticalCenter
                 }
-            }
 
-            Text {
-                visible: root.differenceMode
-                text: qsTr("Metric")
-                color: root.mutedTextColor
-                font.pixelSize: 11
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                ToolbarCombo {
+                    id: viewModeCombo
 
-            ToolbarCombo {
-                id: differenceMetricCombo
-
-                objectName: "differenceMetricCombo"
-                visible: root.differenceMode
-                model: [qsTr("RGB absolute"), qsTr("Luma"), qsTr("Chroma"), qsTr("Heatmap"), qsTr("Exact planes")]
-                currentIndex: root.preferences ? Number(root.preferences.differenceMetric) : 0
-                Accessible.name: qsTr("Difference metric")
-                onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.differenceMetric = index;
+                    objectName: "viewModeCombo"
+                    model: [qsTr("Side by side"), qsTr("Three up"), qsTr("Reference focus"), qsTr("Diff"), qsTr("Analysis grid"), qsTr("Wipe compare")]
+                    currentIndex: root.preferences ? Number(root.preferences.viewMode) : 0
+                    Accessible.name: qsTr("Comparison view")
+                    onActivated: index => {
+                        if (root.preferences)
+                            root.preferences.viewMode = index;
+                    }
                 }
-            }
 
-            ToolbarCombo {
-                id: differenceGainCombo
-
-                objectName: "differenceGainCombo"
-                visible: root.differenceMode
-                implicitWidth: 76
-                model: ["1x", "2x", "4x", "8x", "16x"]
-                currentIndex: root.preferences ? Number(root.preferences.differenceGain) : 0
-                Accessible.name: qsTr("Difference gain")
-                onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.differenceGain = index;
+                Text {
+                    visible: root.differenceMode
+                    text: qsTr("Metric")
+                    color: root.mutedTextColor
+                    font.pixelSize: 11
+                    anchors.verticalCenter: parent.verticalCenter
                 }
-            }
 
-            ToolbarCombo {
-                id: differenceEdgeCombo
+                ToolbarCombo {
+                    id: differenceMetricCombo
 
-                objectName: "differenceEdgeCombo"
-                visible: root.differenceMode
-                implicitWidth: 94
-                model: root.differenceEdges
-                textRole: "label"
-                currentIndex: root.differenceEdgeIndex(root.differenceEdge)
-                Accessible.name: qsTr("Difference source pair")
-                onActivated: index => {
-                    if (root.preferences && index >= 0 && index < root.differenceEdges.length)
-                        root.preferences.differenceEdge = Number(root.differenceEdges[index].preferenceValue);
+                    objectName: "differenceMetricCombo"
+                    visible: root.differenceMode
+                    model: [qsTr("RGB absolute"), qsTr("Luma"), qsTr("Chroma"), qsTr("Heatmap"), qsTr("Exact planes")]
+                    currentIndex: root.preferences ? Number(root.preferences.differenceMetric) : 0
+                    Accessible.name: qsTr("Difference metric")
+                    onActivated: index => {
+                        if (root.preferences)
+                            root.preferences.differenceMetric = index;
+                    }
                 }
-            }
 
-            ToolbarCombo {
-                id: differenceFilterCombo
+                ToolbarCombo {
+                    id: differenceGainCombo
 
-                objectName: "differenceFilterCombo"
-                visible: root.differenceMode
-                implicitWidth: 104
-                model: [qsTr("Nearest"), qsTr("Bilinear"), qsTr("Bicubic")]
-                currentIndex: root.preferences ? Number(root.preferences.differenceFilter) : 1
-                Accessible.name: qsTr("Spatial resampling filter")
-                onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.differenceFilter = index;
+                    objectName: "differenceGainCombo"
+                    visible: root.differenceMode
+                    implicitWidth: 76
+                    model: ["1x", "2x", "4x", "8x", "16x"]
+                    currentIndex: root.preferences ? Number(root.preferences.differenceGain) : 0
+                    Accessible.name: qsTr("Difference gain")
+                    onActivated: index => {
+                        if (root.preferences)
+                            root.preferences.differenceGain = index;
+                    }
                 }
-            }
 
-            Text {
-                text: qsTr("Step")
-                color: root.mutedTextColor
-                font.pixelSize: 11
-                anchors.verticalCenter: parent.verticalCenter
-            }
+                ToolbarCombo {
+                    id: differenceEdgeCombo
 
-            ToolbarCombo {
-                id: largeStepCombo
-
-                objectName: "largeStepCombo"
-                implicitWidth: 74
-                model: ["5", "10"]
-                currentIndex: root.largeStepFrames === 5 ? 0 : 1
-                Accessible.name: qsTr("Up and down frame step")
-                onActivated: index => {
-                    if (root.preferences)
-                        root.preferences.largeStepFrames = index === 0 ? 5 : 10;
+                    objectName: "differenceEdgeCombo"
+                    visible: root.differenceMode || root.wipeMode
+                    implicitWidth: 94
+                    model: root.differenceEdges
+                    textRole: "label"
+                    currentIndex: root.differenceEdgeIndex(root.differenceEdge)
+                    Accessible.name: qsTr("Difference source pair")
+                    onActivated: index => {
+                        if (root.preferences && index >= 0 && index < root.differenceEdges.length)
+                            root.preferences.differenceEdge = Number(root.differenceEdges[index].preferenceValue);
+                    }
                 }
-            }
-        }
 
-        Text {
-            visible: root.differenceMode
-            text: qsTr("Size mismatch is resampled; the result is not pixel-exact.")
-            color: root.mutedTextColor
-            font.pixelSize: 10
-            elide: Text.ElideRight
-            anchors {
-                left: comparisonControls.right
-                leftMargin: 12
-                right: parent.right
-                rightMargin: 20
-                verticalCenter: parent.verticalCenter
+                ToolbarCombo {
+                    id: differenceFilterCombo
+
+                    objectName: "differenceFilterCombo"
+                    visible: root.differenceMode
+                    implicitWidth: 104
+                    model: [qsTr("Nearest"), qsTr("Bilinear"), qsTr("Bicubic")]
+                    currentIndex: root.preferences ? Number(root.preferences.differenceFilter) : 1
+                    Accessible.name: qsTr("Spatial resampling filter")
+                    onActivated: index => {
+                        if (root.preferences)
+                            root.preferences.differenceFilter = index;
+                    }
+                }
+
+                Text {
+                    text: qsTr("Step")
+                    color: root.mutedTextColor
+                    font.pixelSize: 11
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                ToolbarCombo {
+                    id: largeStepCombo
+
+                    objectName: "largeStepCombo"
+                    implicitWidth: 74
+                    model: ["5", "10"]
+                    currentIndex: root.largeStepFrames === 5 ? 0 : 1
+                    Accessible.name: qsTr("Up and down frame step")
+                    onActivated: index => {
+                        if (root.preferences)
+                            root.preferences.largeStepFrames = index === 0 ? 5 : 10;
+                    }
+                }
+
+                Text {
+                    visible: root.differenceMode
+                    text: qsTr("Size mismatch is resampled; result is not pixel-exact.")
+                    color: root.mutedTextColor
+                    font.pixelSize: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                }
             }
         }
     }
@@ -1164,44 +1523,46 @@ Window {
     Rectangle {
         id: alignmentBar
 
-        height: 50
+        objectName: "advancedAlignmentInspector"
+        width: 360
+        visible: root.inspectorOpen
+        z: 20
         color: "#111823"
         border.color: root.borderColor
         anchors {
             top: comparisonBar.bottom
-            left: parent.left
             right: parent.right
+            bottom: transport.top
         }
 
-        Row {
+        Column {
             id: alignmentControls
 
-            spacing: 8
+            spacing: 6
             anchors {
-                left: parent.left
-                leftMargin: 20
-                verticalCenter: parent.verticalCenter
+                fill: parent
+                margins: 14
             }
 
             Text {
                 id: alignmentModeStatus
 
                 objectName: "alignmentModeStatus"
-                text: root.anyManualAlignmentActive ? qsTr("Manual alignment") : (root.autoAlignmentActive ? qsTr("Auto aligned") : qsTr("Strict index"))
+                width: parent.width
+                text: root.anyManualAlignmentActive ? qsTr("Manual alignment") : (root.autoAlignmentActive ? qsTr("Automatic alignment") : qsTr("Strict Index"))
                 color: root.anyManualAlignmentActive || root.autoAlignmentActive ? "#efbf83" : "#8ce2c2"
                 font.pixelSize: 12
                 font.weight: Font.DemiBold
-                anchors.verticalCenter: parent.verticalCenter
             }
 
             Text {
                 id: manualOffsetStatusLabel
 
                 objectName: "manualOffsetStatusLabel"
-                text: root.manualOffsetActive ? qsTr("Manual offset active") : qsTr("Frame offsets")
+                width: parent.width
+                text: root.manualOffsetActive ? qsTr("Frame alignment offset · active") : qsTr("Frame alignment offset")
                 color: root.manualOffsetActive ? "#efbf83" : root.mutedTextColor
                 font.pixelSize: 11
-                anchors.verticalCenter: parent.verticalCenter
             }
 
             Repeater {
@@ -1218,10 +1579,12 @@ Window {
                     required property int manualOffset
                     property int sourceIdValue: sourceId
 
-                    spacing: 4
+                    width: alignmentControls.width
+                    spacing: 8
 
                     Text {
-                        text: String.fromCharCode(65 + sourceOffsetDelegate.sourceIdValue)
+                        width: parent.width - sourceOffsetInput.width - parent.spacing
+                        text: qsTr("Source %1 offset (frames)").arg(String.fromCharCode(65 + sourceOffsetDelegate.sourceIdValue))
                         color: root.mutedTextColor
                         anchors.verticalCenter: parent.verticalCenter
                     }
@@ -1240,18 +1603,20 @@ Window {
 
             ActionButton {
                 objectName: "estimateAlignmentButton"
-                implicitWidth: 86
+                width: parent.width
                 implicitHeight: 34
-                text: qsTr("Auto align")
+                text: qsTr("Estimate global frame offset")
+                helpText: qsTr("Estimate one constant shift. Example: Source B is consistently two frames later than Reference.")
                 enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning && Boolean(root.controller && root.controller.canFirst)
                 onClicked: root.controller.estimateAlignment()
             }
 
             ActionButton {
                 objectName: "analyzeSequenceButton"
-                implicitWidth: root.alignmentAnalysisRunning ? 112 : 88
+                width: parent.width
                 implicitHeight: 34
-                text: root.alignmentAnalysisRunning ? qsTr("Cancel analysis") : qsTr("Find drops")
+                text: root.alignmentAnalysisRunning ? qsTr("Cancel analysis") : qsTr("Analyze missing / duplicate frames")
+                helpText: qsTr("Scan for drops, duplicates, and local timing changes. Example: find one missing frame near a scene cut.")
                 enabled: root.graphicsReady && !root.busy && Boolean(root.controller && (root.alignmentAnalysisRunning || root.controller.canFirst))
                 onClicked: {
                     if (root.alignmentAnalysisRunning)
@@ -1263,47 +1628,52 @@ Window {
 
             ActionButton {
                 objectName: "confirmAutomaticAlignmentButton"
-                implicitWidth: root.canConfirmAutomaticAlignment ? 82 : 116
+                width: parent.width
                 implicitHeight: 34
                 visible: root.automaticAlignmentPending
-                text: root.canConfirmAutomaticAlignment ? qsTr("Confirm map") : qsTr("Find drops first")
+                text: root.canConfirmAutomaticAlignment ? qsTr("Confirm proposed mapping") : qsTr("Analyze sequence before confirming")
+                helpText: qsTr("Accept the proposed automatic mapping after reviewing its confidence and anomalies.")
                 enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning && root.canConfirmAutomaticAlignment
                 onClicked: root.controller.confirmAutomaticAlignment()
             }
 
             ActionButton {
                 objectName: "undoAutomaticAlignmentButton"
-                implicitWidth: 76
+                width: parent.width
                 implicitHeight: 34
                 visible: root.canUndoAutomaticAlignment
-                text: qsTr("Undo map")
+                text: qsTr("Undo automatic mapping")
+                helpText: qsTr("Restore the mapping used before the last confirmed automatic alignment.")
                 enabled: root.graphicsReady && !root.busy && !root.alignmentAnalysisRunning
                 onClicked: root.controller.undoAutomaticAlignment()
             }
 
             ActionButton {
                 objectName: "manualAnchorsButton"
-                implicitWidth: root.manualAnchorActive ? 136 : 78
+                width: parent.width
                 implicitHeight: 34
-                text: root.manualAnchorActive ? qsTr("Manual anchors active") : qsTr("Anchors…")
+                text: root.manualAnchorActive ? qsTr("Manual anchors active…") : qsTr("Edit manual anchors…")
+                helpText: qsTr("Map isolated points when timing drifts. Example: Reference frame 300 maps to Source B frame 302.")
                 enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
                 onClicked: anchorDialog.open()
             }
 
             ActionButton {
                 objectName: "applyAlignmentButton"
-                implicitWidth: 72
+                width: parent.width
                 implicitHeight: 34
-                text: qsTr("Apply")
+                text: qsTr("Apply frame offsets")
+                helpText: qsTr("Apply the fixed per-source offsets shown above.")
                 enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canFirst)
                 onClicked: root.controller.applySourceOffsets(root.sourceOffsets())
             }
 
             ActionButton {
                 objectName: "resetAlignmentButton"
-                implicitWidth: 90
+                width: parent.width
                 implicitHeight: 34
-                text: qsTr("Strict reset")
+                text: qsTr("Return to Strict Index")
+                helpText: qsTr("Clear fixed offsets and compare the same canonical index across all sources.")
                 enabled: root.graphicsReady && !root.busy && (root.anyManualAlignmentActive || root.autoAlignmentActive) && Boolean(root.controller && root.controller.canFirst)
                 onClicked: {
                     root.resetSourceOffsets();
@@ -1316,7 +1686,8 @@ Window {
                 text: qsTr("Missing mapped frames stay black; offsets are never clamped.")
                 color: root.mutedTextColor
                 font.pixelSize: 10
-                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                wrapMode: Text.WordWrap
             }
         }
 
@@ -1325,13 +1696,14 @@ Window {
             text: root.compatibilityDetails()
             color: "#efbf83"
             font.pixelSize: 10
-            elide: Text.ElideRight
+            wrapMode: Text.WordWrap
             anchors {
-                left: alignmentControls.right
-                leftMargin: 16
+                left: parent.left
+                leftMargin: 14
                 right: parent.right
-                rightMargin: 20
-                verticalCenter: parent.verticalCenter
+                rightMargin: 14
+                bottom: parent.bottom
+                bottomMargin: 10
             }
         }
     }
@@ -1347,13 +1719,13 @@ Window {
         radius: 7
         clip: true
         anchors {
-            top: alignmentBar.bottom
+            top: comparisonBar.bottom
             topMargin: 12
             bottom: transport.top
             bottomMargin: 18
             left: parent.left
             leftMargin: 20
-            right: parent.right
+            right: alignmentBar.visible ? alignmentBar.left : parent.right
             rightMargin: 20
         }
 
@@ -1367,12 +1739,13 @@ Window {
             id: dualVideoSurface
 
             objectName: "dualVideoSurface"
-            Accessible.name: qsTr("Dual video comparison surface")
+            Accessible.name: qsTr("VCStation synchronized comparison surface")
             viewMode: root.preferences ? root.preferences.viewMode : ComparisonSurface.SideBySide
             differenceMetric: root.preferences ? root.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
             differenceGain: root.preferences ? root.preferences.differenceGain : ComparisonSurface.Gain1x
             differenceEdge: root.preferences ? root.preferences.differenceEdge : ComparisonSurface.Edge0And1
             differenceFilter: root.preferences ? root.preferences.differenceFilter : ComparisonSurface.Bilinear
+            wipePosition: root.wipePosition
             exactPlaneAvailable: root.selectedDifferenceExactness === 0
             thresholdEnabled: root.differenceThresholdEnabled
             threshold: Number(root.differenceThresholdCode) / 255
@@ -1384,6 +1757,128 @@ Window {
             }
         }
         // qmllint enable import unqualified unresolved-type
+
+        Repeater {
+            model: root.sideBySideMode ? 1 : (Number(root.preferences.viewMode) === 1 ? 2 : 0)
+
+            Rectangle {
+                required property int index
+
+                x: Math.round(parent.width * (index + 1) / (root.sideBySideMode ? 2 : 3))
+                y: 1
+                width: 2
+                height: parent.height - 2
+                color: "#d8e2f2"
+                opacity: 0.75
+                z: 8
+            }
+        }
+
+        Rectangle {
+            id: wipeRail
+
+            visible: root.wipeMode
+            x: Math.round(1 + (dualVideoSurface.width - 2) * root.wipePosition) - width / 2
+            y: 1
+            width: 3
+            height: parent.height - 2
+            color: "#ffffff"
+            z: 30
+
+            Rectangle {
+                width: 28
+                height: 44
+                radius: 14
+                color: "#e6233246"
+                border.color: "#ffffff"
+                anchors.centerIn: parent
+
+                Text {
+                    text: "↔"
+                    color: "white"
+                    anchors.centerIn: parent
+                }
+            }
+
+            MouseArea {
+                width: 30
+                height: parent.height
+                anchors.centerIn: parent
+                cursorShape: Qt.SplitHCursor
+                onPressed: mouse => {
+                    const point = mapToItem(viewportFrame, mouse.x, mouse.y);
+                    root.wipePosition = Math.max(0.05, Math.min(0.95, point.x / viewportFrame.width));
+                }
+                onPositionChanged: mouse => {
+                    if (!pressed)
+                        return;
+                    const point = mapToItem(viewportFrame, mouse.x, mouse.y);
+                    root.wipePosition = Math.max(0.05, Math.min(0.95, point.x / viewportFrame.width));
+                }
+            }
+        }
+
+        Rectangle {
+            objectName: "framePendingIndicator"
+            visible: root.showFramePending && root.currentFrame >= 0
+            z: 40
+            radius: 12
+            color: "#dc1d2635"
+            border.color: root.borderColor
+            width: pendingRow.implicitWidth + 22
+            height: 30
+            anchors {
+                top: parent.top
+                right: parent.right
+                margins: 12
+            }
+
+            Row {
+                id: pendingRow
+
+                spacing: 7
+                anchors.centerIn: parent
+
+                BusyIndicator {
+                    width: 16
+                    height: 16
+                    running: parent.parent.visible
+                }
+                Text {
+                    text: qsTr("Fetching latest frame…")
+                    color: root.mutedTextColor
+                    font.pixelSize: 11
+                }
+            }
+        }
+
+        Rectangle {
+            visible: root.exportMessage.length > 0
+            z: 39
+            radius: 5
+            color: "#e61b2432"
+            border.color: root.borderColor
+            width: Math.min(parent.width - 32, exportStatusText.implicitWidth + 24)
+            height: exportStatusText.implicitHeight + 16
+            anchors {
+                top: parent.top
+                topMargin: 16
+                horizontalCenter: parent.horizontalCenter
+            }
+
+            Text {
+                id: exportStatusText
+
+                text: root.exportMessage
+                color: root.primaryTextColor
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                anchors {
+                    fill: parent
+                    margins: 8
+                }
+            }
+        }
 
         MouseArea {
             id: viewportNavigation
@@ -1596,7 +2091,16 @@ Window {
             }
 
             Repeater {
-                model: [
+                model: root.wipeMode ? [
+                    {
+                        "side": String.fromCharCode(65 + root.differenceFirstSlot),
+                        "filename": root.sourceFilename(root.differenceFirstSlot)
+                    },
+                    {
+                        "side": String.fromCharCode(65 + root.differenceSecondSlot),
+                        "filename": root.sourceFilename(root.differenceSecondSlot)
+                    }
+                ] : [
                     {
                         "side": qsTr("A"),
                         "filename": root.sourceAName
@@ -1721,7 +2225,7 @@ Window {
                 BusyIndicator {
                     width: 34
                     height: 34
-                    running: root.busy
+                    running: root.busy && root.currentFrame < 0
                     visible: running
                     anchors.horizontalCenter: parent.horizontalCenter
                     Accessible.name: qsTr("Loading")
@@ -1754,6 +2258,7 @@ Window {
     Rectangle {
         id: transport
 
+        objectName: "transport"
         height: 144
         color: root.panelColor
         border.color: root.borderColor
@@ -1879,7 +2384,7 @@ Window {
         }
 
         Row {
-            spacing: 10
+            spacing: 7
             anchors {
                 bottom: parent.bottom
                 bottomMargin: 20
@@ -1890,6 +2395,7 @@ Window {
                 id: firstButton
 
                 objectName: "firstButton"
+                implicitWidth: 72
                 text: qsTr("First")
                 enabled: root.canFirstAction
                 Accessible.name: qsTr("First frame")
@@ -1897,10 +2403,29 @@ Window {
             }
 
             ActionButton {
+                objectName: "previousSecondButton"
+                implicitWidth: 72
+                text: qsTr("-1 s")
+                helpText: qsTr("Step backward by approximately one second (%1 frames at this source rate).").arg(root.oneSecondStepFrames)
+                enabled: root.canPreviousAction
+                onClicked: root.controller.stepFrames(-root.oneSecondStepFrames)
+            }
+
+            ActionButton {
+                objectName: "previousFiveButton"
+                implicitWidth: 72
+                text: "-5"
+                helpText: qsTr("Step backward five frames.")
+                enabled: root.canPreviousAction
+                onClicked: root.controller.stepFrames(-5)
+            }
+
+            ActionButton {
                 id: previousButton
 
                 objectName: "previousButton"
-                text: qsTr("Previous")
+                implicitWidth: 72
+                text: qsTr("-1")
                 enabled: root.canPreviousAction
                 Accessible.name: qsTr("Previous frame")
                 onClicked: root.controller.previous()
@@ -1910,6 +2435,7 @@ Window {
                 id: playbackButton
 
                 objectName: "playbackButton"
+                implicitWidth: 86
                 text: root.playing ? qsTr("Pause") : qsTr("Play")
                 enabled: root.playing ? root.canPauseAction : root.canPlayAction
                 Accessible.name: root.playing ? qsTr("Pause playback") : qsTr("Play continuously")
@@ -1920,16 +2446,36 @@ Window {
                 id: nextButton
 
                 objectName: "nextButton"
-                text: qsTr("Next")
+                implicitWidth: 72
+                text: qsTr("+1")
                 enabled: root.canNextAction
                 Accessible.name: qsTr("Next frame")
                 onClicked: root.controller.next()
             }
 
             ActionButton {
+                objectName: "nextFiveButton"
+                implicitWidth: 72
+                text: "+5"
+                helpText: qsTr("Step forward five frames.")
+                enabled: root.canNextAction
+                onClicked: root.controller.stepFrames(5)
+            }
+
+            ActionButton {
+                objectName: "nextSecondButton"
+                implicitWidth: 72
+                text: qsTr("+1 s")
+                helpText: qsTr("Step forward by approximately one second (%1 frames at this source rate).").arg(root.oneSecondStepFrames)
+                enabled: root.canNextAction
+                onClicked: root.controller.stepFrames(root.oneSecondStepFrames)
+            }
+
+            ActionButton {
                 id: lastButton
 
                 objectName: "lastButton"
+                implicitWidth: 72
                 text: qsTr("Last")
                 enabled: root.canLastAction
                 Accessible.name: qsTr("Last frame")
@@ -1938,7 +2484,8 @@ Window {
         }
 
         Text {
-            text: qsTr("Space Play/Pause / Home / End / Left / Right / Up +%1 / Down -%1").arg(root.largeStepFrames)
+            visible: root.width >= 1260
+            text: qsTr("A/D or ←/→: ±1 · Shift+A/D: ±5 · Ctrl+A/D: ±1 second")
             color: root.mutedTextColor
             font.pixelSize: 11
             anchors {
@@ -1947,6 +2494,78 @@ Window {
                 bottom: parent.bottom
                 bottomMargin: 13
             }
+        }
+    }
+
+    DropArea {
+        id: workspaceDropArea
+
+        objectName: "workspaceDropArea"
+        anchors.fill: parent
+        z: 1000
+        onEntered: drag => {
+            if (drag.hasUrls)
+                drag.acceptProposedAction();
+        }
+        onDropped: drop => {
+            drop.acceptProposedAction();
+            root.reviewDroppedUrls(drop.urls);
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            visible: workspaceDropArea.containsDrag
+            color: "#df0b1421"
+            border.width: 3
+            border.color: root.accentColor
+
+            Column {
+                spacing: 10
+                anchors.centerIn: parent
+
+                Text {
+                    text: qsTr("Drop to review in VCStation")
+                    color: root.primaryTextColor
+                    font.pixelSize: 24
+                    font.bold: true
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+                Text {
+                    text: qsTr("2–3 videos, or one .dvsproj project")
+                    color: root.mutedTextColor
+                    font.pixelSize: 14
+                    anchors.horizontalCenter: parent.horizontalCenter
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        visible: root.dropError.length > 0
+        z: 1100
+        width: Math.min(parent.width - 48, 620)
+        height: dropErrorText.implicitHeight + 26
+        radius: 7
+        color: "#f0351f2a"
+        border.color: "#a9503f4a"
+        anchors {
+            top: parent.top
+            topMargin: 18
+            horizontalCenter: parent.horizontalCenter
+        }
+
+        Text {
+            id: dropErrorText
+
+            width: parent.width - 34
+            text: root.dropError
+            color: "#ffb4b4"
+            wrapMode: Text.WordWrap
+            anchors.centerIn: parent
+        }
+
+        TapHandler {
+            onTapped: root.dropError = ""
         }
     }
 
@@ -1987,12 +2606,48 @@ Window {
     }
 
     Shortcut {
+        sequence: "A"
+        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
+        onActivated: root.controller.previous()
+    }
+
+    Shortcut {
         sequence: "Right"
         enabled: root.globalMediaShortcutsEnabled && nextButton.enabled
         onActivated: {
             nextButton.click();
             viewportFrame.forceActiveFocus();
         }
+    }
+
+    Shortcut {
+        sequence: "D"
+        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
+        onActivated: root.controller.next()
+    }
+
+    Shortcut {
+        sequence: "Shift+A"
+        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
+        onActivated: root.controller.stepFrames(-5)
+    }
+
+    Shortcut {
+        sequence: "Shift+D"
+        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
+        onActivated: root.controller.stepFrames(5)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+A"
+        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
+        onActivated: root.controller.stepFrames(-root.oneSecondStepFrames)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+D"
+        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
+        onActivated: root.controller.stepFrames(root.oneSecondStepFrames)
     }
 
     Shortcut {

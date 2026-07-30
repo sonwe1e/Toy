@@ -60,7 +60,7 @@ T.ComboBox {
         x: control.mirrored ? 4 : control.width - width - 4
         y: (control.height - height) / 2
         implicitWidth: 24
-        implicitHeight: control.height
+        implicitHeight: 24
 
         Text {
             anchors.centerIn: parent

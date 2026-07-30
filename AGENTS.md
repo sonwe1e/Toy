@@ -18,7 +18,7 @@ From repository root:
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev --output-on-failure
-.\out\build\dev\bin\DualVideoStudioCli.exe --startup-check
+.\out\build\dev\bin\VCStationCli.exe --startup-check
 cmake --build --preset dev --target format-check
 cmake --build --preset dev --target lint
 cmake --preset release

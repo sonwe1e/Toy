@@ -108,24 +108,40 @@ domain::Status SourceDecodeActor::open(const std::atomic<bool>& cancellationRequ
 }
 
 SourceDecodeSubmission SourceDecodeActor::submit(SourceDecodeRequest request) {
+    auto promise = std::make_shared<std::promise<domain::Result<DecodedFrame>>>();
+    std::future<domain::Result<DecodedFrame>> completion = promise->get_future();
+    const application::PortSubmitResult status =
+        submit(std::move(request), [promise](domain::Result<DecodedFrame> result) {
+            promise->set_value(std::move(result));
+        });
+    return SourceDecodeSubmission{
+        .status = status,
+        .completion = std::move(completion),
+    };
+}
+
+application::PortSubmitResult SourceDecodeActor::submit(SourceDecodeRequest request,
+                                                        SourceDecodeCompletion completion) {
     if (request.cancellationRequested == nullptr || !request.frameId.isValid() ||
-        request.readAheadCount > kMaximumReadAheadCount) {
-        return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+        request.readAheadCount > kMaximumReadAheadCount || !completion) {
+        return application::PortSubmitResult::Closed;
     }
 
-    DecodeJob job{.request = std::move(request)};
-    std::future<domain::Result<DecodedFrame>> completion = job.completion.get_future();
+    DecodeJob job{
+        .request = std::move(request),
+        .completion = std::move(completion),
+    };
     std::vector<DecodeJob> displaced;
     {
         std::scoped_lock lock{mutex_};
         if (stopping_) {
-            return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+            return application::PortSubmitResult::Closed;
         }
 
         if (job.request.context.has_value()) {
             if (latestContext_.has_value() &&
                 olderPlaybackContext(*job.request.context, *latestContext_)) {
-                return SourceDecodeSubmission{.status = application::PortSubmitResult::Closed};
+                return application::PortSubmitResult::Closed;
             }
             if (!latestContext_.has_value() ||
                 olderPlaybackContext(*latestContext_, *job.request.context)) {
@@ -166,10 +182,7 @@ SourceDecodeSubmission SourceDecodeActor::submit(SourceDecodeRequest request) {
         completeCanceled(std::move(canceled));
     }
     condition_.notify_one();
-    return SourceDecodeSubmission{
-        .status = application::PortSubmitResult::Accepted,
-        .completion = std::move(completion),
-    };
+    return application::PortSubmitResult::Accepted;
 }
 
 void SourceDecodeActor::close() noexcept {
@@ -407,10 +420,11 @@ void SourceDecodeActor::run() noexcept {
                 backendStatus_.cacheHitCount = cacheHitCount_;
             }
             fillReadAhead(cached->handle.accountedBytes());
-            decode->completion.set_value(domain::Result<DecodedFrame>::success(DecodedFrame{
-                .handle = std::move(cached->handle),
-                .presentationTime = cached->presentationTime,
-            }));
+            complete(std::move(*decode),
+                     domain::Result<DecodedFrame>::success(DecodedFrame{
+                         .handle = std::move(cached->handle),
+                         .presentationTime = cached->presentationTime,
+                     }));
             continue;
         }
 
@@ -439,7 +453,7 @@ void SourceDecodeActor::run() noexcept {
         if (result) {
             fillReadAhead(result.value().handle.accountedBytes());
         }
-        decode->completion.set_value(std::move(result));
+        complete(std::move(*decode), std::move(result));
     }
     decoder_->close();
 }
@@ -458,9 +472,14 @@ void SourceDecodeActor::cancelQueuedLocked() {
 }
 
 void SourceDecodeActor::completeCanceled(DecodeJob job) noexcept {
+    complete(std::move(job),
+             domain::Result<DecodedFrame>::failure(
+                 actorError(sourceId_, "The queued source decode request was superseded.")));
+}
+
+void SourceDecodeActor::complete(DecodeJob job, domain::Result<DecodedFrame> result) noexcept {
     try {
-        job.completion.set_value(domain::Result<DecodedFrame>::failure(
-            actorError(sourceId_, "The queued source decode request was superseded.")));
+        job.completion(std::move(result));
     } catch (...) {
     }
 }

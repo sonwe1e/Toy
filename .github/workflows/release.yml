@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, Windows, X64, dvs-toolchain-4.4]
+    timeout-minutes: 180
+    env:
+      DVS_VCPKG_ROOT: ${{ vars.DVS_VCPKG_ROOT }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Enter MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756
+        with:
+          arch: x64
+
+      - name: Resolve toolchain
+        shell: pwsh
+        run: |
+          $vcpkgRoot = if ($env:DVS_VCPKG_ROOT) {
+            $env:DVS_VCPKG_ROOT
+          } elseif ($env:VCPKG_ROOT) {
+            $env:VCPKG_ROOT
+          } else {
+            throw 'Set the DVS_VCPKG_ROOT repository variable.'
+          }
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $wixPath = Join-Path $env:RUNNER_TEMP 'wix'
+          dotnet tool install wix --tool-path $wixPath --version 4.0.4
+          & (Join-Path $wixPath 'wix.exe') extension add --global WixToolset.UI.wixext/4.0.4
+          $wixPath | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Build and test Release
+        shell: pwsh
+        run: |
+          cmake --preset release
+          cmake --build --preset release
+          ctest --preset release --output-on-failure
+
+      - name: Import signing certificate
+        shell: pwsh
+        env:
+          DVS_SIGNING_PFX_BASE64: ${{ secrets.DVS_SIGNING_PFX_BASE64 }}
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
+        run: |
+          if (-not $env:DVS_SIGNING_PFX_BASE64 -or -not $env:DVS_SIGNING_PFX_PASSWORD) {
+            throw 'Release signing secrets are required.'
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'vcstation-release.pfx'
+          [IO.File]::WriteAllBytes(
+            $pfxPath,
+            [Convert]::FromBase64String($env:DVS_SIGNING_PFX_BASE64)
+          )
+          "DVS_SIGNING_PFX=$pfxPath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Sign application executables
+        shell: pwsh
+        env:
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+          .\tools\sign-release.ps1 `
+            -Path @(
+              '.\out\build\release\bin\VCStation.exe',
+              '.\out\build\release\bin\VCStationCli.exe'
+            ) `
+            -PfxPath $env:DVS_SIGNING_PFX `
+            -PfxPassword $password
+
+      - name: Package ZIP and MSI
+        shell: pwsh
+        run: |
+          cpack --preset release-zip
+          cpack --preset release-msi
+          $msi = Get-ChildItem '.\out\package\msi\VCStation-*-windows-x64.msi' -File
+          if ($msi.Count -ne 1) {
+            throw "Expected one VCStation MSI, found $($msi.Count)."
+          }
+          wix msi validate $msi.FullName
+          "DVS_RELEASE_MSI=$($msi.FullName)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Sign MSI
+        shell: pwsh
+        env:
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+          .\tools\sign-release.ps1 `
+            -Path $env:DVS_RELEASE_MSI `
+            -PfxPath $env:DVS_SIGNING_PFX `
+            -PfxPassword $password
+
+      - name: Packaged and shutdown gates
+        shell: pwsh
+        run: |
+          ctest --preset packaged-smoke --output-on-failure
+          ctest --preset shutdown-soak --output-on-failure
+
+      - name: Create checksums
+        shell: pwsh
+        run: |
+          $artifacts = @(
+            (Get-ChildItem '.\out\package\zip\VCStation-*-windows-x64.zip' -File).FullName,
+            $env:DVS_RELEASE_MSI
+          )
+          $lines = foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($artifact))"
+          }
+          $lines | Set-Content '.\out\package\SHA256SUMS.txt' -Encoding ascii
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            out/package/zip/VCStation-*-windows-x64.zip
+            out/package/msi/VCStation-*-windows-x64.msi
+            out/package/SHA256SUMS.txt
+
+      - name: Remove signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:DVS_SIGNING_PFX -and (Test-Path -LiteralPath $env:DVS_SIGNING_PFX)) {
+            Remove-Item -LiteralPath $env:DVS_SIGNING_PFX -Force
+          }

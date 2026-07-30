@@ -6,6 +6,8 @@ add_library(
         include/dvs/ui/ReviewPreferencesController.h
         include/dvs/ui/SourceListModel.h
         include/dvs/ui/WorkspaceController.h
+        src/BadCaseExporter.cpp
+        src/BadCaseExporter.h
         src/DesktopApplication.cpp
         src/DirectCompare.cpp
         src/ComparisonSurface.cpp

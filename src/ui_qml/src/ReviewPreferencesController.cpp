@@ -166,7 +166,7 @@ public:
     }
 
     void setViewMode(const ViewMode value) {
-        setEnum(viewMode_, value, ViewMode::SideBySide, ViewMode::AnalysisGrid);
+        setEnum(viewMode_, value, ViewMode::SideBySide, ViewMode::Wipe);
     }
 
     void setDifferenceMetric(const DifferenceMetric value) {
@@ -375,7 +375,8 @@ private:
                                  {"three-up", ViewMode::ThreeUp},
                                  {"reference-focus", ViewMode::ReferenceFocus},
                                  {"difference", ViewMode::Difference},
-                                 {"analysis-grid", ViewMode::AnalysisGrid}})
+                                 {"analysis-grid", ViewMode::AnalysisGrid},
+                                 {"wipe", ViewMode::Wipe}})
                 .value_or(ViewMode::SideBySide);
         const DifferenceMetric nextMetric =
             parseEnum<DifferenceMetric>(values,
@@ -439,6 +440,9 @@ private:
             break;
         case ViewMode::AnalysisGrid:
             viewModeName = "analysis-grid";
+            break;
+        case ViewMode::Wipe:
+            viewModeName = "wipe";
             break;
         case ViewMode::SideBySide:
             break;

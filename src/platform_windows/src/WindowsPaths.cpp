@@ -77,8 +77,7 @@ PlatformResult<ApplicationDataPaths> WindowsPaths::applicationDataPaths() {
                       "SHGetKnownFolderPath(FOLDERID_LocalAppData) failed."));
     }
 
-    const std::filesystem::path userDataDirectory =
-        std::filesystem::path{rawPath} / L"DualVideoStudio";
+    const std::filesystem::path userDataDirectory = std::filesystem::path{rawPath} / L"VCStation";
     CoTaskMemFree(rawPath);
 
     return PlatformResult<ApplicationDataPaths>::success(ApplicationDataPaths{

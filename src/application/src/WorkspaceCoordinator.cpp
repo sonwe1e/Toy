@@ -198,7 +198,7 @@ public:
             displayName = projectPath.stem().string();
         }
         if (displayName.empty()) {
-            displayName = "Dual Video Studio Project";
+            displayName = "VCStation Review Project";
         }
 
         domain::Result<domain::Project> prepared =

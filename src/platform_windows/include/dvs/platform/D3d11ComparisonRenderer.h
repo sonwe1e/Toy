@@ -66,6 +66,7 @@ enum class SurfaceViewMode : std::uint8_t {
     ReferenceFocus,
     Difference,
     AnalysisGrid,
+    Wipe,
 };
 
 enum class SurfaceDifferenceMetric : std::uint8_t {
@@ -144,6 +145,7 @@ struct SurfaceRenderState final {
     SurfaceDifferenceGain differenceGain = SurfaceDifferenceGain::Gain1x;
     SurfaceDifferenceEdge differenceEdge = SurfaceDifferenceEdge::Between0And1;
     SurfaceDifferenceFilter differenceFilter = SurfaceDifferenceFilter::Bilinear;
+    float wipePosition = 0.5F;
     bool exactPlaneAvailable = false;
     bool thresholdEnabled = false;
     float threshold = 0.0F;

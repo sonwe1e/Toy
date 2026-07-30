@@ -1,7 +1,7 @@
 name: Hardware and Performance
 
 # Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
-# interactively logged-in self-hosted runner and six external five-minute fixtures.
+# interactively logged-in self-hosted runner and nine external performance fixtures.
 # They run on demand instead of accepting pull-request code on the workstation.
 
 on:
@@ -72,6 +72,9 @@ jobs:
             'gate-1080p60-a.mp4',
             'gate-1080p60-b.mp4',
             'gate-1080p60-c.mp4',
+            'gate-1080p120-a.mp4',
+            'gate-1080p120-b.mp4',
+            'gate-1080p120-c.mp4',
             'gate-4k30-main10-a.mp4',
             'gate-4k30-main10-b.mp4',
             'gate-4k30-main10-c.mp4'

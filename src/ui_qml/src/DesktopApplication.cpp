@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QKeyEvent>
 #include <QMetaObject>
 #include <QMouseEvent>
@@ -57,9 +58,10 @@ public:
         : options_(options), application_(argc, argv) {
         initializeQmlResources();
         registerQmlTypes();
-        application_.setApplicationDisplayName(QStringLiteral("Dual Video Studio"));
-        application_.setApplicationName(QStringLiteral("DualVideoStudio"));
-        application_.setOrganizationName(QStringLiteral("DualVideoStudio"));
+        application_.setApplicationDisplayName(QStringLiteral("VCStation - VideoCompareStation"));
+        application_.setApplicationName(QStringLiteral("VCStation"));
+        application_.setOrganizationName(QStringLiteral("VCStation"));
+        application_.setWindowIcon(QIcon{QStringLiteral(":/branding/vcstation-icon.png")});
     }
 
     ~Impl() {

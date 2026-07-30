@@ -1,6 +1,6 @@
 # Windows self-hosted runner
 
-DualVideoStudio 的原生 CI 需要一台处于登录状态的 Windows x64 工作站。常规
+VCStation 的原生 CI 需要一台处于登录状态的 Windows x64 工作站。常规
 Debug/Release、format/lint 使用 `dvs-toolchain-4.4` 标签，D3D11VA 与五分钟性能门禁
 使用 `dvs-gpu` 标签；同一台工作站可以同时拥有这两个标签。
 
@@ -16,8 +16,24 @@ Debug/Release、format/lint 使用 `dvs-toolchain-4.4` 标签，D3D11VA 与五�
   `WixToolset.UI.wixext` 4.0.4。
 
 普通 build/test runner 不依赖 .NET SDK 或 WiX；只有生成 MSI 时才需要这两项。本机
-原先缺少的 CI 基础设施只有 GitHub Actions runner 本体、runner 注册和六个长时素材的
+原先缺少的 CI 基础设施只有 GitHub Actions runner 本体、runner 注册和九个长时素材的
 稳定目录。
+
+若重新配置机器，MSI 工具链使用以下固定版本：
+
+```powershell
+winget install --id Microsoft.DotNet.SDK.8 --exact --silent `
+  --accept-package-agreements --accept-source-agreements
+dotnet tool install wix --tool-path G:\GitHubActions\tools\wix --version 4.0.4
+G:\GitHubActions\tools\wix\wix.exe extension add `
+  --global WixToolset.UI.wixext/4.0.4
+```
+
+把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。Release job 还要求
+Windows SDK 的 `signtool.exe`，以及仓库 Secrets
+`DVS_SIGNING_PFX_BASE64`、`DVS_SIGNING_PFX_PASSWORD`。MSI 是 per-machine，
+因此执行 `packaged-smoke` 的交互式 runner 进程必须以管理员身份启动；测试会拒绝
+覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
 
 ## 固定下载
 
@@ -62,6 +78,9 @@ DVS_PERFORMANCE_FIXTURE_ROOT=G:\GitHubActions\Toy-data\performance
 gate-1080p60-a.mp4
 gate-1080p60-b.mp4
 gate-1080p60-c.mp4
+gate-1080p120-a.mp4
+gate-1080p120-b.mp4
+gate-1080p120-c.mp4
 gate-4k30-main10-a.mp4
 gate-4k30-main10-b.mp4
 gate-4k30-main10-c.mp4
@@ -84,5 +103,6 @@ status: online
 labels: self-hosted, Windows, X64, dvs-toolchain-4.4, dvs-gpu
 ```
 
-常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。其 1080p60 与 4K30
-Main10 用例各运行 300 秒，日志作为 workflow artifact 保留 14 天。
+常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。1080p60 与 4K30
+Main10 用例各运行 300 秒；2 路和 3 路 1080p120 用例各运行 60 秒。日志作为
+workflow artifact 保留 14 天。

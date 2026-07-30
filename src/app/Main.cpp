@@ -8,6 +8,7 @@
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 #include "dvs/ui/SourceListModel.h"
+#include "dvs/ui/WorkspaceController.h"
 
 #include "ReviewRuntime.h"
 #include "StartupFailureReporter.h"
@@ -100,11 +101,13 @@ struct PerformanceMetrics final {
     return QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
 }
 
-[[nodiscard]] int runDesktop(int& argc,
-                             char** argv,
-                             const bool smokeMode,
-                             const std::optional<SmokeSources>& smokeSources = std::nullopt,
-                             const bool shutdownDuringOpen = false) {
+[[nodiscard]] int
+runDesktop(int& argc,
+           char** argv,
+           const bool smokeMode,
+           const std::optional<SmokeSources>& smokeSources = std::nullopt,
+           const bool shutdownDuringOpen = false,
+           const std::optional<std::filesystem::path>& initialProject = std::nullopt) {
     dvs::ui::configureGraphicsBackend();
     dvs::ui::DesktopApplication desktop{
         argc,
@@ -135,6 +138,14 @@ struct PerformanceMetrics final {
             std::_Exit(EXIT_FAILURE);
         }
         return dvs::app::reportFatalStartup("DVS_UI_LOAD_FAILED", smokeMode);
+    }
+    if (initialProject.has_value() &&
+        !runtime->workspace()->openProject(localFileUrl(*initialProject))) {
+        runtime->prepareForSceneGraphRelease();
+        desktop.releaseSceneGraph();
+        static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
+        return dvs::app::reportFatalStartup("The requested VCStation project could not be opened.",
+                                            smokeMode);
     }
 
     QTimer smokePoll;
@@ -972,19 +983,22 @@ int main(int argc, char* argv[]) {
                                   .third = std::filesystem::path{argv[4]},
                               });
         }
-        if (argc == 7 && std::string_view{argv[1]} == "--ui-performance" &&
-            std::string_view{argv[5]} == "--seconds") {
-            const auto duration = parseDuration(argv[6]);
+        if ((argc == 6 || argc == 7) && std::string_view{argv[1]} == "--ui-performance" &&
+            std::string_view{argv[argc - 2]} == "--seconds") {
+            const auto duration = parseDuration(argv[argc - 1]);
             if (!duration) {
                 return dvs::app::reportFatalStartup(
                     "Performance duration must be between 5 and 3600 seconds.", true);
             }
+            const std::optional<std::filesystem::path> third =
+                argc == 7 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[4]}}
+                          : std::nullopt;
             return runPerformance(argc,
                                   argv,
                                   SmokeSources{
                                       .first = std::filesystem::path{argv[2]},
                                       .second = std::filesystem::path{argv[3]},
-                                      .third = std::filesystem::path{argv[4]},
+                                      .third = third,
                                   },
                                   *duration);
         }
@@ -1001,8 +1015,14 @@ int main(int argc, char* argv[]) {
         if (argc == 2 && std::string_view{argv[1]} == "--ui-fatal-startup-smoke") {
             return dvs::app::reportFatalStartup("DVS_UI_FATAL_STARTUP_SMOKE", true);
         }
+        if (argc == 2) {
+            const std::filesystem::path projectPath{argv[1]};
+            if (projectPath.extension() == ".dvsproj") {
+                return runDesktop(argc, argv, false, std::nullopt, false, projectPath);
+            }
+        }
         return dvs::app::reportFatalStartup(
-            "Unsupported GUI argument. Use DualVideoStudioCli.exe for diagnostics.", smokeArgument);
+            "Unsupported GUI argument. Use VCStationCli.exe for diagnostics.", smokeArgument);
     } catch (const std::exception& exception) {
         return dvs::app::reportFatalStartup(exception.what(), smokeArgument);
     } catch (...) {

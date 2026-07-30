@@ -15,6 +15,9 @@ inline constexpr std::uint32_t kNormalizationVersion = 2U;
 
 } // namespace
 
+SignatureCache::SignatureCache(const std::size_t maximumSignatures)
+    : maximumSignatures_(maximumSignatures) {}
+
 std::optional<std::string> SignatureCache::makeKey(const domain::MediaDescriptor& descriptor) {
     if (!descriptor.sourceIdentity.has_value() || !descriptor.sourceIdentity->isComplete() ||
         !descriptor.extent.isValid()) {
@@ -83,7 +86,7 @@ void SignatureCache::store(const domain::MediaDescriptor& descriptor,
         return;
     }
     std::scoped_lock lock(mutex_);
-    entries_[*key].insert_or_assign(signature.frameId.value(), std::move(signature));
+    storeLocked(*key, std::move(signature));
 }
 
 void SignatureCache::storeRange(const domain::MediaDescriptor& descriptor,
@@ -92,17 +95,54 @@ void SignatureCache::storeRange(const domain::MediaDescriptor& descriptor,
     if (!key.has_value()) {
         return;
     }
-    std::map<std::int64_t, application::FrameLumaSignature> validated;
+    std::vector<application::FrameLumaSignature> validated;
+    validated.reserve(signatures.size());
     for (application::FrameLumaSignature& signature : signatures) {
         if (!signature.isValid()) {
             return;
         }
-        validated.insert_or_assign(signature.frameId.value(), std::move(signature));
+        validated.push_back(std::move(signature));
     }
     std::scoped_lock lock(mutex_);
-    auto& cached = entries_[*key];
-    cached.insert(std::make_move_iterator(validated.begin()),
-                  std::make_move_iterator(validated.end()));
+    for (application::FrameLumaSignature& signature : validated) {
+        storeLocked(*key, std::move(signature));
+    }
+}
+
+std::size_t SignatureCache::entryCountForTesting() const noexcept {
+    std::scoped_lock lock(mutex_);
+    return entryCount_;
+}
+
+void SignatureCache::storeLocked(const std::string& key,
+                                 application::FrameLumaSignature signature) {
+    if (maximumSignatures_ == 0U) {
+        return;
+    }
+    auto& source = entries_[key];
+    const std::int64_t frame = signature.frameId.value();
+    const bool inserted = source.find(frame) == source.end();
+    source.insert_or_assign(frame, std::move(signature));
+    if (inserted) {
+        insertionOrder_.emplace_back(key, frame);
+        ++entryCount_;
+        evictToCapacityLocked();
+    }
+}
+
+void SignatureCache::evictToCapacityLocked() {
+    while (entryCount_ > maximumSignatures_ && !insertionOrder_.empty()) {
+        auto [key, frame] = std::move(insertionOrder_.front());
+        insertionOrder_.pop_front();
+        const auto source = entries_.find(key);
+        if (source == entries_.end() || source->second.erase(frame) == 0U) {
+            continue;
+        }
+        --entryCount_;
+        if (source->second.empty()) {
+            entries_.erase(source);
+        }
+    }
 }
 
 } // namespace dvs::media::internal

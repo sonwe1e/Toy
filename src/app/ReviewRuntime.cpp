@@ -92,6 +92,33 @@ private:
     std::atomic<std::shared_ptr<platform::IRenderActivitySink>> sink_;
 };
 
+class ReviewProjectionBridge final {
+public:
+    void bind(ui::ReviewController& controller) noexcept {
+        std::scoped_lock lock(mutex_);
+        controller_ = &controller;
+    }
+
+    void unbind() noexcept {
+        std::scoped_lock lock(mutex_);
+        controller_ = nullptr;
+    }
+
+    void notify() noexcept {
+        std::scoped_lock lock(mutex_);
+        if (controller_ == nullptr) {
+            return;
+        }
+        ui::ReviewController* const controller = controller_;
+        static_cast<void>(QMetaObject::invokeMethod(
+            controller, [controller] { controller->refreshProjection(); }, Qt::QueuedConnection));
+    }
+
+private:
+    std::mutex mutex_;
+    ui::ReviewController* controller_ = nullptr;
+};
+
 class GraphicsNotificationPump final {
 public:
     GraphicsNotificationPump(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -302,6 +329,7 @@ public:
             std::make_shared<platform::FrameMailbox>(deviceBroker_->currentGeneration());
         acknowledgementMailbox_ = std::make_shared<platform::PresentationAckMailbox>();
         activityBridge_ = std::make_shared<RenderActivityBridge>();
+        projectionBridge_ = std::make_shared<ReviewProjectionBridge>();
         transferActor_ = std::make_shared<platform::GpuTransferActor>(
             frameBudget_, deviceBroker_, frameMailbox_, activityBridge_);
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
@@ -322,6 +350,7 @@ public:
                 .deadlineScheduler = deadlineScheduler_,
                 .clock = clock_,
                 .renderChannel = renderChannel_,
+                .statePublished = [bridge = projectionBridge_] { bridge->notify(); },
             });
         if (!coordinator_) {
             throw std::runtime_error{"The playback coordinator could not be created."};
@@ -385,7 +414,9 @@ public:
             .snapshot = [workspace] { return workspace->playbackSnapshot(); },
             .takeCompletedCommands =
                 [workspace] { return workspace->takeCompletedPlaybackCommands(); },
+            .eventDriven = true,
         });
+        projectionBridge_->bind(*controller_);
         preferences_ = std::make_unique<ui::ReviewPreferencesController>(settingsRepository_);
         workspaceController_ =
             std::make_unique<ui::WorkspaceController>(*workspaceCoordinator_, *preferences_);
@@ -476,6 +507,9 @@ public:
         }
         prepared_ = true;
 
+        if (projectionBridge_) {
+            projectionBridge_->unbind();
+        }
         if (controller_) {
             controller_->stop();
         }
@@ -582,6 +616,7 @@ private:
     std::shared_ptr<platform::FrameMailbox> frameMailbox_;
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox_;
     std::shared_ptr<RenderActivityBridge> activityBridge_;
+    std::shared_ptr<ReviewProjectionBridge> projectionBridge_;
     std::shared_ptr<platform::GpuTransferActor> transferActor_;
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;

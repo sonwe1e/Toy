@@ -2,6 +2,7 @@ include(GoogleTest)
 
 add_executable(
     dvs_ui_component_tests
+    BadCaseExporterTests.cpp
     ReviewControllerTests.cpp
     ReviewPreferencesControllerTests.cpp
 )
@@ -10,6 +11,10 @@ target_link_libraries(
     PRIVATE
         dvs_ui_qml
         dvs::test_dependencies
+)
+target_include_directories(
+    dvs_ui_component_tests
+    PRIVATE "${PROJECT_SOURCE_DIR}/src/ui_qml/src"
 )
 
 dvs_apply_project_warnings(dvs_ui_component_tests)
