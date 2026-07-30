@@ -1,0 +1,2 @@
+e8ab82c3eb5ea5b4e3a89bea7667f18adf0f3bab5ac974cd3e59f18f632f5709  DualVideoStudio-1.0.0-windows-x64.zip
+561750906f6bd738f967d887cc2cf7063267eeff7c21bedd4d1a3dd54b01d0e0  DualVideoStudio-1.0.0-windows-x64.msi

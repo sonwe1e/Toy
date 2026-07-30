@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(DualVideoStudio VERSION 0.1.0 LANGUAGES CXX)
+project(DualVideoStudio VERSION 1.0.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "DualVideoStudio supports Windows only.")
