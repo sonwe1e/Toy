@@ -2,11 +2,11 @@
 
 #define IDI_VCSTATION 101
 
-IDI_VCSTATION ICON "../../assets/branding/vcstation.ico"
+IDI_VCSTATION ICON "@PROJECT_SOURCE_DIR@/assets/branding/vcstation.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+ PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS VS_FF_DEBUG
@@ -23,11 +23,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "VCStation Contributors"
             VALUE "FileDescription", "VCStation - VideoCompareStation"
-            VALUE "FileVersion", "1.0.0"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "VCStation"
             VALUE "OriginalFilename", "VCStation.exe"
             VALUE "ProductName", "VCStation (VideoCompareStation)"
-            VALUE "ProductVersion", "1.0.0"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
         END
     END
     BLOCK "VarFileInfo"

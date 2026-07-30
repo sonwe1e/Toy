@@ -5,6 +5,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <future>
@@ -14,6 +15,17 @@
 
 namespace dvs::media::internal {
 namespace {
+
+using namespace std::chrono_literals;
+
+template <typename Predicate>
+[[nodiscard]] bool waitUntil(Predicate&& predicate, const std::chrono::milliseconds timeout = 5s) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(1ms);
+    }
+    return predicate();
+}
 
 [[nodiscard]] std::filesystem::path fixture(const char* const name) {
     return std::filesystem::path{DVS_MEDIA_FIXTURE_DIR} / name;
@@ -212,7 +224,7 @@ TEST(SourceDecodeActorTests, SequentialReadAheadFillsOnlyTheSourceFrameCache) {
     });
     ASSERT_EQ(first.status, application::PortSubmitResult::Accepted);
     ASSERT_TRUE(first.completion.get());
-    ASSERT_EQ(actor.completedDecodeCount(), 4U);
+    ASSERT_TRUE(waitUntil([&actor] { return actor.completedDecodeCount() == 4U; }));
 
     SourceDecodeSubmission cached = actor.submit(SourceDecodeRequest{
         .frameId = domain::FrameId{1},

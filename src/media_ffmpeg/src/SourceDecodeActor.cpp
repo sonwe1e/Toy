@@ -354,9 +354,10 @@ void SourceDecodeActor::run() noexcept {
                 .maximumDecodeMicroseconds = maximumDecodeMicroseconds_,
             };
         };
-        const auto fillReadAhead = [this, &decode, &recordDecode](const std::size_t frameBytes) {
-            if (decode->request.priority != SourceDecodePriority::Sequential ||
-                decode->request.readAheadCount == 0U || frameBytes == 0U) {
+        const auto fillReadAhead = [this, &recordDecode](const SourceDecodeRequest& request,
+                                                         const std::size_t frameBytes) {
+            if (request.priority != SourceDecodePriority::Sequential ||
+                request.readAheadCount == 0U || frameBytes == 0U) {
                 return;
             }
             const std::size_t cacheFrameCapacity = cache_.capacityBytes() / frameBytes;
@@ -368,7 +369,7 @@ void SourceDecodeActor::run() noexcept {
                 return;
             }
             const std::uint8_t effectiveReadAhead = static_cast<std::uint8_t>(
-                std::min<std::size_t>(decode->request.readAheadCount, cacheFrameCapacity));
+                std::min<std::size_t>(request.readAheadCount, cacheFrameCapacity));
             for (std::uint8_t offset = 1U; offset <= effectiveReadAhead; ++offset) {
                 bool urgentWorkQueued = false;
                 {
@@ -377,11 +378,11 @@ void SourceDecodeActor::run() noexcept {
                                        !exactQueue_.empty() || !sequentialQueue_.empty();
                 }
                 if (urgentWorkQueued ||
-                    decode->request.cancellationRequested->load(std::memory_order_acquire)) {
+                    request.cancellationRequested->load(std::memory_order_acquire)) {
                     break;
                 }
 
-                const std::int64_t base = decode->request.frameId.value();
+                const std::int64_t base = request.frameId.value();
                 if (base > (std::numeric_limits<std::int64_t>::max)() - offset) {
                     break;
                 }
@@ -396,7 +397,7 @@ void SourceDecodeActor::run() noexcept {
 
                 const auto started = std::chrono::steady_clock::now();
                 domain::Result<DecodedFrame> result =
-                    decoder_->decodeSequential(candidate, *decode->request.cancellationRequested);
+                    decoder_->decodeSequential(candidate, *request.cancellationRequested);
                 const auto elapsed = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::microseconds>(
                         std::chrono::steady_clock::now() - started)
@@ -419,12 +420,14 @@ void SourceDecodeActor::run() noexcept {
                 ++cacheHitCount_;
                 backendStatus_.cacheHitCount = cacheHitCount_;
             }
-            fillReadAhead(cached->handle.accountedBytes());
+            const SourceDecodeRequest readAheadRequest = decode->request;
+            const std::size_t frameBytes = cached->handle.accountedBytes();
             complete(std::move(*decode),
                      domain::Result<DecodedFrame>::success(DecodedFrame{
                          .handle = std::move(cached->handle),
                          .presentationTime = cached->presentationTime,
                      }));
+            fillReadAhead(readAheadRequest, frameBytes);
             continue;
         }
 
@@ -450,10 +453,13 @@ void SourceDecodeActor::run() noexcept {
                           });
         }
         recordDecode(decodeMicroseconds);
-        if (result) {
-            fillReadAhead(result.value().handle.accountedBytes());
-        }
+        const SourceDecodeRequest readAheadRequest = decode->request;
+        const bool decoded = static_cast<bool>(result);
+        const std::size_t frameBytes = decoded ? result.value().handle.accountedBytes() : 0U;
         complete(std::move(*decode), std::move(result));
+        if (decoded) {
+            fillReadAhead(readAheadRequest, frameBytes);
+        }
     }
     decoder_->close();
 }

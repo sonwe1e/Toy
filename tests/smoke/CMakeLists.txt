@@ -20,6 +20,18 @@ dvs_add_test(
 )
 
 dvs_add_test(
+    NAME app.gui-stderr-redirection
+    LAYER e2e
+    MODULE app
+    TIMEOUT 10
+    COMMAND
+        ${CMAKE_COMMAND}
+        "-DDVS_GUI_EXECUTABLE=$<TARGET_FILE:VCStation>"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/VerifyGuiStderr.cmake"
+)
+
+dvs_add_test(
     NAME app.cli-pe-subsystem
     LAYER e2e
     MODULE app
@@ -136,6 +148,26 @@ dvs_add_test(
         -ProbeFixture
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
 )
+
+if(DVS_PREVIOUS_RELEASE_MSI)
+    dvs_add_test(
+        NAME package.msi-upgrade-from-1.0.0
+        LAYER packaged
+        MODULE app
+        TIMEOUT 240
+        COMMAND
+            powershell.exe
+            -NoLogo
+            -NoProfile
+            -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyMsiPackage.ps1"
+            -MsiPath "${PROJECT_SOURCE_DIR}/out/package/msi/VCStation-${PROJECT_VERSION}-windows-x64.msi"
+            -ExpectedVersion "${PROJECT_VERSION}"
+            -ProbeFixture
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+            -PreviousMsiPath "${DVS_PREVIOUS_RELEASE_MSI}"
+    )
+endif()
 
 dvs_add_test(
     NAME app.shutdown-soak

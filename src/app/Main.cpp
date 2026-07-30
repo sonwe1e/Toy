@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <Windows.h>
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -24,6 +25,7 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -81,6 +83,25 @@ struct PerformanceMetrics final {
     std::uint64_t analysisDecodedFrames = 0U;
     qint64 shutdownMilliseconds = -1;
 };
+
+void writeStandardError(std::string_view message) noexcept {
+    const HANDLE standardError = GetStdHandle(STD_ERROR_HANDLE);
+    if (standardError == nullptr || standardError == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    while (!message.empty()) {
+        const std::size_t chunkSize =
+            std::min<std::size_t>(message.size(), (std::numeric_limits<DWORD>::max)());
+        DWORD written = 0U;
+        if (WriteFile(
+                standardError, message.data(), static_cast<DWORD>(chunkSize), &written, nullptr) ==
+                FALSE ||
+            written == 0U) {
+            return;
+        }
+        message.remove_prefix(written);
+    }
+}
 
 [[nodiscard]] std::optional<std::chrono::seconds> parseDuration(const std::string_view text) {
     std::int64_t seconds = 0;
@@ -486,10 +507,9 @@ runDesktop(int& argc,
                       [&runtime](dvs::ui::ComparisonSurface& surface) {
                           return runtime->attachSurface(surface);
                       })) {
-        std::cerr << "DVS_PERFORMANCE_UI_LOAD_FAILED\n";
+        writeStandardError("DVS_PERFORMANCE_UI_LOAD_FAILED\n");
         return EXIT_FAILURE;
     }
-
     enum class Stage {
         WaitingForGraphics,
         WaitingForFirstFrame,
@@ -524,6 +544,7 @@ runDesktop(int& argc,
     bool completed = false;
     bool failed = false;
     std::string failureReason;
+    const std::size_t expectedSourceCount = sources.third.has_value() ? 3U : 2U;
 
     const auto fail = [&](std::string reason) {
         if (!failed) {
@@ -535,7 +556,8 @@ runDesktop(int& argc,
     const auto samplePresentedSources = [&] {
         auto* const model = runtime->controller()->sources();
         const qint64 canonical = runtime->controller()->currentFrame();
-        if (model == nullptr || canonical < 0 || model->rowCount() != 3) {
+        if (model == nullptr || canonical < 0 ||
+            model->rowCount() != static_cast<int>(expectedSourceCount)) {
             ++metrics.sourceSplitObservations;
             return;
         }
@@ -600,20 +622,25 @@ runDesktop(int& argc,
         metrics.peakFrameBytes = std::max(metrics.peakFrameBytes, runtime->reservedFrameBytes());
 
         switch (stage) {
-        case Stage::WaitingForGraphics:
+        case Stage::WaitingForGraphics: {
             if (!controller.graphicsReady()) {
                 return;
             }
-            if (!desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                         localFileUrl(sources.second),
-                                                         localFileUrl(*sources.third)) ||
-                !desktop.clickControlForAutomation("openPairButton")) {
+            const bool sourcesSelected =
+                sources.third.has_value()
+                    ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                              localFileUrl(sources.second),
+                                                              localFileUrl(*sources.third))
+                    : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                              localFileUrl(sources.second));
+            if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
                 fail("open-rejected");
                 return;
             }
             openTimer.start();
             stage = Stage::WaitingForFirstFrame;
             return;
+        }
         case Stage::WaitingForFirstFrame:
             if (controller.busy() || controller.currentFrame() != 0) {
                 return;
@@ -791,7 +818,7 @@ runDesktop(int& argc,
     const double dropRatio = totalCounted == 0U ? 1.0
                                                 : static_cast<double>(metrics.droppedFrames) /
                                                       static_cast<double>(totalCounted);
-    const bool allHardware = backends.size() == 3U &&
+    const bool allHardware = backends.size() == expectedSourceCount &&
                              std::all_of(backends.begin(), backends.end(), [](const auto& status) {
                                  return status.backend == dvs::media::DecoderBackend::D3d11Va &&
                                         status.deviceGeneration.value() != 0U;
@@ -939,16 +966,17 @@ runDesktop(int& argc,
                        : backend.totalDecodeMicroseconds / backend.completedDecodeCount)
                << ",\"maximum_us\":" << backend.maximumDecodeMicroseconds << '}';
     }
-    report << ']' << ",\"all_d3d11va\":" << (allHardware ? "true" : "false")
+    report << ']' << ",\"expected_source_count\":" << expectedSourceCount
+           << ",\"all_d3d11va\":" << (allHardware ? "true" : "false")
            << ",\"shutdown_completed\":" << (shutdownCompleted ? "true" : "false")
            << ",\"passed\":" << (result == EXIT_SUCCESS ? "true" : "false");
     if (failed) {
         report << ",\"failure\":\"" << failureReason << '"';
     }
     report << "}\n";
-    std::cerr << "DVS_PERFORMANCE_RESULT " << report.str() << std::flush;
+    writeStandardError("DVS_PERFORMANCE_RESULT " + report.str());
     if (!shutdownCompleted) {
-        std::cerr << "DVS_RUNTIME_SHUTDOWN_TIMEOUT\n";
+        writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
     }
     return result;
 }
@@ -960,6 +988,10 @@ int main(int argc, char* argv[]) {
     try {
         if (argc == 1) {
             return runDesktop(argc, argv, false);
+        }
+        if (argc == 2 && std::string_view{argv[1]} == "--ui-stderr-smoke") {
+            writeStandardError("DVS_GUI_STDERR_OK\n");
+            return EXIT_SUCCESS;
         }
         if (argc == 2 && std::string_view{argv[1]} == "--ui-smoke") {
             return runDesktop(argc, argv, true);

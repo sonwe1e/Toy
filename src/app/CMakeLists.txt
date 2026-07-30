@@ -1,3 +1,5 @@
+configure_file(VCStation.rc.in "${CMAKE_CURRENT_BINARY_DIR}/VCStation.rc" @ONLY)
+
 add_executable(
     VCStation
     WIN32
@@ -6,7 +8,7 @@ add_executable(
     ReviewRuntime.h
     StartupFailureReporter.cpp
     StartupFailureReporter.h
-    VCStation.rc
+    "${CMAKE_CURRENT_BINARY_DIR}/VCStation.rc"
 )
 add_executable(VCStationCli CliMain.cpp)
 

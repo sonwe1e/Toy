@@ -5,6 +5,12 @@ name: Hardware and Performance
 # They run on demand instead of accepting pull-request code on the workstation.
 
 on:
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Exact commit that must be tested
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -22,12 +28,23 @@ jobs:
     env:
       DVS_VCPKG_ROOT: ${{ vars.DVS_VCPKG_ROOT }}
       DVS_PERFORMANCE_FIXTURE_ROOT: ${{ vars.DVS_PERFORMANCE_FIXTURE_ROOT }}
+      DVS_EXPECTED_SHA: ${{ inputs.commit_sha || github.sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ env.DVS_EXPECTED_SHA }}
+
+      - name: Verify tested commit
+        shell: pwsh
+        run: |
+          $actualSha = (git rev-parse HEAD).Trim()
+          if ($actualSha -cne $env:DVS_EXPECTED_SHA) {
+            throw "Expected commit $env:DVS_EXPECTED_SHA, checked out $actualSha."
+          }
+          "DVS_TESTED_SHA=$actualSha" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Enter MSVC x64 environment
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -111,6 +128,8 @@ jobs:
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'out\performance-results'
           New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          $env:DVS_TESTED_SHA |
+            Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
           $resultRoot = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT 'results'
           if (Test-Path -LiteralPath $resultRoot) {
             Get-ChildItem -LiteralPath $resultRoot -File |
@@ -121,7 +140,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hardware-performance-logs
+          name: hardware-performance-logs-${{ github.sha }}
           path: out/performance-results
           if-no-files-found: warn
           retention-days: 14

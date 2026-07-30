@@ -71,6 +71,13 @@ if (-not $resultLine) {
 }
 
 $json = $resultLine.Substring('DVS_PERFORMANCE_RESULT '.Length) | ConvertFrom-Json
+$expectedSourceCount = if ($Profile -eq '1080p120-2source') { 2 } else { 3 }
+if ($json.expected_source_count -ne $expectedSourceCount) {
+    throw (
+        "The $Profile gate reported expected_source_count=" +
+        "$($json.expected_source_count), expected $expectedSourceCount."
+    )
+}
 if ($process.ExitCode -ne 0 -or -not $json.passed) {
     throw "The $Profile performance gate failed with exit code $($process.ExitCode)."
 }

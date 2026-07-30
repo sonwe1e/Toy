@@ -39,7 +39,7 @@ inline constexpr std::size_t kExactRequestSlots = 1U;
 inline constexpr std::size_t kSequentialRequestSlots = 2U;
 inline constexpr std::size_t kPrefetchRequestSlots = 8U;
 inline constexpr std::size_t kSetTableCapacity = 4U;
-inline constexpr std::size_t kMaximumSourceCacheBytes = 48U * 1024U * 1024U;
+inline constexpr std::size_t kMaximumSourceCacheBytes = 12U * 1024U * 1024U;
 inline constexpr std::size_t kMaximumFrameSetCacheBytes = 96U * 1024U * 1024U;
 
 enum class ProviderOperationKind {
