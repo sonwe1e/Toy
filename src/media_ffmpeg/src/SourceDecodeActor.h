@@ -107,10 +107,12 @@ private:
     domain::SourceId sourceId_;
     std::int64_t sourceFrameCount_ = 0;
     std::unique_ptr<SoftwareDecoder> decoder_;
-    // Long-GOP random seeks for bounded frame sizes are faster in software than D3D11VA.
-    // Large frames stay on decoder_ to preserve the shared frame budget, and continuous playback
-    // always stays there so its shared surfaces remain zero-copy.
-    std::unique_ptr<SoftwareDecoder> exactSoftwareDecoder_;
+    // Bounded frames use an independent exact decoder so random navigation cannot disturb
+    // playback state. It uses software below 50 FPS and D3D11VA for 50/60/120 FPS sources, where
+    // one long GOP can contain hundreds of frames. Exact prefetch stays on the same decoder.
+    std::unique_ptr<SoftwareDecoder> exactDecoder_;
+    bool decoderNeedsReopen_ = false;
+    bool exactDecoderNeedsReopen_ = false;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<ControlJob> controlQueue_;

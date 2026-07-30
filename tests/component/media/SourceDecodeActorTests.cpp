@@ -163,6 +163,76 @@ TEST(SourceDecodeActorTests, ExactRequestReusesAPrefetchedSourceFrameAcrossReque
     EXPECT_EQ(prefetched.value().presentationTime, reused.value().presentationTime);
 }
 
+TEST(SourceDecodeActorTests, ExactSuccessorPrefetchContinuesOnTheDedicatedDecoder) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        2U * 1024U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    SourceDecodeSubmission exact = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{6},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(exact.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(exact.completion.get());
+    ASSERT_EQ(actor.backendStatus().exactSeekCount, 1U);
+
+    SourceDecodeSubmission prefetch = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{7},
+        .priority = SourceDecodePriority::Prefetch,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(prefetch.status, application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(prefetch.completion.get());
+
+    EXPECT_EQ(actor.completedDecodeCount(), 2U);
+    EXPECT_EQ(actor.backendStatus().exactSeekCount, 1U);
+}
+
+TEST(SourceDecodeActorTests, ReopensTheDedicatedDecoderAfterAnInterruptedRequest) {
+    platform::FrameBudget budget{16U * 1024U * 1024U};
+    std::atomic<bool> interrupted = false;
+    std::atomic<bool> canceled = false;
+    SourceDecodeActor actor{
+        0U,
+        descriptor("h264_a_320x180_30fps_12.mp4"),
+        budget,
+        &interrupted,
+        false,
+        2U * 1024U * 1024U,
+    };
+    ASSERT_TRUE(actor.open(canceled));
+
+    interrupted.store(true, std::memory_order_release);
+    SourceDecodeSubmission interruptedDecode = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{6},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(interruptedDecode.status, application::PortSubmitResult::Accepted);
+    ASSERT_FALSE(interruptedDecode.completion.get());
+
+    interrupted.store(false, std::memory_order_release);
+    SourceDecodeSubmission recovered = actor.submit(SourceDecodeRequest{
+        .frameId = domain::FrameId{6},
+        .priority = SourceDecodePriority::Exact,
+        .cancellationRequested = &canceled,
+    });
+    ASSERT_EQ(recovered.status, application::PortSubmitResult::Accepted);
+    const auto decoded = recovered.completion.get();
+    ASSERT_TRUE(decoded) << decoded.error().technicalDetail;
+    EXPECT_EQ(decoded.value().presentationTime, domain::MediaTime{200000});
+}
+
 TEST(SourceDecodeActorTests, SequentialRequestReusesAPrefetchedSourceFrameWithoutDecodingAgain) {
     platform::FrameBudget budget{16U * 1024U * 1024U};
     std::atomic<bool> interrupted = false;

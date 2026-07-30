@@ -85,14 +85,15 @@ public:
                                                   &preferences);
         engine->rootContext()->setContextProperty(QStringLiteral("workspaceController"),
                                                   &workspace);
-        QObject::connect(engine.get(),
-                         &QQmlEngine::warnings,
-                         engine.get(),
-                         [this](const QList<QQmlError>& warnings) {
-                             qmlWarnings_.insert(
-                                 qmlWarnings_.end(), warnings.cbegin(), warnings.cend());
-                         });
+        const QMetaObject::Connection warningConnection = QObject::connect(
+            engine.get(),
+            &QQmlEngine::warnings,
+            engine.get(),
+            [this](const QList<QQmlError>& warnings) {
+                qmlWarnings_.insert(qmlWarnings_.end(), warnings.cbegin(), warnings.cend());
+            });
         engine->load(QUrl{QStringLiteral("qrc:/qml/Main.qml")});
+        static_cast<void>(QObject::disconnect(warningConnection));
         if (engine->rootObjects().size() != 1) {
             reportWarnings(qmlWarnings_);
             return false;

@@ -385,6 +385,11 @@ public:
         return frameRequests_.size();
     }
 
+    [[nodiscard]] std::size_t prefetchRequestCount() const {
+        std::scoped_lock lock(mutex_);
+        return prefetchRequests_.size();
+    }
+
     [[nodiscard]] std::size_t openRequestCount() const {
         std::scoped_lock lock(mutex_);
         return openRequests_.size();
@@ -760,25 +765,26 @@ private:
     bool released_ = false;
 };
 
-[[nodiscard]] domain::RationalRate makeRate() {
-    auto rate = domain::RationalRate::create(30, 1);
+[[nodiscard]] domain::RationalRate makeRate(const std::int64_t framesPerSecond = 30) {
+    auto rate = domain::RationalRate::create(framesPerSecond, 1);
     EXPECT_TRUE(rate.hasValue());
     return std::move(rate).value();
 }
 
 [[nodiscard]] domain::MediaDescriptor makeDescriptor(const std::filesystem::path& path,
                                                      const domain::MediaExtent extent,
-                                                     const std::int64_t frameCount = 12) {
+                                                     const std::int64_t frameCount = 12,
+                                                     const std::int64_t framesPerSecond = 30) {
     return domain::MediaDescriptor{
         .normalizedPath = path,
         .extent = extent,
-        .frameRate = makeRate(),
+        .frameRate = makeRate(framesPerSecond),
         .frameCount =
             domain::FrameCountInfo{
                 .value = frameCount,
                 .origin = domain::FrameCountOrigin::kReported,
             },
-        .duration = domain::MediaTime{frameCount * 1'000'000 / 30},
+        .duration = domain::MediaTime{frameCount * 1'000'000 / framesPerSecond},
         .codecId = "h264",
         .pixelFormatId = "yuv420p",
         .bitDepth = 8,
@@ -1019,7 +1025,8 @@ void openReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                const std::shared_ptr<FakeFrameProvider>& provider,
                const std::shared_ptr<FakeRenderChannel>& render,
                const domain::CommandId commandId = domain::CommandId{1},
-               const std::int64_t secondFrameCount = 12) {
+               const std::int64_t secondFrameCount = 12,
+               const std::int64_t framesPerSecond = 30) {
     const std::shared_ptr<const SessionSnapshot> initial = coordinator->snapshot();
     ASSERT_NE(initial, nullptr);
     ASSERT_EQ(coordinator->submit(OpenDirectComparisonCommand{
@@ -1034,8 +1041,11 @@ void openReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                           domain::ComparisonSource{
                               .id = 0,
                               .role = domain::ComparisonRole::kPrediction,
-                              .descriptor = makeDescriptor(
-                                  "a.mp4", domain::MediaExtent{.width = 320, .height = 180}),
+                              .descriptor =
+                                  makeDescriptor("a.mp4",
+                                                 domain::MediaExtent{.width = 320, .height = 180},
+                                                 12,
+                                                 framesPerSecond),
                               .displayName = "a",
                           },
                           domain::ComparisonSource{
@@ -1044,7 +1054,8 @@ void openReady(const std::shared_ptr<PlaybackCoordinator>& coordinator,
                               .descriptor =
                                   makeDescriptor("b.mp4",
                                                  domain::MediaExtent{.width = 160, .height = 90},
-                                                 secondFrameCount),
+                                                 secondFrameCount,
+                                                 framesPerSecond),
                               .displayName = "b",
                           },
                       },
@@ -1151,6 +1162,38 @@ TEST(PlaybackCoordinatorTests, SuccessfulExactPresentationSubmitsBoundedPrefetch
         EXPECT_EQ(request->frameId, domain::FrameId{static_cast<std::int64_t>(index + 1U)});
         EXPECT_EQ(request->alignmentRevision, 0U);
     }
+}
+
+TEST(PlaybackCoordinatorTests, HighFrameRateExactPresentationDoesNotStartSpeculativeDecode) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{1});
+    openReady(coordinator, provider, render, domain::CommandId{1}, 12, 120);
+
+    EXPECT_EQ(provider->prefetchRequestCount(), 0U);
+}
+
+TEST(PlaybackCoordinatorTests, SixtyFpsExactPresentationPrefetchesOnlyOneSuccessor) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             std::make_shared<FakeDeadlineScheduler>(),
+                                             std::make_shared<FakeSteadyClock>());
+    markGraphicsReady(coordinator, domain::DeviceGeneration{1});
+    openReady(coordinator, provider, render, domain::CommandId{1}, 12, 60);
+
+    ASSERT_TRUE(provider->waitForPrefetchRequestCount(1U));
+    EXPECT_EQ(provider->prefetchRequestCount(), 1U);
+    const std::optional<FrameRequest> request = provider->prefetchRequest(0U);
+    ASSERT_TRUE(request.has_value());
+    EXPECT_EQ(request->frameId, domain::FrameId{1});
 }
 
 TEST(PlaybackCoordinatorAlignmentTests, AppliesOffsetsWithoutReopeningAndReseeksAtomically) {
@@ -1979,12 +2022,12 @@ TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsWithOnePreparedSu
     const auto firstPlaybackFrame = provider->frameRequest(1U);
     ASSERT_TRUE(firstPlaybackFrame.has_value());
     EXPECT_EQ(firstPlaybackFrame->frameId, domain::FrameId{1});
-    ASSERT_EQ(provider->frameRequestCount(), 3U);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
     const auto preparedFrame = provider->frameRequest(2U);
     ASSERT_TRUE(preparedFrame.has_value());
     EXPECT_EQ(preparedFrame->frameId, domain::FrameId{2});
 
-    clock->advance(400ms);
+    clock->advance(600ms);
     ASSERT_TRUE(
         provider->postFrameReady(*firstPlaybackFrame, makeFrameSet(firstPlaybackFrame->frameId)));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
@@ -2002,7 +2045,7 @@ TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsWithOnePreparedSu
     }));
 }
 
-TEST(PlaybackCoordinatorTests, BriefPlaybackDelayUsesPreparedSuccessorWithoutDropping) {
+TEST(PlaybackCoordinatorTests, SubHalfSecondPlaybackDelayUsesPreparedSuccessorWithoutDropping) {
     const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
     const auto clock = std::make_shared<FakeSteadyClock>();
     const auto provider = std::make_shared<FakeFrameProvider>();
@@ -2029,7 +2072,7 @@ TEST(PlaybackCoordinatorTests, BriefPlaybackDelayUsesPreparedSuccessorWithoutDro
     EXPECT_EQ(active->frameId, domain::FrameId{1});
     EXPECT_EQ(prepared->frameId, domain::FrameId{2});
 
-    clock->advance(100ms);
+    clock->advance(400ms);
     ASSERT_TRUE(provider->postFrameReady(*active, makeFrameSet(active->frameId)));
     ASSERT_TRUE(provider->postFrameSucceeded(*active));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
@@ -3922,7 +3965,7 @@ TEST(PlaybackCoordinatorTests,
     const std::optional<DeadlineRequest> firstCadence = scheduler->request(1U);
     ASSERT_TRUE(firstCadence.has_value());
 
-    clock->set(firstCadence->due + 500ms);
+    clock->set(firstCadence->due + 600ms);
     ASSERT_TRUE(scheduler->fire(1U));
     ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
     const std::optional<FrameRequest> catchUp = provider->frameRequest(1U);

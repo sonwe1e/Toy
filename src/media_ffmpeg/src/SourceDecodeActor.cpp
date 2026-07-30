@@ -24,7 +24,8 @@ constexpr std::uint8_t kMaximumReadAheadCount = 4U;
 constexpr std::uint32_t kExactSoftwareThreadCount = 4U;
 constexpr std::uint64_t kMaximumSoftwareExactFrameBytes = 8U * 1024U * 1024U;
 
-[[nodiscard]] bool supportsSoftwareExactDecode(const domain::MediaDescriptor& descriptor) noexcept {
+[[nodiscard]] bool
+supportsDedicatedExactDecode(const domain::MediaDescriptor& descriptor) noexcept {
     if (descriptor.extent.width == 0U ||
         descriptor.extent.height >
             kMaximumSoftwareExactFrameBytes / static_cast<std::uint64_t>(descriptor.extent.width)) {
@@ -37,6 +38,10 @@ constexpr std::uint64_t kMaximumSoftwareExactFrameBytes = 8U * 1024U * 1024U;
     }
     const std::uint64_t bytes = descriptor.bitDepth == 10U ? pixels * 3U : pixels + (pixels / 2U);
     return bytes <= kMaximumSoftwareExactFrameBytes;
+}
+
+[[nodiscard]] bool prefersHardwareExactDecode(const domain::MediaDescriptor& descriptor) noexcept {
+    return descriptor.frameRate.has_value() && descriptor.frameRate->displayFps() >= 50.0;
 }
 
 [[nodiscard]] domain::MediaError
@@ -80,15 +85,17 @@ SourceDecodeActor::SourceDecodeActor(const domain::SourceId sourceId,
                                      std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
     : sourceId_(sourceId), sourceFrameCount_(descriptor.frameCount.value),
       decoder_(std::make_unique<SoftwareDecoder>(
-          sourceId, descriptor, frameBudget, externalInterrupt, std::move(deviceBroker))),
-      exactSoftwareDecoder_(supportsSoftwareExactDecode(descriptor)
-                                ? std::make_unique<SoftwareDecoder>(sourceId,
-                                                                    descriptor,
-                                                                    frameBudget,
-                                                                    externalInterrupt,
-                                                                    nullptr,
-                                                                    kExactSoftwareThreadCount)
-                                : nullptr),
+          sourceId, descriptor, frameBudget, externalInterrupt, deviceBroker)),
+      exactDecoder_(supportsDedicatedExactDecode(descriptor)
+                        ? std::make_unique<SoftwareDecoder>(sourceId,
+                                                            descriptor,
+                                                            frameBudget,
+                                                            externalInterrupt,
+                                                            prefersHardwareExactDecode(descriptor)
+                                                                ? std::move(deviceBroker)
+                                                                : nullptr,
+                                                            kExactSoftwareThreadCount)
+                        : nullptr),
       worker_([this] { run(); }), backendStatus_{.sourceId = sourceId}, cache_(cacheCapacityBytes),
       cacheKey_{
           .sourceFingerprint = descriptor.sourceIdentity.has_value()
@@ -228,8 +235,8 @@ void SourceDecodeActor::close() noexcept {
 
 void SourceDecodeActor::requestInterrupt() noexcept {
     decoder_->requestInterrupt();
-    if (exactSoftwareDecoder_ != nullptr) {
-        exactSoftwareDecoder_->requestInterrupt();
+    if (exactDecoder_ != nullptr) {
+        exactDecoder_->requestInterrupt();
     }
 }
 
@@ -333,9 +340,11 @@ void SourceDecodeActor::run() noexcept {
         if (control.has_value()) {
             if (control->kind == ControlKind::Open && control->cancellationRequested != nullptr) {
                 domain::Status status = decoder_->open(*control->cancellationRequested);
-                if (status && exactSoftwareDecoder_ != nullptr) {
-                    status = exactSoftwareDecoder_->open(*control->cancellationRequested);
+                if (status && exactDecoder_ != nullptr) {
+                    status = exactDecoder_->open(*control->cancellationRequested);
                 }
+                decoderNeedsReopen_ = false;
+                exactDecoderNeedsReopen_ = false;
                 {
                     std::scoped_lock lock{mutex_};
                     completedDecodeCount_ = 0U;
@@ -352,9 +361,11 @@ void SourceDecodeActor::run() noexcept {
                 control->completion.set_value(std::move(status));
             } else {
                 decoder_->close();
-                if (exactSoftwareDecoder_ != nullptr) {
-                    exactSoftwareDecoder_->close();
+                if (exactDecoder_ != nullptr) {
+                    exactDecoder_->close();
                 }
+                decoderNeedsReopen_ = false;
+                exactDecoderNeedsReopen_ = false;
                 cache_.clear();
                 {
                     std::scoped_lock lock{mutex_};
@@ -383,10 +394,8 @@ void SourceDecodeActor::run() noexcept {
                 .deviceGeneration = decoder_->deviceGeneration(),
                 .completedDecodeCount = completedDecodeCount_,
                 .cacheHitCount = cacheHitCount_,
-                .exactSeekCount =
-                    decoder_->exactSeekCount() + (exactSoftwareDecoder_ != nullptr
-                                                      ? exactSoftwareDecoder_->exactSeekCount()
-                                                      : 0U),
+                .exactSeekCount = decoder_->exactSeekCount() +
+                                  (exactDecoder_ != nullptr ? exactDecoder_->exactSeekCount() : 0U),
                 .totalDecodeMicroseconds = totalDecodeMicroseconds_,
                 .maximumDecodeMicroseconds = maximumDecodeMicroseconds_,
             };
@@ -472,17 +481,37 @@ void SourceDecodeActor::run() noexcept {
             decode->request.continueSequentially ||
             decode->request.priority == SourceDecodePriority::Prefetch;
         const auto decodeStarted = std::chrono::steady_clock::now();
-        SoftwareDecoder& selectedDecoder =
-            decode->request.priority == SourceDecodePriority::Exact &&
-                    exactSoftwareDecoder_ != nullptr
-                ? *exactSoftwareDecoder_
-                : *decoder_;
-        domain::Result<DecodedFrame> result =
-            preferSequentialDecode
-                ? selectedDecoder.decodeSequential(decode->request.frameId,
-                                                   *decode->request.cancellationRequested)
-                : selectedDecoder.decodeExact(decode->request.frameId,
-                                              *decode->request.cancellationRequested);
+        const bool useDedicatedExactDecoder =
+            exactDecoder_ != nullptr &&
+            (decode->request.priority == SourceDecodePriority::Exact ||
+             decode->request.priority == SourceDecodePriority::Prefetch);
+        SoftwareDecoder& selectedDecoder = useDedicatedExactDecoder ? *exactDecoder_ : *decoder_;
+        bool& selectedDecoderNeedsReopen =
+            useDedicatedExactDecoder ? exactDecoderNeedsReopen_ : decoderNeedsReopen_;
+        domain::Result<DecodedFrame> result = domain::Result<DecodedFrame>::failure(
+            actorError(sourceId_, "The source decoder could not be reopened after interruption."));
+        if (selectedDecoderNeedsReopen) {
+            const domain::Status reopened =
+                selectedDecoder.open(*decode->request.cancellationRequested);
+            if (reopened) {
+                selectedDecoderNeedsReopen = false;
+            } else {
+                result = domain::Result<DecodedFrame>::failure(reopened.error());
+            }
+        }
+        if (!selectedDecoderNeedsReopen) {
+            result = preferSequentialDecode
+                         ? selectedDecoder.decodeSequential(decode->request.frameId,
+                                                            *decode->request.cancellationRequested)
+                         : selectedDecoder.decodeExact(decode->request.frameId,
+                                                       *decode->request.cancellationRequested);
+        }
+        if (!result) {
+            // FFmpeg may have stopped while an AVIO packet was only partially consumed. Reopen
+            // from the actor before this decoder accepts another request; the decoder itself
+            // remains a single-operation component and never mutates its lifecycle recursively.
+            selectedDecoderNeedsReopen = true;
+        }
         const auto decodeMicroseconds =
             static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                                            std::chrono::steady_clock::now() - decodeStarted)
@@ -504,8 +533,8 @@ void SourceDecodeActor::run() noexcept {
         }
     }
     decoder_->close();
-    if (exactSoftwareDecoder_ != nullptr) {
-        exactSoftwareDecoder_->close();
+    if (exactDecoder_ != nullptr) {
+        exactDecoder_->close();
     }
 }
 

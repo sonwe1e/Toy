@@ -32,6 +32,8 @@ extern "C" {
 namespace dvs::media::internal {
 namespace {
 
+constexpr std::int64_t kExactFullDecodeTailFrames = 16;
+
 struct InterruptState final {
     const std::atomic<bool>* requested = nullptr;
     const std::atomic<bool>* externalRequested = nullptr;
@@ -519,7 +521,14 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
     }
     const std::int64_t targetTimestamp =
         (*impl_->presentationTimestamps)[static_cast<std::size_t>(frameId.value())];
+    std::optional<std::int64_t> fullDecodeTimestamp;
     if (!continueSequentially) {
+        impl_->codec->skip_frame = AVDISCARD_DEFAULT;
+        if (frameId.value() > kExactFullDecodeTailFrames) {
+            const auto fullDecodeFrame =
+                static_cast<std::size_t>(frameId.value() - kExactFullDecodeTailFrames);
+            fullDecodeTimestamp = (*impl_->presentationTimestamps)[fullDecodeFrame];
+        }
         const int seekResult = av_seek_frame(
             impl_->format.get(), impl_->streamIndex, targetTimestamp, AVSEEK_FLAG_BACKWARD);
         if (seekResult < 0) {
@@ -557,9 +566,15 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                         "FFmpeg could not allocate decode buffers."));
     }
 
+    const auto interruptionRequested = [&] {
+        const bool external =
+            impl_->interruptState.externalRequested != nullptr &&
+            impl_->interruptState.externalRequested->load(std::memory_order_acquire);
+        return cancellationRequested.load(std::memory_order_acquire) ||
+               impl_->interrupted.load(std::memory_order_acquire) || external;
+    };
     for (;;) {
-        if (cancellationRequested.load(std::memory_order_acquire) ||
-            impl_->interrupted.load(std::memory_order_acquire)) {
+        if (interruptionRequested()) {
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                             sourceId,
@@ -895,6 +910,11 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
         }
 
         if (impl_->packetPending) {
+            impl_->codec->skip_frame = fullDecodeTimestamp.has_value() &&
+                                               impl_->packet->pts != AV_NOPTS_VALUE &&
+                                               impl_->packet->pts < *fullDecodeTimestamp
+                                           ? AVDISCARD_NONREF
+                                           : AVDISCARD_DEFAULT;
             const int sendResult = avcodec_send_packet(impl_->codec.get(), impl_->packet.get());
             if (sendResult == 0) {
                 av_packet_unref(impl_->packet.get());

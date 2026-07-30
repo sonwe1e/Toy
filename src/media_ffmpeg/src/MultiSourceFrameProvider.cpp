@@ -1184,6 +1184,10 @@ private:
                                              true));
                     return;
                 }
+                if (operation->isCanceled()) {
+                    postCanceled(operation);
+                    return;
+                }
                 if (!slotDecode->result) {
                     // Missing is exclusively a mapping-layer result. Any decoder failure,
                     // including budget pressure, fails the whole atomic request and leaves the

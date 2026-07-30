@@ -37,7 +37,10 @@ constexpr auto kExactFrameDeadline = 5s;
 constexpr auto kPlaybackPresentationLead = 14ms;
 constexpr auto kMinimumPlaybackPreparationDelay = 1ms;
 constexpr auto kPlaybackProjectionInterval = 33ms;
-constexpr auto kPlaybackCatchUpTolerance = 250ms;
+// Preserve every canonical frame through short decoder/driver stalls. The renderer can drain the
+// prepared successors faster than source cadence on a high-refresh display; only a stall beyond
+// half a second skips complete FrameSets to recover the wall-clock anchor.
+constexpr auto kPlaybackCatchUpTolerance = 500ms;
 constexpr float kLowAlignmentConfidence = 0.30F;
 constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
 
@@ -656,9 +659,15 @@ private:
         }
         const double fps = rate->displayFps();
         if (fps >= 100.0) {
-            return {.ahead = 12U, .behind = 3U};
+            // One long GOP can contain hundreds of frames at high rates. Starting even one
+            // speculative decode after every exact navigation makes the next navigation cancel
+            // and reopen that decoder, which dominates random-seek tail latency.
+            return {.ahead = 0U, .behind = 0U};
         }
-        return fps >= 50.0 ? ExactPrefetchWindow{.ahead = 6U, .behind = 2U} : ExactPrefetchWindow{};
+        // At 50/60 FPS, one exact successor is enough to keep a warm step responsive. A wider
+        // speculative window competes with random navigation and repeatedly interrupts FFmpeg
+        // while it is reading long-GOP sources.
+        return fps >= 50.0 ? ExactPrefetchWindow{.ahead = 1U, .behind = 0U} : ExactPrefetchWindow{};
     }
 
     void publishSnapshot(const bool notify = true) {

@@ -22,6 +22,7 @@
       "features": [
         "gui",
         "network",
+        "png",
         "testlib",
         "windeployqt"
       ],
