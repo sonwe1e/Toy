@@ -1,764 +1,498 @@
-# 总体结论
+# 1.1.0 发布执行状态（2026-07-30）
 
-`feature/vcstation-userplan` 已经完成了大部分用户体验重构，方向正确，而且不是只改了界面文案：拖放、Wipe、对齐侧栏、逐帧 Loading 优化、事件驱动 UI、开始菜单入口、文件关联、Bad Case 导出和 120 FPS 门禁都进入了实际代码与测试。
+本节是当前发布工作的权威状态；后文保留产品审查、历史判断和待办依据。若后文与本节冲突，以本节为准。
 
-但**当前还不能直接合并并发布**。我确认了 4 个合并前必须修复的问题：
+| 发布项 | 当前状态 | 已有证据 / 下一步 |
+| --- | --- | --- |
+| 1.1.0 版本、RC、ZIP、MSI 一致性 | 已完成并本地验证 | EXE、ZIP、MSI 均为 1.1.0 |
+| 两路 120 FPS backend 数量判断 | 已完成并有回归覆盖 | 报告包含 `expected_source_count=2/3` |
+| Source A（SourceId 0）错误归属 | 已完成并有专门回归测试 | `AttributesInvalidSourceASequenceOffsetToSourceZero` |
+| Debug / Release | 本地通过，等待 PR 证据 | 两个预设各 371 项通过 |
+| format-check / lint | 本地通过，等待 PR 证据 | clang-format、clang-tidy、qmllint 通过 |
+| 真实 2/3 路视频 GUI smoke | 已通过 | 使用 NoRefEval validation 中的 120 FPS H.264 素材 |
+| D3D11VA / zero-copy | 本地通过 | 2/2 通过 |
+| shutdown soak | 本地通过 | 20 轮通过 |
+| ZIP / MSI 生成与版本属性 | 本地通过 | `verify-release-version.ps1 -Tag v1.1.0` 通过 |
+| self-hosted runner | 已在线 | `Sonwe-RTX4090`，交互式 Session 1 |
+| 1080p120 runner 素材 | 已补齐 | 2/3 路均使用 75 秒、1920×1080、120 FPS H.264 |
+| GitHub PR 与 CI | 待执行 | 建立 PR 后运行 Build/Test 与 Quality |
+| 1080p120 硬件门禁 | 待执行 | 由 Hardware and Performance workflow 在指定 SHA 上运行 |
+| 1.0.0 → 1.1.0 MSI 升级 | 待执行 | 需要提升权限的 runner packaged-smoke |
+| Authenticode 签名 | 阻塞 | 仓库尚无签名 secrets，本机证书库也无可用代码签名私钥 |
+| GitHub Release v1.1.0 | 待执行 | CI、硬件、升级和签名全部通过后创建并发布 |
 
-1. VCStation 仍使用 `1.0.0`，无法可靠升级已有的 DualVideoStudio 1.0.0。
-2. 新增的 `1080p120-2source` 性能门禁当前必然失败。
-3. Source A，即 `SourceId=0` 的对齐错误归属 bug 仍然存在。
-4. Release workflow 没有校验 tag 与程序版本，也没有覆盖 Quality 和硬件性能门禁。
-
-综合判断：
-
-| 维度      | 当前完成度 | 判断                   |
-| ------- | ----: | -------------------- |
-| 七项用户需求  | 约 90% | 基本完成                 |
-| UI 交互质量 | 约 85% | 可进入试用                |
-| 运行时架构   | 约 80% | 有实质改善，但部分“非阻塞化”未完全实现 |
-| 安装升级    | 约 70% | 新装闭环，旧版升级未闭环         |
-| 发布流水线   | 约 65% | 已有骨架，尚不能作为正式发布门禁     |
-| 合并准备度   |     否 | 需要先处理 P0             |
-
----
-
-# 一、七项需求的实际完成情况
-
-## 1. 拖动视频进入界面：基本完成
-
-根窗口已经增加全局 `DropArea`，支持拖入视频或 `.dvsproj`。C++ 会负责：
-
-* 限制最多三项；
-* 验证本地文件；
-* 规范化 Unicode 路径；
-* 检测重复文件；
-* 禁止项目文件和视频混合拖入；
-* 对两个或三个视频弹出顺序与 Reference 确认。
-
-测试也覆盖了中文文件名、非标准扩展名、重复路径、缺失文件和项目混拖。
-
-### 尚未完全实现的部分
-
-当前只有**整个窗口级拖放**，没有每个 Source 卡片独立的 DropArea。因此还不能把一个视频直接拖到 B 卡片来替换 B。
-
-另外，单独拖入一个视频时，当前逻辑倾向于重新设置 A，而不是：
-
-```text
-A 为空 → 填 A
-A 已有、B 为空 → 填 B
-A/B 已有、C 为空 → 填 C
-拖到指定卡片 → 只替换该卡片
-```
-
-### 建议
-
-下一步补充：
-
-```text
-SourceCard.qml
-└── DropArea
-    ├── dropTargetSourceId
-    ├── hover highlight
-    └── replace confirmation
-```
-
-这属于 P1，不阻挡第一轮内部试用。
+发布原则保持 fail-closed：不得用 WARP、普通单元测试或虚拟显示上的推测结果替代真实硬件门禁；不得把未签名产物描述为已签名发布。
 
 ---
 
-## 2. 开始菜单入口：代码完成，但升级链路未完成
+# 核心结论
 
-WiX 模板已经增加：
+**目前已经达到我们最初设定的核心使用预期，可以进入真实日常试用；但还没有达到“无需额外验证即可合并并正式发布”的标准。**
 
-* `VCStation` 开始菜单目录；
-* VCStation 快捷方式；
-* 卸载时清理目录；
-* `.dvsproj` 文件关联；
-* 双击项目时执行 `VCStation.exe "%1"`。
+更准确地说：
 
-真实 MSI 测试也已经验证：
+| 判断维度                    | 结论             |
+| ----------------------- | -------------- |
+| 短视频逐帧审查体验               | 达到预期           |
+| 拖入、Wipe、分割线和 Loading 优化 | 达到预期           |
+| 高级功能可理解性                | 基本达到预期         |
+| 60/120 FPS 技术适配         | 代码达到预期，硬件结果待验证 |
+| MSI 新装与旧版升级设计           | 基本达到预期         |
+| 正式发布流水线设计               | 达到预期           |
+| GitHub CI 与真实发布证据       | 尚未完成           |
+| 当前是否直接发布                | 不建议            |
 
-* 安装；
-* 开始菜单快捷方式；
-* HKLM 文件关联；
-* CLI startup/probe；
-* 卸载清理。
-
-应用本身也支持把单个 `.dvsproj` 命令行参数作为初始项目打开。
-
-### P0：版本号导致无法正常升级
-
-当前工程仍然是：
-
-```cmake
-project(VCStation VERSION 1.0.0)
-```
-
-资源版本也被硬编码为：
+综合评分可以理解为：
 
 ```text
-FileVersion    1.0.0
-ProductVersion 1.0.0
-```
-
-而 WiX 明确配置：
-
-```xml
-AllowSameVersionUpgrades="no"
-```
-
-已有公开版已经是 DualVideoStudio 1.0.0，因此新的 VCStation 1.0.0 不能形成可靠的 Major Upgrade。
-
-### 必须修改
-
-建议发布为：
-
-```text
-VCStation 1.1.0
-```
-
-并将版本号改为单一来源：
-
-```text
-CMake PROJECT_VERSION
-        ↓
-configure_file
-        ↓
-VCStation.rc
-CPack
-Release 名称
-SHA256 文件
-```
-
-不要继续手工维护 `VCStation.rc` 中的版本。
-
-### 升级测试也未真正启用
-
-`VerifyMsiPackage.ps1` 支持传入 `PreviousMsiPath` 做升级测试，但 CTest 注册时没有提供旧 MSI，因此目前只测试了新装和卸载。
-
-需要加入：
-
-```text
-DualVideoStudio-1.0.0-windows-x64.msi
-        ↓
-安装旧版
-        ↓
-安装 VCStation 1.1.0
-        ↓
-检查旧 ARP 条目、旧快捷方式和旧安装目录
-        ↓
-验证新快捷方式、关联和程序启动
+产品功能完成度：约 93%
+日常使用准备度：约 90%
+工程实现完成度：约 88%
+正式发布准备度：约 80%
 ```
 
 ---
 
-## 3. Compare 分割线与 Wipe：完成质量较高
+# 一、上一轮发现的阻断项已经修复
 
-Side-by-side 和 Three-up 已增加明确分割线。
+这次最新修改已经处理了此前最关键的四个问题。
 
-Wipe 不是只在 QML 画了一条线，底层 renderer 已真正支持：
+## 1. 版本升级链路已经修正
 
-* 任意 A/B、A/C、B/C；
-* `wipePosition`；
-* 共用 zoom、pan 和 ROI；
-* 左右 UV 和 destination rect 分割；
-* 缺少任一路时显示黑色。
+工程版本已经从 `1.0.0` 提升为 `1.1.0`，避免与已经发布的 DualVideoStudio 1.0.0 发生同版本 MSI 升级冲突。
 
-WARP 像素测试验证了：
-
-* 选择 A/C；
-* Wipe 位置为 25%；
-* 左右区域确实来自两个不同 source。
-
-这一项可以判定为**完成**。
-
-### 后续小优化
-
-在 Wipe 模式下建议增加：
+Windows 资源版本也不再手工硬编码，而是通过 `VCStation.rc.in` 从 CMake 的 `PROJECT_VERSION` 自动生成：
 
 ```text
-A | C
+CMake 1.1.0
+→ EXE FileVersion 1.1.0
+→ ProductVersion 1.1.0
+→ MSI 1.1.0
 ```
 
-的悬浮标签，并在空间重采样时显示：
+这一项已经达到预期。
 
-```text
-Resampled comparison
-```
+## 2. 两路 1080p120 门禁已经修正
 
-避免用户误认为不同尺寸视频仍是 pixel-exact。
-
----
-
-## 4. 不明按钮、Offset、Auto、Find、Save As：主要问题已解决
-
-当前已经采用较合理的信息架构：
-
-* `ApplicationWindow` 标准菜单；
-* File、Compare、Analyze 分类；
-* 高级对齐放入右侧 Inspector；
-* Inspector 默认隐藏；
-* Offset、Auto Alignment、Find Drops 和 Anchors 有更完整说明；
-* Save As 改成更明确的“另存评测项目”。
-
-QML contract test也确认：
-
-* 高级 Inspector 默认不可见；
-* 最小窗口宽度为 960；
-* 顶部比较控制区可横向滚动；
-* 传输控制按钮有实际尺寸。
-
-### 仍有两个体验问题
-
-#### 语言混杂
-
-当前源字符串中英文混用。例如大多数菜单是英文，而“另存评测项目”直接使用中文。
-
-需要统一策略：
-
-* 源字符串全部英文，再通过 `zh_CN.ts` 翻译；
-* 或当前版本全部中文。
-
-不建议继续在同一层级混用。
-
-#### 横向滚动并不等于控件真正清晰
-
-比较工具栏使用 `Flickable` 解决小窗口裁切，但没有明显的滚动条或溢出提示。用户可能不知道右侧还有控件。
-
-建议增加：
-
-```text
-右侧渐变遮罩 + “›”
-或
-ScrollBar.horizontal
-```
-
-更理想的方案是让低频 Diff Metric、Gain、Filter 进入右侧 Inspector，顶部只保留：
-
-```text
-View
-Compare pair
-Reference
-Advanced
-```
-
----
-
-## 5. ffprobe：用户安装包已经正确移除
-
-安装脚本现在只部署 VCStation、Qt 和链接依赖 DLL，不再复制外部 `ffmpeg.exe` 或 `ffprobe.exe`。
-
-打包门禁还明确禁止这两个 EXE 出现在最终包中，并使用内部 `VCStationCli --probe` 验证 libavformat/libavcodec 路径。
-
-这一项可以判定为**完成**。
-
-### 剩余清理
-
-`tools/dependencies/ffmpeg-runtime.json` 仍然 pin 了包含 `ffmpeg.exe` 和 `ffprobe.exe` 的 Gyan archive。
-
-它已经不参与用户包，应当：
-
-* 删除该 manifest 和对应 bootstrap 路径；或
-* 明确改名为 `ffmpeg-developer-tools.json`；
-* 文档说明仅供开发诊断使用。
-
-否则供应链文档会让人误以为发布仍依赖这两个外部工具。
-
----
-
-## 6. 高频逐帧时反复 Loading：主体问题已经解决
-
-这是本次实现中完成度较高的一部分。
-
-现在已经拆分：
-
-```text
-busy         = 打开、保存、应用配置等状态改变
-framePending = 正在请求新帧
-```
-
-上一帧已经存在时，`framePending` 不会显示全屏 Loading；仅在等待超过约 140 ms 后显示轻量提示。
-
-导航在上一条请求仍未完成时继续可用，Controller 单独保存最新 navigation context。
-
-测试也验证：
-
-* navigation pending 不等于 busy；
-* First/Previous/Next/Last 仍可继续提交；
-* 旧 terminal 不会清除最新 pending；
-* 只有最新 context 完成才结束 pending。
-
-UI 投影也从 16 ms 常驻轮询改为 coordinator 发布 Snapshot 后，通过 queued invocation 通知 GUI。
-
-这一项可以判定为**完成**。
-
----
-
-## 7. 面向短视频、60/120 FPS 优化：部分完成
-
-Prefetch 已根据 canonical FPS 调整：
-
-```text
-<50 FPS：3 前 / 1 后
-50～99 FPS：6 前 / 2 后
-≥100 FPS：12 前 / 3 后
-```
-
-调度器对 look-ahead 最大限制 12，look-behind 最大限制 3，并有单元测试。
-
-硬件测试也新增：
-
-* 两路 1080p120，60 秒；
-* 三路 1080p120，60 秒。
-
-### P0：两路 120 FPS 门禁必然失败
-
-性能程序把全硬件解码条件写成：
+性能程序现在根据实际输入数量计算预期 decoder 数量：
 
 ```cpp
-backends.size() == 3U
+expectedSourceCount = third.has_value() ? 3 : 2;
 ```
 
-因此：
+并要求实际 backend 数量与其一致。
 
-```text
-1080p120-2source
-```
+因此两路 1080p120 不会再因为写死“三个 backend”而必然失败。
 
-即便两路全部为 D3D11VA，也会因为 backend 数量不是 3 而失败。
+## 3. Source A 错误归属已经修正
 
-应该改成：
+此前 `SourceId=0` 被错误地当作“没有 source”。现在 `serviceError()` 明确接收：
 
 ```cpp
-const std::size_t expectedSourceCount =
-    sources.third.has_value() ? 3U : 2U;
-
-const bool allHardware =
-    backends.size() == expectedSourceCount &&
-    std::all_of(...);
+std::optional<domain::SourceId>
 ```
 
-并将 `expected_source_count` 写入 JSON report。
-
-### “预算感知预取”只完成了一半
-
-当前窗口只根据 FPS 决定，没有根据：
-
-* 分辨率；
-* NV12/P010；
-* source 数量；
-* 剩余 FrameBudget；
-* 每帧实际 accounted bytes；
-
-动态调整。
-
-好的一点是底层 source cache 本身受 byte budget 约束，不会无限增长。但 4K P010 下仍可能提交 12+3 个无意义预取，再被 cache 或队列淘汰。
-
-建议计算：
+所以：
 
 ```text
-available cache bytes
-÷ estimated bytes per source frame
-÷ source count
-= safe prefetch depth
+nullopt = 没有具体 source
+0       = Source A
+1       = Source B
+2       = Source C
 ```
 
-最后：
+逻辑已经正确。正式合并前仍建议增加一个专门的 Source A 回归测试，防止以后再次把 0 当作空值。
 
-```text
-actualLookAhead = min(fpsPreferredLookAhead, safeDepth)
-```
+## 4. Release workflow 已经形成完整门禁
 
----
+新的发布流程不再只是“构建后上传文件”，现在包含：
 
-# 二、新发现的 P0 正确性问题
-
-## Source A 对齐错误仍会丢失 source attribution
-
-`SourceId` 从 0 开始，A 就是 0。
-
-但 `AlignmentAnalysisService` 仍使用：
-
-```cpp
-sourceId == 0 ? std::nullopt : optional{sourceId}
-```
-
-这会导致发生在 Source A 上的部分分析错误被错误显示为“整个 comparison 的错误”。
-
-应改成：
-
-```cpp
-MediaError serviceError(
-    std::string detail,
-    std::optional<domain::SourceId> sourceId = std::nullopt);
-```
-
-明确调用：
-
-```cpp
-serviceError("global failure");
-serviceError("source failure", source.id);
-```
-
-必须增加 Source 0、Source 1 和无 source 三种测试。
-
----
-
-# 三、运行时架构评估
-
-## 1. Event-driven UI 改造正确
-
-Coordinator 增加 `statePublished` callback，Snapshot 和 command terminal 发布后通知 GUI。
-
-这一改造比原来的 16 ms QTimer 轮询更合理，尤其适合：
-
-* 120 FPS；
-* 空闲功耗；
-* 高频逐帧；
-* 后台对齐进度；
-* 状态变化的低延迟呈现。
-
-这部分建议保留。
-
----
-
-## 2. Provider “非阻塞化”还没有真正完成
-
-SourceDecodeActor 已支持 callback completion，Provider 也不再直接持有 `future`。
-
-但是 Provider worker 仍然执行：
-
-```cpp
-for (...) {
-    completionMailbox->take();
-}
-```
-
-并阻塞等待所有 source completion。
-
-因此当前实质是：
-
-```text
-future.get()
-→ condition-variable mailbox.take()
-```
-
-改善了接口和 completion identity，但 Provider 控制线程仍不能在等待期间立即执行下一项 open/close operation。
-
-对于当前 2～3 路短视频场景，这不是发布阻断项；但文档不能将其描述为“provider event loop 完全非阻塞”。
-
-真正完成形态仍应是：
-
-```text
-actor completion
-    ↓
-provider shared completion queue
-    ↓
-pendingSets[operationId]
-    ↓
-最后一个 slot 完成后 publish
-```
-
-Provider worker 在中间不等待某一个 request 的所有结果。
-
----
-
-## 3. Signature cache 有边界了，但不是 LRU
-
-当前默认最多保存 50,000 个 signature，使用插入顺序 FIFO 淘汰。
-
-针对你的素材：
-
-```text
-2 分钟 × 120 FPS × 3 路 = 43,200 signatures
-```
-
-50,000 的默认值是合理的，能够覆盖主要工作负载。
-
-目前仍存在：
-
-* 不是 byte budget；
-* cache hit 不刷新顺序；
-* 一个新 source 可能淘汰另一个 source 的部分 range；
-* `findRange()` 缺少任一帧就需要重新解码完整范围。
-
-但结合短视频定位，这些可以放到 P2，不需要阻挡版本发布。
-
----
-
-# 四、安装与发布流程仍需收口
-
-## 1. Release workflow 缺少版本一致性校验
-
-当前任何 `v*` tag 都会触发发布。
-
-没有验证：
-
-```text
-tag v1.1.0
-==
-CMake PROJECT_VERSION 1.1.0
-==
-VCStation.rc 1.1.0
-==
-MSI ProductVersion 1.1.0
-```
-
-因此可能出现：
-
-```text
-GitHub Release v1.1.0
-包文件 VCStation-1.0.0
-EXE 版本 1.0.0
-```
-
-必须在 workflow 第一阶段加入 fail-closed 校验。
-
----
-
-## 2. Release workflow 没有运行完整质量门禁
-
-当前 Release workflow执行：
-
-* Release build；
-* Release CTest；
-* EXE 签名；
-* ZIP/MSI；
-* packaged/soak；
-* MSI 签名；
-* draft release。
-
-但没有执行：
-
-* Debug tests；
+* tag 与 CMake 版本验证；
+* Debug 构建与测试；
+* Release 构建与测试；
 * format-check；
-* QML lint；
-* clang-tidy；
-* D3D11VA hardware tests；
-* 1080p60、4K30、1080p120 performance；
-* 确认硬件门禁结果属于同一个 commit SHA。
+* clang-tidy/QML 质量检查；
+* 同一 commit 的硬件与性能门禁；
+* 下载 DualVideoStudio 1.0.0 MSI；
+* 真实升级到 VCStation 1.1.0；
+* EXE 与 MSI Authenticode 签名；
+* packaged smoke；
+* shutdown soak；
+* ZIP/MSI SHA-256；
+* Draft GitHub Release。
 
-建议采用两阶段发布：
+硬件 workflow 也支持 `workflow_call`，会精确 checkout 指定 SHA，并验证实际测试 commit 与预期一致。
 
-```text
-Release Candidate Gate
-├── Debug
-├── Release
-├── Quality
-├── Hardware
-├── Performance
-└── packaged/soak
-
-Publish
-└── 只允许消费同一 SHA 的已通过 artifacts
-```
+这套设计已经达到正式工程发布流程应有的结构。
 
 ---
 
-## 3. 当前分支没有获得正常 GitHub PR 验证
+# 二、七项核心用户需求已经基本达到预期
 
-目前没有检索到这个分支对应的 PR。
+## 1. 拖入视频：达到主要预期
 
-而 Build/Test workflow 只在：
+已经支持：
 
-* pull_request；
-* push main；
+* 拖入两个视频；
+* 拖入三个视频；
+* 拖入一个 `.dvsproj`；
+* Unicode 路径；
+* 重复文件检测；
+* 缺失文件检测；
+* 项目和视频混合拖入拒绝；
+* 打开前确认 A/B/C 顺序和 Reference。
 
-运行。
+界面也有完整的拖入覆盖层。
 
-所以“本地完成”不能等同于“GitHub checks 已通过”。下一步应先开 PR，让：
+这一项已经可以满足主要工作流程：
+
+```text
+拖入 GT + Prediction
+→ 确认顺序
+→ 立即开始比较
+```
+
+剩余的小缺口是：
+
+* 单独拖入一个视频时只会设置 A；
+* 不能直接拖到 B/C 卡片替换指定 source；
+* 已有 A 后再拖一个文件，不会自动填入 B。
+
+这些属于便利性增强，不影响当前日常使用。
+
+---
+
+## 2. 开始菜单和文件关联：达到预期
+
+WiX 已经创建：
+
+```text
+开始菜单
+└── VCStation
+    └── VCStation
+```
+
+同时注册：
+
+```text
+.dvsproj → VCStation.exe "%1"
+```
+
+MSI 脚本已经验证：
+
+* 旧 DualVideoStudio 1.0.0 安装；
+* 升级到 VCStation；
+* 旧 ARP 条目被删除；
+* 旧 EXE 被删除；
+* 新快捷方式存在；
+* 新文件关联存在；
+* CLI probe 成功；
+* 卸载后清理。
+
+CTest 也已经有独立的旧版升级测试入口。
+
+代码层面已经达到预期。
+
+---
+
+## 3. Compare 分割线和 Wipe：达到预期
+
+Side-by-side 和 Three-up 都加入了明确的分割线。
+
+Wipe 模式已经深入到 D3D11 renderer，不是单纯在界面上覆盖两个控件。它支持：
+
+* A/B；
+* A/C；
+* B/C；
+* 可拖动分割位置；
+* 同步缩放；
+* 同步平移；
+* ROI；
+* 保持相同 canonical frame。
+
+WARP 测试还验证了 A/C 和 25% 分割位置。
+
+这一项完成质量较高，符合肉眼观察插帧边缘、纹理和重影的需求。
+
+---
+
+## 4. 不明按钮和控制区：基本达到预期
+
+原来挤在一行中的：
+
+```text
+Offset
+Auto Align
+Find Drops
+Anchors
+Apply
+Reset
+```
+
+已经移动到默认折叠的高级对齐 Inspector。
+
+按钮名称也变得更明确：
+
+* `Estimate global frame offset`
+* `Analyze missing / duplicate frames`
+* `Edit manual anchors`
+* `Apply frame offsets`
+* `Return to Strict Index`
+
+每个操作还有用途说明和示例。
+
+文件、比较和分析功能也已经放入标准菜单。
+
+### 仍未完全达到的细节
+
+当前界面存在英文和中文混用：
+
+```text
+Open videos…
+Save review project
+另存评测项目…
+Export Bad Case…
+```
+
+此外，顶部工具栏采用横向 Flickable 解决 960 像素窗口下的溢出，但没有明显滚动条或“右侧还有内容”的提示。
+
+因此这一项属于：
+
+> 功能理解问题已经解决，但视觉和本地化仍需要最后一轮产品打磨。
+
+---
+
+## 5. ffprobe：达到预期
+
+最终用户包已经不再部署外部：
+
+```text
+ffmpeg.exe
+ffprobe.exe
+```
+
+应用和 CLI 都直接使用 FFmpeg 动态库。
+
+打包阶段还会主动检查这两个 EXE 不得出现在最终包中。
+
+这一项已经完整达到预期。
+
+---
+
+## 6. 高频逐帧不再反复全屏 Loading：达到预期
+
+现在已经把状态拆成：
+
+```text
+busy         = 打开、保存、状态变更
+framePending = 当前只是在请求另一帧
+```
+
+界面仅在没有任何已显示帧时使用全屏 Loading；已有旧帧时保持旧画面。
+
+如果新帧超过约 140 ms 仍未准备好，只在右上角显示轻量的：
+
+```text
+Fetching latest frame…
+```
+
+导航请求在上一请求未完成时仍然可以提交，旧请求被 supersede，最终呈现最新请求。
+
+测试也覆盖了“只有最新 navigation context 完成后才清除 framePending”。
+
+这正是我们希望获得的体验。
+
+---
+
+## 7. 针对 60/120 FPS 短视频：基本达到预期
+
+预取窗口会根据 canonical FPS 自动调整：
+
+```text
+普通帧率：3 前 / 1 后
+约 60 FPS：6 前 / 2 后
+约 120 FPS：12 前 / 3 后
+```
+
+同时新增：
+
+* 两路 1080p120、60 秒；
+* 三路 1080p120、60 秒；
+* 三路 1080p60、5 分钟；
+* 三路 4K30 Main10、5 分钟。
+
+对于绝大多数 1 分钟以内、少数 2 分钟的素材，这一技术路线是合理的。
+
+当前 Signature cache 默认允许 50,000 个 signature，能够覆盖大约：
+
+```text
+3 路 × 120 FPS × 2 分钟 = 43,200
+```
+
+因此与真实工作负载比较匹配。
+
+剩余优化是让预取同时根据分辨率和实际内存预算缩小窗口，但这不是当前短视频工作流的阻断项。
+
+---
+
+# 三、现在还不能直接宣称“完全达到正式发布预期”
+
+## 1. 缺少该分支的 GitHub PR 验证证据
+
+目前没有发现 `feature/vcstation-userplan` 对应的 PR。
+
+Build/Test 只会在：
+
+* Pull Request；
+* push 到 `main`；
+
+时自动执行。
+
+因此，虽然代码和测试定义已经完善，但现在还不能确认最新分支已经实际通过：
 
 * Debug；
 * Release；
-* Quality；
+* component/e2e；
+* format；
+* lint；
 * QML；
-* clang-tidy；
+* clang-tidy。
 
-全部实际运行。
+这是当前最主要的“证据缺口”，而不是功能缺口。
 
----
+## 2. 120 FPS 和升级门禁存在，但尚需真实运行结果
 
-## 4. MSI 快捷方式组件的 Registry KeyPath 建议调整
+现在的测试逻辑已经正确，但测试定义存在并不等于硬件门禁已经通过。
 
-当前是 per-machine MSI，但快捷方式组件使用了 HKCU registry value 作为 KeyPath。
-
-这在安装账户上可能正常，但多用户环境的 repair/self-heal 行为容易复杂化。
-
-建议：
-
-* per-machine component 使用 HKLM KeyPath；
-* 或使用标准的 shortcut component keypath 方案；
-* 测试另一个 Windows 用户是否能看到并启动开始菜单快捷方式。
-
----
-
-# 五、Bad Case 导出评估
-
-Bad Case 导出已经实现：
+正式结论需要以下四个结果：
 
 ```text
-VCStation-badcase-...
-├── comparison.bmp
-└── evidence.json
+1080p120-2source  PASS
+1080p120-3source  PASS
+DualVideoStudio 1.0.0 → VCStation 1.1.0 PASS
+签名 MSI packaged-smoke PASS
 ```
 
-目录先写临时路径，成功后整体 rename，失败会清理临时目录，原子性处理是正确的。
+尤其是 120 FPS 的真实结果必须来自登录交互桌面的 D3D11VA runner，不能由 WARP 或普通单元测试替代。
 
-JSON 包含：
+## 3. USERPLAN 已与代码事实不一致
 
-* canonical frame；
-* requested frame；
-* session epoch；
-* playback generation；
-* alignment revision；
-* source frame；
-* match kind；
-* confidence。
+当前 `USERPLAN.md` 仍然写着：
 
-### 建议改进
+* 版本还是 1.0.0；
+* 两路 120 FPS 门禁必然失败；
+* Source A attribution 未修；
+* Release workflow 缺少版本和硬件门禁。
 
-1. `BMP` 改为 `PNG`，否则 1080p/4K Bad Case 占用过大。
-2. JSON 同时保存：
+但这些问题在代码中已经修复。
 
-   * `canonical_frame_zero_based`
-   * `canonical_frame_display = zero_based + 1`
-3. 记录当前：
+文档还保留旧的 P0 清单和“不可合并”结论。
 
-   * view mode；
-   * difference edge；
-   * metric；
-   * gain；
-   * threshold；
-   * wipe position；
-   * ROI。
-4. 增加真实 WARP/GUI 导出测试，而不是只给 exporter 一个合成 QImage。当前测试只验证文件写入和 JSON，并没有证明 `grabToImage()` 能可靠捕获生产 D3D11 画面。
-
-这属于 P1。
-
----
-
-# 六、Shutdown soak 名称大于实际覆盖范围
-
-新增的 `ShutdownSoak.ps1` 会运行 20 次：
+这会误导后续开发者，也可能让自动编码员工继续重复修复已经完成的内容。合并前应将 USERPLAN 改成：
 
 ```text
-启动
-→ 在 open 过程中退出
-→ 检查 10 秒内结束
-```
-
-它确实是一个有效的 shutdown-during-open 重复测试，但还不能称为完整 soak，因为没有覆盖：
-
-* 播放中退出；
-* 快速 seek 中退出；
-* alignment 分析中退出；
-* 保存项目中退出；
-* 多轮打开/关闭同一进程；
-* device loss；
-* 线程数和 handle 数增长。
-
-建议重命名当前测试为：
-
-```text
-shutdown-during-open-soak
-```
-
-再补充真正的：
-
-```text
-session-lifecycle-soak
+Completed
+Validated locally
+Pending CI
+Pending hardware
+Deferred P1/P2
 ```
 
 ---
 
-# 七、维护性风险
+# 四、仍可继续改善，但不阻挡内部使用
 
-## Main.qml 已经过度膨胀
+## 1. 单文件拖放体验
 
-这次 `Main.qml` 同时承载：
+建议让单文件自动填入下一个空 source，并支持拖到指定 A/B/C 卡片替换。
 
-* 菜单；
-* drag/drop；
-* 确认对话框；
-* source cards；
-* toolbar；
-* alignment inspector；
-* viewport；
-* Wipe；
+## 2. 统一界面语言
+
+建议源字符串统一英文，通过 Qt Linguist 提供 `zh_CN`；或者短期全部改中文。当前混合语言会削弱专业感。
+
+## 3. Bad Case 导出
+
+当前导出：
+
+```text
+comparison.bmp
+evidence.json
+```
+
+建议改为 PNG，并记录：
+
+* view mode；
+* difference edge；
+* metric/gain；
+* Wipe position；
 * ROI；
-* Loading；
-* transport；
-* timeline；
-* project dialogs；
-* Bad Case dialogs。
+* threshold。
 
-功能正确，但后续迭代会越来越难。
+## 4. 旧用户设置迁移
 
-建议拆分为：
+应用数据目录已从：
 
 ```text
-Main.qml
-├── SourceBar.qml
-├── DropOverlay.qml
-├── DropConfirmationDialog.qml
-├── ComparisonToolbar.qml
-├── AlignmentInspector.qml
-├── ComparisonViewport.qml
-├── TransportBar.qml
-├── TimelineBar.qml
-└── WorkspaceDialogs.qml
+%LocalAppData%\DualVideoStudio
 ```
 
-Main 只负责布局和顶层状态连接。
+切换到：
 
-这不是当前合并阻断项，但应作为下一轮重构的第一个 P1。
+```text
+%LocalAppData%\VCStation
+```
 
----
+MSI 能升级程序，但用户偏好不会自动迁移。建议首次启动时检测旧设置并一次性导入，或者明确说明设置会重置。
 
-# 八、合并前的明确修复清单
+## 5. Provider 仍部分阻塞
 
-## P0：必须修复
+虽然 SourceDecodeActor 已改成 callback completion，但 Provider 仍在自己的 worker 内等待一个请求的全部 source completion。
 
-1. 将版本改为 `1.1.0`，并从 CMake 自动生成 RC 版本。
-2. 修复 `1080p120-2source` 的 `backends.size() == 3`。
-3. 修复 `serviceError(sourceId=0)` 丢失 Source A attribution。
-4. 把旧 DualVideoStudio 1.0.0 MSI 接入真实升级测试。
-5. Release workflow 校验 tag、PROJECT_VERSION、RC 和包文件名一致。
-6. Release workflow 要求同一 commit 的 Quality、Hardware 和 Performance 结果。
-7. 建立 PR 并跑完 GitHub Debug、Release、Quality checks。
-
-## P1：建议在 1.1.0 前完成
-
-1. 单视频拖放填充下一个空 slot。
-2. Source 卡片支持定向拖放替换。
-3. 统一中英文和翻译体系。
-4. 给横向工具栏增加滚动提示，进一步减少顶部控件。
-5. Bad Case 改 PNG，并记录完整 view state。
-6. 增加实际 GPU Bad Case capture 测试。
-7. 将当前 shutdown 测试准确命名并扩展 lifecycle soak。
-8. 迁移旧 `%LocalAppData%\DualVideoStudio` 设置到 `%LocalAppData%\VCStation`。当前路径已经直接切换到新目录，但没有看到旧设置迁移逻辑。
-
-## P2：后续优化
-
-1. 真正事件式 provider pending-set assembly。
-2. byte-aware prefetch depth。
-3. Signature cache 改为 byte-LRU。
-4. 拆分 Main.qml。
-5. 清理已经不参与发布的 Gyan FFmpeg executable manifest。
+对于当前 2～3 路短视频没有明显问题，可以留到后续架构优化。
 
 ---
 
-# 最终判断
+# 五、最终验收判断
 
-这次提交的总体质量明显高于普通 UI 补丁。尤其是以下部分值得保留：
+## 已达到的预期
 
-* 拖放验证放在 C++ 而非依赖扩展名；
-* Wipe 真正进入 D3D renderer 并有像素测试；
-* `busy` 与 `framePending` 分离；
-* Snapshot 改为事件驱动；
-* MSI 开始菜单和文件关联有真实安装测试；
-* 用户包禁止携带外部 ffmpeg/ffprobe；
-* Signature cache 已针对短视频工作负载设置边界；
-* Bad Case 采用临时目录后原子发布。
+* 拖入视频即可比较；
+* 开始菜单入口；
+* `.dvsproj` 文件关联；
+* Side-by-side 分割线；
+* Wipe Compare；
+* 高级对齐折叠与解释；
+* Save As 含义明确；
+* 外部 ffprobe 移除；
+* 高频逐帧不再全屏闪烁；
+* 60/120 FPS 动态预取；
+* 120 FPS 性能门禁定义；
+* MSI 旧版升级测试；
+* 签名和完整 Release workflow。
 
-但是，**当前状态应定义为“功能实现完成、合并验收尚未完成”**。最关键的下一步不是再增加功能，而是修正版本升级、两路 120 FPS 门禁和 Source 0 错误归属，然后通过一个正式 PR 完成全部 CI 与真实 MSI 升级验证。
+## 尚未达到的最后条件
+
+* 最新代码尚无正式 PR；
+* 最新 Debug/Release/Quality checks 尚无 GitHub 结果；
+* 最新两路/三路 1080p120 尚无真实硬件结果；
+* 最新旧版 MSI 升级门禁尚无实际运行记录；
+* USERPLAN 仍是过期结论。
+
+---
+
+# 最终决策建议
+
+**当前版本已经达到我们期望的产品形态，可以交给真实使用者进行内部试用。**
+
+但发布决策应设为：
+
+```text
+内部试用：通过
+进入 PR：通过
+合并 main：等待 CI 全绿
+发布 VCStation 1.1.0：等待硬件、升级和签名包门禁通过
+```
+
+现在不需要继续增加大功能。下一步应集中完成：
+
+> **更新 USERPLAN → 建立 PR → 跑通 Debug/Release/Quality → 跑通 2/3 路 1080p120 → 验证 1.0.0 MSI 升级 → 发布 1.1.0。**
