@@ -78,6 +78,12 @@ if ($json.expected_source_count -ne $expectedSourceCount) {
         "$($json.expected_source_count), expected $expectedSourceCount."
     )
 }
+if (-not $json.screen_refresh_hz -or $json.screen_refresh_hz -lt 120) {
+    throw (
+        "The $Profile gate rendered on a $($json.screen_refresh_hz) Hz screen; " +
+        'a physical screen at 120 Hz or higher is required.'
+    )
+}
 if ($process.ExitCode -ne 0 -or -not $json.passed) {
     throw "The $Profile performance gate failed with exit code $($process.ExitCode)."
 }

@@ -498,6 +498,7 @@ runDesktop(int& argc,
         dvs::ui::DesktopApplicationOptions{
             .smokeMode = false,
             .preferSoftwareDevice = false,
+            .preferHighRefreshScreen = true,
         },
     };
     std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
@@ -890,6 +891,7 @@ runDesktop(int& argc,
         report.insert(key, static_cast<double>(value));
     };
     addNumber(QStringLiteral("duration_seconds"), duration.count());
+    addNumber(QStringLiteral("screen_refresh_hz"), desktop.activeScreenRefreshRate());
     addNumber(QStringLiteral("presented_frames"), metrics.presentedFrames);
     addNumber(QStringLiteral("dropped_frames"), metrics.droppedFrames);
     addNumber(QStringLiteral("drop_ratio"), dropRatio);
@@ -898,6 +900,11 @@ runDesktop(int& argc,
     addNumber(QStringLiteral("playback_response_ms"), metrics.playbackResponseMilliseconds);
     addNumber(QStringLiteral("cold_seek_p50_ms"), metrics.seekP50Milliseconds);
     addNumber(QStringLiteral("seek_p95_ms"), metrics.seekP95Milliseconds);
+    QJsonArray seekSamples;
+    for (const qint64 sample : seekMilliseconds) {
+        seekSamples.append(static_cast<double>(sample));
+    }
+    report.insert(QStringLiteral("seek_samples_ms"), seekSamples);
     addNumber(QStringLiteral("warm_step_p50_ms"), metrics.warmStepP50Milliseconds);
     addNumber(QStringLiteral("warm_step_p95_ms"), metrics.warmStepP95Milliseconds);
     addNumber(QStringLiteral("analysis_ms"), metrics.analysisMilliseconds);

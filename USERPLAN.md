@@ -7,17 +7,17 @@
 | 1.1.0 版本、RC、ZIP、MSI 一致性 | 已完成并本地验证 | EXE、ZIP、MSI 均为 1.1.0 |
 | 两路 120 FPS backend 数量判断 | 已完成并有回归覆盖 | 报告包含 `expected_source_count=2/3` |
 | Source A（SourceId 0）错误归属 | 已完成并有专门回归测试 | `AttributesInvalidSourceASequenceOffsetToSourceZero` |
-| Debug / Release | PR 已通过；当前修复本地通过 | PR #3 的 `ec62a44` 两个预设通过；当前提交前 Release 371/371 |
-| format-check / lint | PR 已通过；当前修复本地通过 | PR #3 的 `ec62a44` 通过；当前格式、QML 与逐翻译单元 clang-tidy 通过 |
+| Debug / Release | PR 已通过；当前修复本地通过 | PR #3 的 `af05550` 两个预设通过；当前提交前 Debug / Release 均为 372/372 |
+| format-check / lint | PR 已通过；当前修复本地通过 | 当前格式、QML 与逐翻译单元 clang-tidy 通过 |
 | 真实 2/3 路视频 GUI smoke | 已通过 | 使用 NoRefEval validation 中的 120 FPS H.264 素材 |
 | D3D11VA / zero-copy | 本地通过 | 2/2 通过 |
 | shutdown soak | 本地通过 | 20 轮通过 |
 | ZIP / MSI 生成与版本属性 | 本地通过 | `verify-release-version.ps1 -Tag v1.1.0` 通过 |
 | self-hosted runner | 已在线，硬件桌面就绪 | `Sonwe-RTX4090`，Session 1；NVIDIA 物理输出 120 Hz 预检通过 |
 | 1080p120 runner 素材 | 已补齐 | 2/3 路均使用 75 秒、1920×1080、120 FPS H.264 |
-| GitHub PR 与 CI | 执行中 | PR #3 已建立；`ec62a44` 的 Build/Test 与 Quality 全绿，当前修复待推送复跑 |
-| 4K P010 共享帧预算 | 已修复并本地验证 | 三路 4K 10 秒门禁通过，峰值 149,299,200 bytes，不再耗尽预算 |
-| 1080p60 / 1080p120 硬件门禁 | 待重跑 | `ec62a44` 在纯虚拟桌面上的结果已作废；新增物理 PCI 120 Hz 预检后重跑 |
+| GitHub PR 与 CI | 执行中 | PR #3 已建立；`af05550` 的 Build/Test 与 Quality 全绿，当前修复待推送复跑 |
+| 4K P010 共享帧预算 | 当前修复短测通过 | 最终 Release 三路 4K 15 秒零掉帧，seek P95 461 ms，峰值 223,948,800 bytes；五分钟门禁待 runner |
+| 1080p60 / 1080p120 硬件门禁 | 当前修复短测通过 | 最终 Release 三路 1080p120 在 144 Hz 物理屏上零掉帧，seek P95 369 ms；全 profile 五分钟门禁待 runner |
 | 1.0.0 → 1.1.0 MSI 升级 | 待执行 | 需要提升权限的 runner packaged-smoke |
 | Authenticode 签名 | 阻塞 | 仓库尚无签名 secrets，本机证书库也无可用代码签名私钥 |
 | GitHub Release v1.1.0 | 待执行 | CI、硬件、升级和签名全部通过后创建并发布 |

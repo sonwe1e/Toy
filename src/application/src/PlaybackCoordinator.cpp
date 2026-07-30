@@ -36,6 +36,8 @@ constexpr auto kExactFrameDeadline = 5s;
 // ordinary scheduler jitter into whole-FrameSet catch-up drops.
 constexpr auto kPlaybackPresentationLead = 14ms;
 constexpr auto kMinimumPlaybackPreparationDelay = 1ms;
+constexpr auto kPlaybackProjectionInterval = 33ms;
+constexpr auto kPlaybackCatchUpTolerance = 250ms;
 constexpr float kLowAlignmentConfidence = 0.30F;
 constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
 
@@ -458,6 +460,7 @@ private:
         domain::FrameId expectedFrame;
         std::optional<FrameSet> set;
         std::optional<std::uint64_t> presentationTimerId;
+        bool presentationRequested = false;
         bool framePublished = false;
         bool providerSucceeded = false;
         bool framePresented = false;
@@ -473,6 +476,7 @@ private:
         std::optional<std::uint64_t> cadenceTimerId;
         std::optional<domain::FrameId> cadenceTarget;
         std::optional<PendingPlaybackFrame> frame;
+        std::optional<PendingPlaybackFrame> preparedFrame;
         bool restartFromEnd = false;
         bool pauseRequested = false;
     };
@@ -657,7 +661,7 @@ private:
         return fps >= 50.0 ? ExactPrefetchWindow{.ahead = 6U, .behind = 2U} : ExactPrefetchWindow{};
     }
 
-    void publishSnapshot() {
+    void publishSnapshot(const bool notify = true) {
         state_.alignmentOffsets = alignmentOffsets_;
         auto snapshot = std::make_shared<const SessionSnapshot>(state_);
         std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceMaps;
@@ -673,7 +677,19 @@ private:
             }
             publishedSnapshot_ = std::move(snapshot);
         }
-        notifyStatePublished();
+        if (notify) {
+            notifyStatePublished();
+        }
+    }
+
+    void publishPlaybackSnapshot() {
+        const auto now = dependencies_.clock->now();
+        const bool notify = !lastPlaybackProjectionAt_.has_value() ||
+                            now - *lastPlaybackProjectionAt_ >= kPlaybackProjectionInterval;
+        publishSnapshot(notify);
+        if (notify) {
+            lastPlaybackProjectionAt_ = now;
+        }
     }
 
     void completeCommand(const CommandContext& context,
@@ -836,6 +852,14 @@ private:
             return domain::FrameId{0};
         }
         const PlaybackRun& run = *playbackRun_;
+        if (const auto nextDue = playbackDue(run.nextMinimum); nextDue.has_value()) {
+            const auto catchUpDue = addDurationSafe(
+                *nextDue,
+                std::chrono::duration_cast<std::chrono::microseconds>(kPlaybackCatchUpTolerance));
+            if (catchUpDue.has_value() && now <= *catchUpDue) {
+                return run.nextMinimum;
+            }
+        }
         // Catch-up: the media time that should be showing now is the anchored frame's time plus
         // the wall-clock elapsed since anchoring. canonicalFrameAtOrBefore maps it back to a
         // display-order frame, then we clamp so the cadence never regresses and never passes the
@@ -879,6 +903,7 @@ private:
         }
         PlaybackRun stopped = std::move(*playbackRun_);
         playbackRun_.reset();
+        lastPlaybackProjectionAt_.reset();
         if (stopped.cadenceTimerId.has_value()) {
             static_cast<void>(dependencies_.deadlineScheduler->cancel(*stopped.cadenceTimerId));
         }
@@ -901,23 +926,13 @@ private:
         }
     }
 
-    [[nodiscard]] bool submitPlaybackFrame(const domain::FrameId target) {
-        if (!playbackRun_.has_value() || playbackRun_->frame.has_value()) {
-            return false;
+    [[nodiscard]] bool armPlaybackPresentation(PendingPlaybackFrame& frame) {
+        if (frame.presentationRequested) {
+            return true;
         }
-        const PlaybackRequestContext playback = makePlaybackContext();
-        const FrameRequestContext frameContext{
-            .playback = playback,
-            .deviceGeneration = state_.deviceGeneration,
-        };
-        playbackRun_->frame = PendingPlaybackFrame{
-            .context = frameContext,
-            .expectedFrame = target,
-        };
-
         const std::uint64_t timerId = nextTimerId_++;
         const DeadlineRequest deadline{
-            .context = playback,
+            .context = frame.context.playback,
             .timerId = timerId,
             .due = dependencies_.clock->now() + kExactFrameDeadline,
         };
@@ -928,27 +943,88 @@ private:
                 "The playback frame presentation deadline could not be scheduled."));
             return false;
         }
-        playbackRun_->frame->presentationTimerId = timerId;
+        frame.presentationTimerId = timerId;
+        frame.presentationRequested = true;
+        state_.playbackState = domain::PlaybackState::kBuffering;
+        state_.requestedFrame = frame.expectedFrame;
+        publishSnapshot();
+        return true;
+    }
 
+    [[nodiscard]] PortSubmitResult submitPlaybackRequest(PendingPlaybackFrame& frame) {
         const FrameRequest request{
-            .context = frameContext,
-            .frameId = target,
+            .context = frame.context,
+            .frameId = frame.expectedFrame,
             .priority = FrameRequestPriority::Sequential,
-            .sourceOffsets = sourceMappingsFor(target),
+            .sourceOffsets = sourceMappingsFor(frame.expectedFrame),
             .alignmentRevision = state_.alignmentRevision,
         };
-        const PortSubmitResult providerResult =
-            dependencies_.directFrameProvider->submit(request, eventSink_);
+        return dependencies_.directFrameProvider->submit(request, eventSink_);
+    }
+
+    void prepareFollowingPlaybackFrame(const domain::FrameId target) {
+        if (!playbackRun_.has_value() || playbackRun_->pauseRequested ||
+            playbackRun_->preparedFrame.has_value() || !target.isValid() ||
+            static_cast<std::uint64_t>(target.value()) + 1U >= state_.canonicalFrameCount) {
+            return;
+        }
+        const domain::FrameId following{target.value() + 1};
+        playbackRun_->preparedFrame = PendingPlaybackFrame{
+            .context =
+                FrameRequestContext{
+                    .playback = makePlaybackContext(),
+                    .deviceGeneration = state_.deviceGeneration,
+                },
+            .expectedFrame = following,
+        };
+        if (submitPlaybackRequest(*playbackRun_->preparedFrame) != PortSubmitResult::Accepted) {
+            playbackRun_->preparedFrame.reset();
+        }
+    }
+
+    [[nodiscard]] bool submitPlaybackFrame(const domain::FrameId target) {
+        if (!playbackRun_.has_value() || playbackRun_->frame.has_value()) {
+            return false;
+        }
+        playbackRun_->frame = PendingPlaybackFrame{
+            .context =
+                FrameRequestContext{
+                    .playback = makePlaybackContext(),
+                    .deviceGeneration = state_.deviceGeneration,
+                },
+            .expectedFrame = target,
+        };
+        if (!armPlaybackPresentation(*playbackRun_->frame)) {
+            return false;
+        }
+        const PortSubmitResult providerResult = submitPlaybackRequest(*playbackRun_->frame);
         if (providerResult != PortSubmitResult::Accepted) {
             stopPlayback(coordinatorError(
                 domain::MediaErrorCode::kMediaDecodeFailed,
                 "The direct frame provider did not accept a sequential playback request."));
             return false;
         }
-        state_.playbackState = domain::PlaybackState::kBuffering;
-        state_.requestedFrame = target;
-        publishSnapshot();
+        prepareFollowingPlaybackFrame(target);
         return true;
+    }
+
+    [[nodiscard]] bool activatePlaybackTarget(const domain::FrameId target) {
+        if (!playbackRun_.has_value() || playbackRun_->frame.has_value()) {
+            return false;
+        }
+        if (playbackRun_->preparedFrame.has_value() &&
+            playbackRun_->preparedFrame->expectedFrame == target) {
+            playbackRun_->frame = std::move(playbackRun_->preparedFrame);
+            playbackRun_->preparedFrame.reset();
+            if (!armPlaybackPresentation(*playbackRun_->frame)) {
+                return false;
+            }
+            publishPlaybackFrameIfReady();
+            prepareFollowingPlaybackFrame(target);
+            return true;
+        }
+        playbackRun_->preparedFrame.reset();
+        return submitPlaybackFrame(target);
     }
 
     [[nodiscard]] bool schedulePlaybackTarget(const domain::FrameId target) {
@@ -966,7 +1042,7 @@ private:
         if (*due <= now) {
             const domain::FrameId dueTarget =
                 playbackRun_->restartFromEnd ? playbackRun_->firstTarget : playbackTargetAt(now);
-            return submitPlaybackFrame(dueTarget);
+            return activatePlaybackTarget(dueTarget);
         }
         const auto earliestRequestDue =
             addDurationSafe(now,
@@ -1051,6 +1127,7 @@ private:
             .wallAnchor = dependencies_.clock->now(),
             .restartFromEnd = restartFromEnd,
         };
+        lastPlaybackProjectionAt_ = playbackRun_->wallAnchor;
         state_.lastError.reset();
         if (!schedulePlaybackTarget(firstTarget)) {
             completeCommand(command.context, CommandOutcome::Failed, state_.lastError);
@@ -2159,6 +2236,29 @@ private:
                matchesContext(context, playbackRun_->frame->context);
     }
 
+    [[nodiscard]] bool matchesPreparedPlaybackFrame(const EventContext& context) const noexcept {
+        return playbackRun_.has_value() && playbackRun_->preparedFrame.has_value() &&
+               matchesContext(context, playbackRun_->preparedFrame->context);
+    }
+
+    void publishPlaybackFrameIfReady() {
+        if (!playbackRun_.has_value() || !playbackRun_->frame.has_value()) {
+            return;
+        }
+        PendingPlaybackFrame& frame = *playbackRun_->frame;
+        if (!frame.presentationRequested || !frame.set.has_value() || frame.framePublished) {
+            return;
+        }
+        if (dependencies_.renderChannel->publish(frame.context, *frame.set) ==
+            RenderPublishResult::Closed) {
+            stopPlayback(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                          "The render channel closed during sequential playback."));
+            return;
+        }
+        frame.framePublished = true;
+        commitPlaybackFrameIfComplete();
+    }
+
     void commitPlaybackFrameIfComplete() {
         if (!playbackRun_.has_value() || !playbackRun_->frame.has_value()) {
             return;
@@ -2189,9 +2289,13 @@ private:
         state_.displayedFrame = displayedFrame;
         state_.requestedFrame.reset();
         state_.lastError.reset();
-        publishSnapshot();
+        publishPlaybackSnapshot();
         if (pauseRequested || reachedEnd) {
+            if (playbackRun_->preparedFrame.has_value()) {
+                dependencies_.directFrameProvider->cancel(playbackRun_->providerContext);
+            }
             playbackRun_.reset();
+            lastPlaybackProjectionAt_.reset();
             state_.playbackState = domain::PlaybackState::kPaused;
             publishSnapshot();
             return;
@@ -2214,6 +2318,14 @@ private:
     [[nodiscard]] bool handlePlaybackTerminal(const RequestTerminal& terminal) {
         const EventContext& terminalContext = std::visit(
             [](const auto& value) -> const EventContext& { return value.context; }, terminal);
+        if (matchesPreparedPlaybackFrame(terminalContext)) {
+            if (std::holds_alternative<RequestSucceeded>(terminal)) {
+                playbackRun_->preparedFrame->providerSucceeded = true;
+            } else {
+                playbackRun_->preparedFrame.reset();
+            }
+            return true;
+        }
         if (!matchesPlaybackFrame(terminalContext)) {
             return false;
         }
@@ -2373,16 +2485,22 @@ private:
             if (frame.framePublished) {
                 return;
             }
-            if (dependencies_.renderChannel->publish(ready.context, ready.set) ==
-                RenderPublishResult::Closed) {
-                stopPlayback(
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "The render channel closed during sequential playback."));
+            frame.set = ready.set;
+            publishPlaybackFrameIfReady();
+            return;
+        }
+        if (playbackRun_.has_value() && playbackRun_->preparedFrame.has_value() &&
+            ready.context == playbackRun_->preparedFrame->context) {
+            PendingPlaybackFrame& frame = *playbackRun_->preparedFrame;
+            if (ready.set.canonicalFrameId() != frame.expectedFrame) {
+                stopPlayback(coordinatorError(
+                    domain::MediaErrorCode::kMediaDecodeFailed,
+                    "The provider prepared a mismatched sequential playback frame set."));
                 return;
             }
-            frame.set = ready.set;
-            frame.framePublished = true;
-            commitPlaybackFrameIfComplete();
+            if (!frame.set.has_value()) {
+                frame.set = ready.set;
+            }
             return;
         }
         if (!pending_.has_value() || !pending_->frameContext.has_value() ||
@@ -2869,7 +2987,7 @@ private:
                 playbackRun_->restartFromEnd
                     ? scheduledTarget
                     : std::max(scheduledTarget, playbackTargetAt(dependencies_.clock->now()));
-            static_cast<void>(submitPlaybackFrame(dueTarget));
+            static_cast<void>(activatePlaybackTarget(dueTarget));
             return;
         }
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
@@ -3055,6 +3173,7 @@ private:
     std::optional<PendingCommand> pending_;
     std::optional<PendingProbe> pendingProbe_;
     std::optional<PlaybackRun> playbackRun_;
+    std::optional<std::chrono::steady_clock::time_point> lastPlaybackProjectionAt_;
     std::optional<BackgroundAnalysis> analysisJob_;
     std::optional<AutomaticAlignmentProposal> automaticAlignmentProposal_;
     std::optional<AutomaticAlignmentUndoState> automaticAlignmentUndo_;

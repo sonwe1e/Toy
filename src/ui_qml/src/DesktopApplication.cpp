@@ -112,6 +112,20 @@ public:
         configuration.setPreferSoftwareDevice(options_.preferSoftwareDevice);
         configuration.setDepthBufferFor2D(true);
         window->setGraphicsConfiguration(configuration);
+        if (options_.preferHighRefreshScreen) {
+            const QList<QScreen*> screens = QGuiApplication::screens();
+            const auto selected = std::max_element(
+                screens.cbegin(), screens.cend(), [](const auto* lhs, const auto* rhs) {
+                    return lhs->refreshRate() < rhs->refreshRate();
+                });
+            if (selected != screens.cend() && *selected != nullptr) {
+                const QRect available = (*selected)->availableGeometry();
+                window->setScreen(*selected);
+                window->setPosition(available.center() -
+                                    QPoint{window->width() / 2, window->height() / 2});
+                activeScreenRefreshRate_ = (*selected)->refreshRate();
+            }
+        }
         if (options_.smokeMode) {
             window->setFlags(Qt::Tool | Qt::FramelessWindowHint);
             window->setOpacity(0.0);
@@ -134,6 +148,9 @@ public:
         window_->requestActivate();
         window_->requestUpdate();
         surface_->update();
+        if (window_->screen() != nullptr) {
+            activeScreenRefreshRate_ = window_->screen()->refreshRate();
+        }
         return true;
     }
 
@@ -146,6 +163,10 @@ public:
 
     void exit(const int exitCode) noexcept {
         application_.exit(exitCode);
+    }
+
+    [[nodiscard]] double activeScreenRefreshRate() const noexcept {
+        return activeScreenRefreshRate_;
     }
 
     [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
@@ -280,6 +301,7 @@ private:
     std::unique_ptr<QQmlApplicationEngine> engine_;
     QQuickWindow* window_ = nullptr;
     ComparisonSurface* surface_ = nullptr;
+    double activeScreenRefreshRate_ = 0.0;
     QMetaObject::Connection windowDestroyedConnection_;
     QMetaObject::Connection surfaceDestroyedConnection_;
     std::vector<QQmlError> qmlWarnings_;
@@ -303,6 +325,10 @@ int DesktopApplication::exec() {
 
 void DesktopApplication::exit(const int exitCode) noexcept {
     impl_->exit(exitCode);
+}
+
+double DesktopApplication::activeScreenRefreshRate() const noexcept {
+    return impl_->activeScreenRefreshRate();
 }
 
 bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,

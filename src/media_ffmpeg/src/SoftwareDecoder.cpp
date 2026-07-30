@@ -134,7 +134,8 @@ public:
          domain::MediaDescriptor descriptorValue,
          platform::FrameBudget& frameBudget,
          const std::atomic<bool>* const externalInterrupt,
-         std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue)
+         std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue,
+         const std::uint32_t softwareThreadCountValue)
         : sourceId(sourceIdValue), descriptor(std::move(descriptorValue)), frameBudget(frameBudget),
           deviceBroker(std::move(deviceBrokerValue)),
           factory(frameBudget,
@@ -144,7 +145,7 @@ public:
                       .sampleAspectDenominator = descriptor.sampleAspectRatio.denominator,
                   }),
           interruptState{.requested = &interrupted, .externalRequested = externalInterrupt},
-          bufferPool(3U) {}
+          bufferPool(3U), softwareThreadCount(softwareThreadCountValue) {}
 
     [[nodiscard]] static AVPixelFormat
     selectHardwareFormat(AVCodecContext* const context,
@@ -193,18 +194,21 @@ public:
     bool hardwareRequested = false;
     media::DecoderBackend backend = media::DecoderBackend::Software;
     std::string fallbackReason;
+    std::uint32_t softwareThreadCount = 0U;
 };
 
 SoftwareDecoder::SoftwareDecoder(const domain::SourceId sourceId,
                                  domain::MediaDescriptor descriptor,
                                  platform::FrameBudget& frameBudget,
                                  const std::atomic<bool>* const externalInterrupt,
-                                 std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
+                                 std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
+                                 const std::uint32_t softwareThreadCount)
     : impl_(std::make_unique<Impl>(sourceId,
                                    std::move(descriptor),
                                    frameBudget,
                                    externalInterrupt,
-                                   std::move(deviceBroker))) {}
+                                   std::move(deviceBroker),
+                                   softwareThreadCount)) {}
 
 SoftwareDecoder::~SoftwareDecoder() = default;
 
@@ -331,6 +335,9 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     impl_->hardwareRequested = false;
     impl_->hardwareDevice.reset();
     impl_->hardwareLease.reset();
+    if (impl_->softwareThreadCount > 0U) {
+        openedCodec->thread_count = static_cast<int>(impl_->softwareThreadCount);
+    }
 
     if (!impl_->deviceBroker) {
         impl_->fallbackReason = "No shared Qt D3D11 device was configured.";
@@ -394,6 +401,9 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
                 domain::MediaErrorCode::kMediaDecodeFailed,
                 sourceId,
                 "FFmpeg could not recreate the software decoder after D3D11VA failed."));
+        }
+        if (impl_->softwareThreadCount > 0U) {
+            openedCodec->thread_count = static_cast<int>(impl_->softwareThreadCount);
         }
         codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
     }

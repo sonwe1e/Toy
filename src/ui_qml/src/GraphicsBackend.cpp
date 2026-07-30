@@ -58,6 +58,12 @@ void configureGraphicsBackend() noexcept {
     if (!qEnvironmentVariableIsSet("QSG_NO_VSYNC")) {
         static_cast<void>(qputenv("QSG_NO_VSYNC", QByteArrayLiteral("1")));
     }
+    // QWindow otherwise keeps a small idle delay before UpdateRequest delivery. Media cadence
+    // already provides the idle boundary, and the extra GUI-thread delay is large enough to miss
+    // 120 fps frame deadlines even on a high-refresh physical display.
+    if (!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME")) {
+        static_cast<void>(qputenv("QT_QPA_UPDATE_IDLE_TIME", QByteArrayLiteral("0")));
+    }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
 }
 

@@ -107,6 +107,10 @@ private:
     domain::SourceId sourceId_;
     std::int64_t sourceFrameCount_ = 0;
     std::unique_ptr<SoftwareDecoder> decoder_;
+    // Long-GOP random seeks for bounded frame sizes are faster in software than D3D11VA.
+    // Large frames stay on decoder_ to preserve the shared frame budget, and continuous playback
+    // always stays there so its shared surfaces remain zero-copy.
+    std::unique_ptr<SoftwareDecoder> exactSoftwareDecoder_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<ControlJob> controlQueue_;

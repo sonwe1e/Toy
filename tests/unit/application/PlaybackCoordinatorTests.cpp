@@ -1793,6 +1793,11 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     ASSERT_TRUE(frame.has_value());
     EXPECT_EQ(frame->frameId, domain::FrameId{1});
     EXPECT_EQ(frame->priority, FrameRequestPriority::Sequential);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const auto prepared = provider->frameRequest(2U);
+    ASSERT_TRUE(prepared.has_value());
+    EXPECT_EQ(prepared->frameId, domain::FrameId{2});
+    EXPECT_EQ(prepared->priority, FrameRequestPriority::Sequential);
     ASSERT_TRUE(waitUntil([&coordinator] {
         return coordinator->snapshot()->playbackState == domain::PlaybackState::kBuffering;
     }));
@@ -1800,6 +1805,9 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     ASSERT_TRUE(provider->postFrameSucceeded(*frame));
     ASSERT_TRUE(provider->postFrameReady(*frame, makeFrameSet(frame->frameId)));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameReady(*prepared, makeFrameSet(prepared->frameId)));
+    ASSERT_TRUE(provider->postFrameSucceeded(*prepared));
+    EXPECT_EQ(render->publishedCount(), 2U);
     presentPublished(coordinator, render, 1U);
     ASSERT_TRUE(scheduler->waitForScheduleCount(4U));
     ASSERT_TRUE(waitUntil([&coordinator] {
@@ -1810,6 +1818,13 @@ TEST(PlaybackCoordinatorTests, PlayUsesAbsoluteRationalCadenceAndSequentialFrame
     const auto secondCadence = scheduler->request(3U);
     ASSERT_TRUE(secondCadence.has_value());
     EXPECT_EQ(secondCadence->due, firstCadence->due + 33'333us);
+    clock->set(secondCadence->due);
+    ASSERT_TRUE(scheduler->fire(3U));
+    ASSERT_TRUE(render->waitForPublishedCount(3U));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(4U));
+    const auto following = provider->frameRequest(3U);
+    ASSERT_TRUE(following.has_value());
+    EXPECT_EQ(following->frameId, domain::FrameId{3});
 }
 
 TEST(PlaybackCoordinatorTests, StepBeforeCadenceCancelsRunAndRejectsTheStaleTick) {
@@ -1937,10 +1952,11 @@ TEST(PlaybackCoordinatorTests, PauseAfterPublicationDrainsOnlyThatAtomicFrameSet
     }));
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPaused);
     EXPECT_EQ(scheduler->scheduleCount(), 3U);
-    EXPECT_EQ(provider->frameRequestCount(), 2U);
+    // The published frame drains atomically while one unpublished successor is already decoding.
+    EXPECT_EQ(provider->frameRequestCount(), 3U);
 }
 
-TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsAndKeepsOneRequestInFlight) {
+TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsWithOnePreparedSuccessor) {
     const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
     const auto clock = std::make_shared<FakeSteadyClock>();
     const auto provider = std::make_shared<FakeFrameProvider>();
@@ -1957,30 +1973,76 @@ TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsAndKeepsOneReques
     ASSERT_TRUE(scheduler->waitForScheduleCount(2U));
     const auto cadence = scheduler->request(1U);
     ASSERT_TRUE(cadence.has_value());
-    clock->set(cadence->due + 14ms + 166'666us);
+    clock->set(cadence->due);
     ASSERT_TRUE(scheduler->fire(1U));
     ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
     const auto firstPlaybackFrame = provider->frameRequest(1U);
     ASSERT_TRUE(firstPlaybackFrame.has_value());
-    EXPECT_EQ(firstPlaybackFrame->frameId, domain::FrameId{6});
-    EXPECT_EQ(provider->frameRequestCount(), 2U);
+    EXPECT_EQ(firstPlaybackFrame->frameId, domain::FrameId{1});
+    ASSERT_EQ(provider->frameRequestCount(), 3U);
+    const auto preparedFrame = provider->frameRequest(2U);
+    ASSERT_TRUE(preparedFrame.has_value());
+    EXPECT_EQ(preparedFrame->frameId, domain::FrameId{2});
 
-    clock->advance(100ms);
+    clock->advance(400ms);
     ASSERT_TRUE(
         provider->postFrameReady(*firstPlaybackFrame, makeFrameSet(firstPlaybackFrame->frameId)));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
     ASSERT_TRUE(provider->postFrameSucceeded(*firstPlaybackFrame));
     presentPublished(coordinator, render, 1U);
-    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
-    const auto skippedPlaybackFrame = provider->frameRequest(2U);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(4U));
+    const auto skippedPlaybackFrame = provider->frameRequest(3U);
     ASSERT_TRUE(skippedPlaybackFrame.has_value());
-    EXPECT_EQ(skippedPlaybackFrame->frameId, domain::FrameId{9});
+    EXPECT_EQ(skippedPlaybackFrame->frameId, domain::FrameId{11});
     EXPECT_EQ(skippedPlaybackFrame->priority, FrameRequestPriority::Sequential);
     ASSERT_TRUE(waitUntil([&coordinator] {
         const auto snapshot = coordinator->snapshot();
-        return snapshot->displayedFrame == domain::FrameId{6} &&
-               snapshot->requestedFrame == domain::FrameId{9};
+        return snapshot->displayedFrame == domain::FrameId{1} &&
+               snapshot->requestedFrame == domain::FrameId{11};
     }));
+}
+
+TEST(PlaybackCoordinatorTests, BriefPlaybackDelayUsesPreparedSuccessorWithoutDropping) {
+    const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
+    const auto clock = std::make_shared<FakeSteadyClock>();
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator =
+        makeCoordinator(provider, render, std::make_shared<FakeMediaProbe>(), scheduler, clock);
+    markGraphicsReady(coordinator);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(
+                  PlayCommand{.context = commandContext(coordinator, domain::CommandId{2})}),
+              PortSubmitResult::Accepted);
+    static_cast<void>(waitForTerminals(coordinator, 1U));
+    ASSERT_TRUE(scheduler->waitForScheduleCount(2U));
+    const auto cadence = scheduler->request(1U);
+    ASSERT_TRUE(cadence.has_value());
+    clock->set(cadence->due);
+    ASSERT_TRUE(scheduler->fire(1U));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const auto active = provider->frameRequest(1U);
+    const auto prepared = provider->frameRequest(2U);
+    ASSERT_TRUE(active.has_value());
+    ASSERT_TRUE(prepared.has_value());
+    EXPECT_EQ(active->frameId, domain::FrameId{1});
+    EXPECT_EQ(prepared->frameId, domain::FrameId{2});
+
+    clock->advance(100ms);
+    ASSERT_TRUE(provider->postFrameReady(*active, makeFrameSet(active->frameId)));
+    ASSERT_TRUE(provider->postFrameSucceeded(*active));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    presentPublished(coordinator, render, 1U);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        const auto snapshot = coordinator->snapshot();
+        return snapshot->displayedFrame == domain::FrameId{1} &&
+               snapshot->requestedFrame == domain::FrameId{2};
+    }));
+    ASSERT_EQ(provider->frameRequestCount(), 4U);
+    const auto following = provider->frameRequest(3U);
+    ASSERT_TRUE(following.has_value());
+    EXPECT_EQ(following->frameId, domain::FrameId{3});
 }
 
 TEST(PlaybackCoordinatorTests, FinalFrameAutoPausesAndPlayFromEndRestartsAtZero) {
@@ -3816,7 +3878,7 @@ TEST(PlaybackCoordinatorTests, VfrContinuousPlayUsesAbsoluteNonuniformDeadlinesR
     const std::optional<DeadlineRequest> secondCadence = scheduler->request(3U);
     ASSERT_TRUE(secondCadence.has_value());
     EXPECT_EQ(secondCadence->due, firstCadence->due + 35000us);
-    EXPECT_EQ(provider->frameRequestCount(), 2U);
+    EXPECT_EQ(provider->frameRequestCount(), 3U);
     EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{1});
     EXPECT_FALSE(coordinator->snapshot()->requestedFrame.has_value());
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPlaying);
@@ -3860,35 +3922,18 @@ TEST(PlaybackCoordinatorTests,
     const std::optional<DeadlineRequest> firstCadence = scheduler->request(1U);
     ASSERT_TRUE(firstCadence.has_value());
 
-    clock->set(firstCadence->due + 50000us);
+    clock->set(firstCadence->due + 500ms);
     ASSERT_TRUE(scheduler->fire(1U));
     ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
     const std::optional<FrameRequest> catchUp = provider->frameRequest(1U);
     ASSERT_TRUE(catchUp.has_value());
-    EXPECT_EQ(catchUp->frameId, domain::FrameId{2});
+    EXPECT_EQ(catchUp->frameId, domain::FrameId{3});
     EXPECT_EQ(catchUp->priority, FrameRequestPriority::Sequential);
 
     ASSERT_TRUE(provider->postFrameReady(*catchUp, makeFrameSet(catchUp->frameId)));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
     presentPublished(coordinator, render, 1U);
     ASSERT_TRUE(provider->postFrameSucceeded(*catchUp));
-    ASSERT_TRUE(waitUntil(
-        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{2}; }));
-
-    ASSERT_TRUE(scheduler->waitForScheduleCount(4U));
-    const std::optional<DeadlineRequest> finalCadence = scheduler->request(3U);
-    ASSERT_TRUE(finalCadence.has_value());
-    clock->set(finalCadence->due);
-    ASSERT_TRUE(scheduler->fire(3U));
-    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
-    const std::optional<FrameRequest> finalFrame = provider->frameRequest(2U);
-    ASSERT_TRUE(finalFrame.has_value());
-    EXPECT_EQ(finalFrame->frameId, domain::FrameId{3});
-
-    ASSERT_TRUE(provider->postFrameReady(*finalFrame, makeFrameSet(finalFrame->frameId)));
-    ASSERT_TRUE(render->waitForPublishedCount(3U));
-    presentPublished(coordinator, render, 2U);
-    ASSERT_TRUE(provider->postFrameSucceeded(*finalFrame));
     ASSERT_TRUE(waitUntil(
         [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{3}; }));
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPaused);

@@ -31,7 +31,8 @@ public:
                     domain::MediaDescriptor descriptor,
                     platform::FrameBudget& frameBudget,
                     const std::atomic<bool>* externalInterrupt = nullptr,
-                    std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker = {});
+                    std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker = {},
+                    std::uint32_t softwareThreadCount = 0U);
     ~SoftwareDecoder();
 
     SoftwareDecoder(const SoftwareDecoder&) = delete;
