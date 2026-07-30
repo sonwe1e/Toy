@@ -92,6 +92,18 @@ gate-4k30-main10-c.mp4
 用户的交互桌面；服务运行在 Session 0，不能作为这组门禁的可信证据。用户登录后从
 runner 目录启动 `run.cmd`，或创建“用户登录时”启动的计划任务。
 
+交互桌面还必须实际挂载由 PCI 显卡驱动的 120 Hz 或更高刷新率显示输出。只挂载
+GameViewer、Oray 等虚拟/间接显示适配器时，即使 D3D11VA 解码成功，Qt 的呈现节奏也
+不能作为 60/120 FPS 发布证据。工作流会先执行以下 fail-closed 预检：
+
+```powershell
+.\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
+```
+
+预检必须输出 `DVS_HARDWARE_RUNNER_READY`。如果提示没有物理 PCI 显示适配器附着到
+桌面，应先在本机物理显示输出上登录，或把物理输出加入当前扩展桌面，再启动 runner；
+不得通过删除预检、降低刷新率或继续使用纯虚拟桌面来绕过门禁。
+
 此仓库是 public。self-hosted job 已限制为仓库内分支的 PR，fork PR 不会被发送到
 工作站；硬件性能 workflow 仅允许维护者手动 dispatch。不要移除这些限制，也不要在
 runner 上保存 GitHub token、签名证书或其他长期密钥。

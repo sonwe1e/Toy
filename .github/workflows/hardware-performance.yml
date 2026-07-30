@@ -79,7 +79,7 @@ jobs:
           $llvmBin | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
           Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
 
-      - name: Verify hardware fixtures
+      - name: Verify hardware fixtures and runner desktop
         shell: pwsh
         run: |
           if (-not $env:DVS_PERFORMANCE_FIXTURE_ROOT) {
@@ -102,9 +102,7 @@ jobs:
               throw "Missing performance fixture: $path"
             }
           }
-          Get-CimInstance Win32_VideoController |
-            Select-Object Name, DriverVersion, Status |
-            Format-Table -AutoSize
+          .\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
 
       - name: Configure
         shell: pwsh
