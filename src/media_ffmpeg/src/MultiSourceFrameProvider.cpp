@@ -896,8 +896,11 @@ private:
             }
             setBytes += frameBytes;
         }
+        // Keep most of the shared budget available for the published set, the scene graph's
+        // retiring generation, and the next set being decoded. A cached 3-source 4K P010 set is
+        // large enough to make that transient overlap fail even though steady-state usage fits.
         const std::size_t cacheCapacity =
-            std::min(kMaximumFrameSetCacheBytes, frameBudget_.capacityBytes() / 2U);
+            std::min(kMaximumFrameSetCacheBytes, frameBudget_.capacityBytes() / 4U);
         if (setBytes > cacheCapacity) {
             return;
         }

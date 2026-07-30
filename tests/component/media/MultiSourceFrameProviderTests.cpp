@@ -469,8 +469,11 @@ TEST(MultiSourceFrameProviderTests, FrameSetCacheIgnoresRequestIdentityButHonors
     EXPECT_EQ(provider.frameSetCacheHitCountForTesting(), 1U);
 }
 
-TEST(MultiSourceFrameProviderTests, FrameSetCacheEvictsBySharedBudgetBytes) {
-    platform::FrameBudget budget{256U * 1024U};
+TEST(MultiSourceFrameProviderTests, FrameSetCacheLeavesRenderHeadroomUnderSharedBudget) {
+    // Two complete fixture sets fit in half the budget, but only one fits in the provider's
+    // quarter-budget cache allowance. Revisiting frame zero must decode it again so the remaining
+    // three quarters stay available to the published, retiring, and in-flight render generations.
+    platform::FrameBudget budget{512U * 1024U};
     MultiSourceFrameProvider provider{budget};
     const auto events = std::make_shared<RecordingEventSink>();
     const application::FrameProviderOpenRequest open = makeOpenRequest(734U);

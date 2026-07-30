@@ -14,6 +14,9 @@
 #include "StartupFailureReporter.h"
 
 #include <QElapsedTimer>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTimer>
 #include <QUrl>
 
@@ -29,7 +32,6 @@
 #include <memory>
 #include <numeric>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -883,98 +885,110 @@ runDesktop(int& argc,
         result = EXIT_FAILURE;
     }
 
-    std::ostringstream report;
-    report << "{\"duration_seconds\":" << duration.count()
-           << ",\"presented_frames\":" << metrics.presentedFrames
-           << ",\"dropped_frames\":" << metrics.droppedFrames << ",\"drop_ratio\":" << dropRatio
-           << ",\"source_split_observations\":" << metrics.sourceSplitObservations
-           << ",\"open_first_frame_ms\":" << metrics.openFirstFrameMilliseconds
-           << ",\"playback_response_ms\":" << metrics.playbackResponseMilliseconds
-           << ",\"cold_seek_p50_ms\":" << metrics.seekP50Milliseconds
-           << ",\"seek_p95_ms\":" << metrics.seekP95Milliseconds
-           << ",\"warm_step_p50_ms\":" << metrics.warmStepP50Milliseconds
-           << ",\"warm_step_p95_ms\":" << metrics.warmStepP95Milliseconds
-           << ",\"analysis_ms\":" << metrics.analysisMilliseconds
-           << ",\"analysis_decoded_frames\":" << metrics.analysisDecodedFrames
-           << ",\"analysis_frames_per_second\":" << analysisFramesPerSecond
-           << ",\"shutdown_ms\":" << metrics.shutdownMilliseconds
-           << ",\"peak_frame_bytes\":" << metrics.peakFrameBytes
-           << ",\"peak_working_set_bytes\":" << metrics.peakWorkingSetBytes
-           << ",\"baseline_threads\":" << metrics.baselineThreads
-           << ",\"peak_threads\":" << metrics.peakThreads
-           << ",\"final_threads\":" << metrics.finalThreads
-           << ",\"submitted_sets\":" << playbackTransfer.submittedSets
-           << ",\"replaced_sets\":" << playbackTransfer.replacedSets
-           << ",\"published_sets\":" << playbackTransfer.publishedSets
-           << ",\"failed_sets\":" << transfer.failedSets
-           << ",\"cancelled_sets\":" << transfer.cancelledSets << ",\"transfer_average_us\":"
-           << (playbackTransfer.completedTransfers == 0U
-                   ? 0U
-                   : playbackTransfer.totalTransferMicroseconds /
-                         playbackTransfer.completedTransfers)
-           << ",\"transfer_maximum_us\":" << playbackTransfer.maximumTransferMicroseconds
-           << ",\"zero_copy_sets\":" << playbackTransfer.zeroCopySets
-           << ",\"render_frame_notifications\":" << relay.frameNotifications
-           << ",\"render_ack_notifications\":" << relay.ackNotifications
-           << ",\"render_ack_backpressure\":" << relay.ackBackpressureNotifications
-           << ",\"render_acknowledgements\":" << relay.acknowledgementsPopped
-           << ",\"render_canonical_gaps\":" << relay.canonicalFrameGaps
-           << ",\"render_canonical_regressions\":" << relay.canonicalFrameRegressions
-           << ",\"render_update_requests\":" << relay.updateRequests
-           << ",\"render_item_updates\":" << relay.itemUpdates
-           << ",\"render_frame_to_start_average_us\":"
-           << (relay.frameToRenderSamples == 0U
-                   ? 0U
-                   : relay.totalFrameToRenderMicroseconds / relay.frameToRenderSamples)
-           << ",\"render_start_to_ack_average_us\":"
-           << (relay.renderToAckSamples == 0U
-                   ? 0U
-                   : relay.totalRenderToAckMicroseconds / relay.renderToAckSamples)
-           << ",\"render_frame_to_ack_average_us\":"
-           << (relay.frameToAckSamples == 0U
-                   ? 0U
-                   : relay.totalFrameToAckMicroseconds / relay.frameToAckSamples)
-           << ",\"render_frame_to_ack_maximum_us\":" << relay.maximumFrameToAckMicroseconds
-           << ",\"device_loss_reports\":" << transfer.deviceLossReports
-           << ",\"decoder_calls\":" << completedDecodes << ",\"decoder_cache_hits\":" << cacheHits
-           << ",\"decoder_cache_hit_ratio\":" << cacheHitRatio
-           << ",\"decoder_exact_seeks\":" << exactSeeks << ",\"decoder_average_us\":"
-           << (completedDecodes == 0U ? 0U : totalDecodeMicroseconds / completedDecodes)
-           << ",\"decoder_maximum_us\":" << maximumDecodeMicroseconds
-           << ",\"probe_index_count\":" << probe.completedProbes << ",\"probe_index_average_us\":"
-           << (probe.completedProbes == 0U
-                   ? 0U
-                   : probe.totalProbeIndexMicroseconds / probe.completedProbes)
-           << ",\"probe_index_maximum_us\":" << probe.maximumProbeIndexMicroseconds
-           << ",\"frameset_assembly_count\":" << provider.assembledFrameSets
-           << ",\"frameset_assembly_average_us\":"
-           << (provider.assembledFrameSets == 0U
-                   ? 0U
-                   : provider.totalAssemblyMicroseconds / provider.assembledFrameSets)
-           << ",\"frameset_assembly_maximum_us\":" << provider.maximumAssemblyMicroseconds
-           << ",\"frameset_cache_hits\":" << provider.frameSetCacheHits
-           << ",\"per_source_decode\":[";
+    QJsonObject report;
+    const auto addNumber = [&report](const QString& key, const auto value) {
+        report.insert(key, static_cast<double>(value));
+    };
+    addNumber(QStringLiteral("duration_seconds"), duration.count());
+    addNumber(QStringLiteral("presented_frames"), metrics.presentedFrames);
+    addNumber(QStringLiteral("dropped_frames"), metrics.droppedFrames);
+    addNumber(QStringLiteral("drop_ratio"), dropRatio);
+    addNumber(QStringLiteral("source_split_observations"), metrics.sourceSplitObservations);
+    addNumber(QStringLiteral("open_first_frame_ms"), metrics.openFirstFrameMilliseconds);
+    addNumber(QStringLiteral("playback_response_ms"), metrics.playbackResponseMilliseconds);
+    addNumber(QStringLiteral("cold_seek_p50_ms"), metrics.seekP50Milliseconds);
+    addNumber(QStringLiteral("seek_p95_ms"), metrics.seekP95Milliseconds);
+    addNumber(QStringLiteral("warm_step_p50_ms"), metrics.warmStepP50Milliseconds);
+    addNumber(QStringLiteral("warm_step_p95_ms"), metrics.warmStepP95Milliseconds);
+    addNumber(QStringLiteral("analysis_ms"), metrics.analysisMilliseconds);
+    addNumber(QStringLiteral("analysis_decoded_frames"), metrics.analysisDecodedFrames);
+    addNumber(QStringLiteral("analysis_frames_per_second"), analysisFramesPerSecond);
+    addNumber(QStringLiteral("shutdown_ms"), metrics.shutdownMilliseconds);
+    addNumber(QStringLiteral("peak_frame_bytes"), metrics.peakFrameBytes);
+    addNumber(QStringLiteral("peak_working_set_bytes"), metrics.peakWorkingSetBytes);
+    addNumber(QStringLiteral("baseline_threads"), metrics.baselineThreads);
+    addNumber(QStringLiteral("peak_threads"), metrics.peakThreads);
+    addNumber(QStringLiteral("final_threads"), metrics.finalThreads);
+    addNumber(QStringLiteral("submitted_sets"), playbackTransfer.submittedSets);
+    addNumber(QStringLiteral("replaced_sets"), playbackTransfer.replacedSets);
+    addNumber(QStringLiteral("published_sets"), playbackTransfer.publishedSets);
+    addNumber(QStringLiteral("failed_sets"), transfer.failedSets);
+    addNumber(QStringLiteral("cancelled_sets"), transfer.cancelledSets);
+    addNumber(QStringLiteral("transfer_average_us"),
+              playbackTransfer.completedTransfers == 0U
+                  ? 0U
+                  : playbackTransfer.totalTransferMicroseconds /
+                        playbackTransfer.completedTransfers);
+    addNumber(QStringLiteral("transfer_maximum_us"), playbackTransfer.maximumTransferMicroseconds);
+    addNumber(QStringLiteral("zero_copy_sets"), playbackTransfer.zeroCopySets);
+    addNumber(QStringLiteral("render_frame_notifications"), relay.frameNotifications);
+    addNumber(QStringLiteral("render_ack_notifications"), relay.ackNotifications);
+    addNumber(QStringLiteral("render_ack_backpressure"), relay.ackBackpressureNotifications);
+    addNumber(QStringLiteral("render_acknowledgements"), relay.acknowledgementsPopped);
+    addNumber(QStringLiteral("render_canonical_gaps"), relay.canonicalFrameGaps);
+    addNumber(QStringLiteral("render_canonical_regressions"), relay.canonicalFrameRegressions);
+    addNumber(QStringLiteral("render_update_requests"), relay.updateRequests);
+    addNumber(QStringLiteral("render_item_updates"), relay.itemUpdates);
+    addNumber(QStringLiteral("render_frame_to_start_average_us"),
+              relay.frameToRenderSamples == 0U
+                  ? 0U
+                  : relay.totalFrameToRenderMicroseconds / relay.frameToRenderSamples);
+    addNumber(QStringLiteral("render_start_to_ack_average_us"),
+              relay.renderToAckSamples == 0U
+                  ? 0U
+                  : relay.totalRenderToAckMicroseconds / relay.renderToAckSamples);
+    addNumber(QStringLiteral("render_frame_to_ack_average_us"),
+              relay.frameToAckSamples == 0U
+                  ? 0U
+                  : relay.totalFrameToAckMicroseconds / relay.frameToAckSamples);
+    addNumber(QStringLiteral("render_frame_to_ack_maximum_us"),
+              relay.maximumFrameToAckMicroseconds);
+    addNumber(QStringLiteral("device_loss_reports"), transfer.deviceLossReports);
+    addNumber(QStringLiteral("decoder_calls"), completedDecodes);
+    addNumber(QStringLiteral("decoder_cache_hits"), cacheHits);
+    addNumber(QStringLiteral("decoder_cache_hit_ratio"), cacheHitRatio);
+    addNumber(QStringLiteral("decoder_exact_seeks"), exactSeeks);
+    addNumber(QStringLiteral("decoder_average_us"),
+              completedDecodes == 0U ? 0U : totalDecodeMicroseconds / completedDecodes);
+    addNumber(QStringLiteral("decoder_maximum_us"), maximumDecodeMicroseconds);
+    addNumber(QStringLiteral("probe_index_count"), probe.completedProbes);
+    addNumber(QStringLiteral("probe_index_average_us"),
+              probe.completedProbes == 0U
+                  ? 0U
+                  : probe.totalProbeIndexMicroseconds / probe.completedProbes);
+    addNumber(QStringLiteral("probe_index_maximum_us"), probe.maximumProbeIndexMicroseconds);
+    addNumber(QStringLiteral("frameset_assembly_count"), provider.assembledFrameSets);
+    addNumber(QStringLiteral("frameset_assembly_average_us"),
+              provider.assembledFrameSets == 0U
+                  ? 0U
+                  : provider.totalAssemblyMicroseconds / provider.assembledFrameSets);
+    addNumber(QStringLiteral("frameset_assembly_maximum_us"), provider.maximumAssemblyMicroseconds);
+    addNumber(QStringLiteral("frameset_cache_hits"), provider.frameSetCacheHits);
+
+    QJsonArray sourceDecode;
     for (std::size_t index = 0U; index < playbackBackends.size(); ++index) {
         const auto& backend = playbackBackends[index];
-        if (index != 0U) {
-            report << ',';
-        }
-        report << "{\"source_id\":" << backend.sourceId
-               << ",\"calls\":" << backend.completedDecodeCount << ",\"average_us\":"
-               << (backend.completedDecodeCount == 0U
-                       ? 0U
-                       : backend.totalDecodeMicroseconds / backend.completedDecodeCount)
-               << ",\"maximum_us\":" << backend.maximumDecodeMicroseconds << '}';
+        sourceDecode.append(QJsonObject{
+            {QStringLiteral("source_id"), static_cast<double>(backend.sourceId)},
+            {QStringLiteral("calls"), static_cast<double>(backend.completedDecodeCount)},
+            {QStringLiteral("average_us"),
+             static_cast<double>(backend.completedDecodeCount == 0U
+                                     ? 0U
+                                     : backend.totalDecodeMicroseconds /
+                                           backend.completedDecodeCount)},
+            {QStringLiteral("maximum_us"), static_cast<double>(backend.maximumDecodeMicroseconds)},
+        });
     }
-    report << ']' << ",\"expected_source_count\":" << expectedSourceCount
-           << ",\"all_d3d11va\":" << (allHardware ? "true" : "false")
-           << ",\"shutdown_completed\":" << (shutdownCompleted ? "true" : "false")
-           << ",\"passed\":" << (result == EXIT_SUCCESS ? "true" : "false");
+    report.insert(QStringLiteral("per_source_decode"), sourceDecode);
+    addNumber(QStringLiteral("expected_source_count"), expectedSourceCount);
+    report.insert(QStringLiteral("all_d3d11va"), allHardware);
+    report.insert(QStringLiteral("shutdown_completed"), shutdownCompleted);
+    report.insert(QStringLiteral("passed"), result == EXIT_SUCCESS);
     if (failed) {
-        report << ",\"failure\":\"" << failureReason << '"';
+        report.insert(QStringLiteral("failure"), QString::fromStdString(failureReason));
     }
-    report << "}\n";
-    writeStandardError("DVS_PERFORMANCE_RESULT " + report.str());
+    const auto encodedReport = QJsonDocument{report}.toJson(QJsonDocument::Compact);
+    writeStandardError("DVS_PERFORMANCE_RESULT " + encodedReport.toStdString() + '\n');
     if (!shutdownCompleted) {
         writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
     }
