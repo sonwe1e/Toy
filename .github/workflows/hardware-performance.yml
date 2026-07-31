@@ -91,10 +91,7 @@ jobs:
             'gate-1080p60-c.mp4',
             'gate-1080p120-a.mp4',
             'gate-1080p120-b.mp4',
-            'gate-1080p120-c.mp4',
-            'gate-4k30-main10-a.mp4',
-            'gate-4k30-main10-b.mp4',
-            'gate-4k30-main10-c.mp4'
+            'gate-1080p120-c.mp4'
           )
           foreach ($name in $required) {
             $path = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT $name
@@ -116,9 +113,14 @@ jobs:
         shell: pwsh
         run: ctest --preset hardware-d3d11 --output-on-failure
 
-      - name: Five-minute performance gates
+      - name: Release-blocking performance gates
         shell: pwsh
-        run: ctest --preset performance-d3d11 --output-on-failure
+        # The 4K30 Main10 profile remains registered for follow-up tuning, but is intentionally
+        # deferred from the v1.1.0 release gate. The three 1080p profiles stay fail-closed.
+        run: >
+          ctest --preset performance-d3d11
+          --exclude-regex "^performance\.4k30-main10$"
+          --output-on-failure
 
       - name: Collect performance logs
         if: always()

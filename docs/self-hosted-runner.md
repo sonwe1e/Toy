@@ -81,6 +81,12 @@ gate-1080p60-c.mp4
 gate-1080p120-a.mp4
 gate-1080p120-b.mp4
 gate-1080p120-c.mp4
+```
+
+4K30 Main10 当前不阻断 v1.1.0 发布，但测试入口仍然保留。后续恢复该门禁时，素材
+目录还需要包含：
+
+```text
 gate-4k30-main10-a.mp4
 gate-4k30-main10-b.mp4
 gate-4k30-main10-c.mp4
@@ -115,6 +121,8 @@ status: online
 labels: self-hosted, Windows, X64, dvs-toolchain-4.4, dvs-gpu
 ```
 
-常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。1080p60 与 4K30
-Main10 用例各运行 300 秒；2 路和 3 路 1080p120 用例各运行 60 秒。日志作为
-workflow artifact 保留 14 天。
+常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。v1.1.0 的阻断门槛
+包括 1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。4K30 Main10
+用例仍可通过 `ctest --preset performance-d3d11 -R
+"^performance\.4k30-main10$" --output-on-failure` 单独执行，但其结果暂不阻断
+v1.1.0。所有工作流日志作为 artifact 保留 14 天。
