@@ -403,6 +403,51 @@ TEST(ProjectJsonTests, RoundTripsSingleSourceProjectWithoutComparisonEdge) {
     EXPECT_EQ(decoded.value().viewState(), created.value().viewState());
 }
 
+TEST(ProjectJsonTests, RoundTripsAtomicSingleAndComparisonTopologyTransitions) {
+    const std::filesystem::path projectPath =
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "topology.dvsproject";
+    auto singleSet =
+        domain::ComparisonValidator::validate({makeSource(0,
+                                                          projectPath.parent_path() / "single.mp4",
+                                                          std::string(64, 'c'),
+                                                          domain::ComparisonRole::kPrediction,
+                                                          "Single")});
+    ASSERT_TRUE(singleSet);
+    auto singleProject = domain::Project::create(
+        domain::ProjectId{"topology-project"}, "Topology", singleSet.value().set);
+    ASSERT_TRUE(singleProject);
+
+    const domain::Project comparisonTemplate = makeProject(projectPath);
+    const domain::ProjectViewState comparisonView{
+        .layout = domain::ProjectViewLayout::kSideBySide,
+        .differenceEdge = std::array<domain::SourceId, 2U>{0U, 1U},
+    };
+    auto comparison = singleProject.value().replaceReviewState(comparisonTemplate.sources(),
+                                                               comparisonView,
+                                                               domain::ProjectAlignmentState{},
+                                                               domain::FrameId{2});
+    ASSERT_TRUE(comparison);
+    const auto comparisonJson = ProjectJson::encodeText(comparison.value(), projectPath);
+    ASSERT_TRUE(comparisonJson);
+    const auto reopenedComparison = ProjectJson::decodeText(comparisonJson.value(), projectPath);
+    ASSERT_TRUE(reopenedComparison);
+    EXPECT_EQ(reopenedComparison.value().sources().sourceCount(), 2U);
+    EXPECT_EQ(reopenedComparison.value().viewState(), comparisonView);
+
+    domain::ProjectViewState singleView;
+    singleView.layout = domain::ProjectViewLayout::kSingle;
+    singleView.differenceEdge.reset();
+    auto singleAgain = reopenedComparison.value().replaceReviewState(
+        singleSet.value().set, singleView, domain::ProjectAlignmentState{}, domain::FrameId{1});
+    ASSERT_TRUE(singleAgain);
+    const auto singleJson = ProjectJson::encodeText(singleAgain.value(), projectPath);
+    ASSERT_TRUE(singleJson);
+    const auto reopenedSingle = ProjectJson::decodeText(singleJson.value(), projectPath);
+    ASSERT_TRUE(reopenedSingle);
+    EXPECT_EQ(reopenedSingle.value().sources().sourceCount(), 1U);
+    EXPECT_EQ(reopenedSingle.value().viewState(), singleView);
+}
+
 TEST(ProjectJsonTests, RejectsFutureSchemaVersionFive) {
     const std::filesystem::path projectPath =
         std::filesystem::temp_directory_path() / "dvs-project-json" / "schema5.dvsproject";

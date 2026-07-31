@@ -101,6 +101,23 @@ Result<Project> Project::replaceSources(ValidatedComparisonSet sources) const {
     });
 }
 
+Result<Project> Project::replaceReviewState(ValidatedComparisonSet sources,
+                                            const ProjectViewState viewState,
+                                            ProjectAlignmentState alignmentState,
+                                            const FrameId lastDisplayedFrame) const {
+    return rebuild(ProjectState{
+        .id = id_,
+        .displayName = displayName_,
+        .sources = std::move(sources),
+        .inMark = inMark_,
+        .outMark = outMark_,
+        .lastDisplayedFrame = lastDisplayedFrame,
+        .workspaceState = workspaceState_,
+        .alignmentState = std::move(alignmentState),
+        .viewState = viewState,
+    });
+}
+
 Result<Project> Project::rebuild(ProjectState state) {
     auto created =
         create(std::move(state.id), std::move(state.displayName), std::move(state.sources));

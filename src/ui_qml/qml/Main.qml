@@ -48,6 +48,7 @@ ApplicationWindow {
     property bool showFramePending: false
     property real wipePosition: 0.5
     property var pendingDroppedVideos: []
+    property bool pendingComparisonPreservesPosition: false
     property string dropError: ""
     property string exportMessage: ""
     property var appliedRestoredViewSerial: 0
@@ -184,7 +185,7 @@ ApplicationWindow {
     readonly property real frameProgress: currentFrame >= 0 && totalFrames > 1 ? Math.max(0, Math.min(1, Number(currentFrame) / (Number(totalFrames) - 1))) : 0
     readonly property real timelineProgress: timelineDragging && timelinePreviewFrame >= 0 && totalFrames > 1 ? Number(timelinePreviewFrame) / (Number(totalFrames) - 1) : frameProgress
     readonly property bool timelineEnabled: graphicsReady && !busy && Boolean(controller && controller.canFirst) && totalFrames > 0
-    readonly property bool globalMediaShortcutsEnabled: !focusBlocksGlobalMediaShortcuts(root.activeFocusItem)
+    readonly property bool globalMediaShortcutsEnabled: !chromeVisible || !focusBlocksGlobalMediaShortcuts(root.activeFocusItem)
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
     readonly property string overlayTitle: busy ? qsTr("Loading review...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open review") : qsTr("Drop one to three videos here")))
     readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Open one video for playback and frame review, or two to three videos for comparison.")))
@@ -248,7 +249,7 @@ ApplicationWindow {
         }
     }
 
-    function reviewDroppedUrls(urls) {
+    function reviewUrls(urls, allowSingleSourceAppend) {
         const reviewed = controller.handleDroppedUrls(urls);
         if (!reviewed.accepted) {
             dropError = droppedUrlError(reviewed.errorKey, reviewed.detail);
@@ -265,7 +266,7 @@ ApplicationWindow {
         }
         if (normalizedUrls.length === 1) {
             const existing = selectedSourceUrls();
-            if (sourceCount > 0 && existing.length === sourceCount && existing.length < 3) {
+            if (allowSingleSourceAppend && sourceCount > 0 && existing.length === sourceCount && existing.length < 3) {
                 const candidate = normalizedUrls[0].toString();
                 for (const current of existing) {
                     if (current.toString() === candidate) {
@@ -276,6 +277,7 @@ ApplicationWindow {
                 existing.push(normalizedUrls[0]);
                 dropError = "";
                 setDroppedVideoOrder(existing);
+                pendingComparisonPreservesPosition = true;
                 dropReviewDialog.open();
                 return;
             }
@@ -290,7 +292,16 @@ ApplicationWindow {
         }
         dropError = "";
         setDroppedVideoOrder(normalizedUrls);
+        pendingComparisonPreservesPosition = false;
         dropReviewDialog.open();
+    }
+
+    function reviewDroppedUrls(urls) {
+        reviewUrls(urls, true);
+    }
+
+    function openNewReviewUrls(urls) {
+        reviewUrls(urls, false);
     }
 
     function openDroppedComparison(referenceIndex) {
@@ -302,7 +313,7 @@ ApplicationWindow {
         if (preferences && pendingDroppedVideos.length === 3)
             preferences.viewMode = 1;
         const urls = selectedSourceUrls();
-        if (sourceCount > 0)
+        if (pendingComparisonPreservesPosition && sourceCount > 0)
             controller.reopenSources(urls, referenceSourceIndex);
         else
             controller.openSources(urls, referenceSourceIndex);
@@ -360,6 +371,8 @@ ApplicationWindow {
         chromeVisible = !chromeVisible;
         if (!chromeVisible) {
             inspectorOpen = false;
+            viewportFrame.forceActiveFocus();
+            Qt.callLater(() => viewportFrame.forceActiveFocus());
             showImmersiveHud(frameText);
         }
     }
@@ -745,8 +758,13 @@ ApplicationWindow {
             title: qsTr("&File")
 
             MenuItem {
-                text: qsTr("Open videos…")
+                text: qsTr("Open new review…")
                 onTriggered: videoFilesDialog.open()
+            }
+            MenuItem {
+                text: qsTr("Add source…")
+                enabled: root.sourceCount > 0 && root.sourceCount < 3 && !root.busy
+                onTriggered: addSourceFileDialog.open()
             }
             MenuItem {
                 text: qsTr("Open review project…")
@@ -759,7 +777,7 @@ ApplicationWindow {
                 onTriggered: root.saveCurrentProject()
             }
             MenuItem {
-                text: qsTr("另存评测项目…")
+                text: qsTr("Save review project as…")
                 enabled: root.canSaveProject && !root.busy
                 onTriggered: saveProjectDialog.open()
             }
@@ -932,7 +950,6 @@ ApplicationWindow {
     Shortcut {
         sequence: "Tab"
         context: Qt.ApplicationShortcut
-        enabled: root.globalMediaShortcutsEnabled
         onActivated: root.toggleChrome()
     }
     Shortcut {
@@ -1014,7 +1031,17 @@ ApplicationWindow {
         title: qsTr("Open one to three videos")
         fileMode: NativeDialogs.FileDialog.OpenFiles
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
-        onAccepted: root.reviewDroppedUrls(selectedFiles)
+        onAccepted: root.openNewReviewUrls(selectedFiles)
+    }
+
+    NativeDialogs.FileDialog {
+        id: addSourceFileDialog
+
+        objectName: "addSourceFileDialog"
+        title: qsTr("Add a source to the current review")
+        fileMode: NativeDialogs.FileDialog.OpenFile
+        nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
+        onAccepted: root.reviewDroppedUrls([selectedFile])
     }
 
     DropConfirmationDialog {
@@ -1076,7 +1103,7 @@ ApplicationWindow {
         id: saveProjectDialog
 
         objectName: "saveProjectDialog"
-        title: qsTr("另存评测项目")
+        title: qsTr("Save review project as")
         fileMode: NativeDialogs.FileDialog.SaveFile
         defaultSuffix: "dvsproj"
         nameFilters: [qsTr("VCStation projects (*.dvsproj)")]
@@ -1294,7 +1321,7 @@ ApplicationWindow {
 
             ActionButton {
                 objectName: "saveProjectAsButton"
-                text: qsTr("另存评测项目")
+                text: qsTr("Save review project as")
                 visible: false
                 enabled: root.canSaveProject && !root.busy
                 onClicked: saveProjectDialog.open()
@@ -1957,8 +1984,8 @@ ApplicationWindow {
         focus: true
         color: "#06080d"
         border.color: root.borderColor
-        border.width: 1
-        radius: 7
+        border.width: root.chromeVisible ? 1 : 0
+        radius: root.chromeVisible ? 7 : 0
         clip: true
         anchors {
             top: parent.top
@@ -1995,7 +2022,7 @@ ApplicationWindow {
             referenceSlot: root.referenceSourceIndex >= 0 ? root.referenceSourceIndex : 0
             anchors {
                 fill: parent
-                margins: 1
+                margins: root.chromeVisible ? 1 : 0
             }
         }
         // qmllint enable import unqualified unresolved-type
@@ -2181,6 +2208,10 @@ ApplicationWindow {
         }
 
         Row {
+            id: analysisChrome
+
+            objectName: "analysisControlsChrome"
+            visible: root.chromeVisible
             spacing: 6
             anchors {
                 right: parent.right
@@ -2330,7 +2361,13 @@ ApplicationWindow {
             }
 
             Repeater {
-                model: root.wipeMode ? [
+                objectName: "surfaceLabelRepeater"
+                model: root.singleMode ? [
+                    {
+                        "side": qsTr("A"),
+                        "filename": root.sourceAName
+                    }
+                ] : root.wipeMode ? [
                     {
                         "side": String.fromCharCode(65 + root.differenceFirstSlot),
                         "filename": root.sourceFilename(root.differenceFirstSlot)
@@ -2355,7 +2392,7 @@ ApplicationWindow {
 
                     required property var modelData
 
-                    width: (surfaceLabels.width - surfaceLabels.spacing) / 2
+                    width: root.singleMode ? surfaceLabels.width : (surfaceLabels.width - surfaceLabels.spacing) / 2
                     height: surfaceLabels.height
                     radius: 5
                     color: "#d9111721"

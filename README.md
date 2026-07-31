@@ -14,6 +14,8 @@ canonical frame position 上，支持任意两路 Wipe/Diff、显式对齐以及
 
 启动后可直接拖入 1～3 个视频：单个视频直接以暂停的首帧铺满审查视口，两路或三路
 素材会先确认 A/B/C 顺序和 Reference。也可以拖入 `.dvsproj` 或从 File 菜单打开项目。
+File 菜单将 “Open new review…” 与 “Add source…” 分开，避免把新建单路审查误解为向
+当前会话追加视频。
 Schema v4 项目文件保存视频路径、Reference、Offset、锚点、Wipe、阈值、滤镜、
 viewport 和 ROI，不会导出新视频。
 
@@ -89,8 +91,8 @@ VCStation 安装。详细配置见
 ## 性能与发布门禁
 
 硬件门禁必须在登录到交互桌面的 D3D11VA runner 上运行，不能用 WARP 或 CPU 测试替代。
-`performance-d3d11` 包括三路 1080p60 五分钟门禁，以及两路/三路 1080p120
-各 60 秒门禁；检查 presentation ACK 连续性、source atomicity、完整
+`performance-d3d11` 包括单路/三路 1080p60 五分钟门禁，以及单路/两路/三路
+1080p120 各 60 秒门禁；检查 presentation ACK 连续性、source atomicity、完整
 FrameSet drop、帧预算、冷 seek P95、相邻逐帧和有界关闭。
 4K 不属于活动性能矩阵；小分辨率 P010/10-bit 正确性测试仍保留。
 
@@ -101,7 +103,8 @@ ctest --preset performance-d3d11 --output-on-failure
 ```
 
 标签触发的 Release workflow 在测试后签名 `VCStation.exe`、`VCStationCli.exe`、
-`VCStationShell.dll` 和 MSI，再执行真实安装与 shutdown soak 门禁。MSI 为五种受支持
+`VCStationShell-1.2.dll` 和 MSI，再执行真实安装、1.1.0→1.2.0 升级与 shutdown soak
+门禁。MSI 为五种受支持
 的视频扩展名注册“使用 VCStation 对比”命令；Shell DLL 只检查恰好两个本地文件并通过
 Unicode `CreateProcessW` 启动应用。签名证书缺失时发布会失败关闭。
 

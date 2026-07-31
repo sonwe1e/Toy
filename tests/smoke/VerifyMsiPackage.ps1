@@ -99,6 +99,13 @@ if ($existing) {
 $artifactRoot = Join-Path (Split-Path -Parent $MsiPath) 'packaged-smoke'
 New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
 $activeMsi = if ($PreviousMsiPath) { $PreviousMsiPath } else { $MsiPath }
+$settingsPath = Join-Path $env:LOCALAPPDATA 'VCStation\settings.json'
+$settingsBackup = Join-Path $artifactRoot 'settings-before-upgrade.json'
+$settingsExistedBefore = Test-Path -LiteralPath $settingsPath -PathType Leaf
+$settingsProbeHash = $null
+if ($settingsExistedBefore) {
+    Copy-Item -LiteralPath $settingsPath -Destination $settingsBackup -Force
+}
 
 try {
     Invoke-Msi `
@@ -107,39 +114,52 @@ try {
         -Log (Join-Path $artifactRoot 'install.log')
 
     if ($PreviousMsiPath) {
-        $previousProducts = Get-InstalledProduct -DisplayName @('DualVideoStudio')
+        $previousProducts = Get-InstalledProduct -DisplayName @('VCStation')
         if ($previousProducts.Count -ne 1) {
             throw (
-                'The previous MSI did not register exactly one DualVideoStudio product. ' +
+                'The previous MSI did not register exactly one VCStation product. ' +
                 "Found $($previousProducts.Count)."
             )
         }
-        if ($previousProducts[0].DisplayVersion -cne '1.0.0') {
+        if ($previousProducts[0].DisplayVersion -cne '1.1.0') {
             throw (
-                "Expected previous version 1.0.0, found " +
+                "Expected previous version 1.1.0, found " +
                 "'$($previousProducts[0].DisplayVersion)'."
             )
         }
-        $previousGui = Join-Path $env:ProgramFiles 'DualVideoStudio\DualVideoStudio.exe'
+        $previousGui = Join-Path $env:ProgramFiles 'VCStation\VCStation.exe'
         if (-not (Test-Path -LiteralPath $previousGui -PathType Leaf)) {
             throw "The previous installed executable is missing: $previousGui"
         }
+        $previousLaunch = Start-Process `
+            -FilePath $previousGui `
+            -ArgumentList '--ui-smoke' `
+            -PassThru `
+            -Wait
+        if ($previousLaunch.ExitCode -ne 0) {
+            throw "The VCStation 1.1.0 launch/close probe failed with $($previousLaunch.ExitCode)."
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
+        $settingsProbe = '{"schemaVersion":1,"values":{"upgradeProbe":"preserve-1.1.0"}}'
+        [IO.File]::WriteAllText($settingsPath, $settingsProbe, [Text.UTF8Encoding]::new($false))
+        $settingsProbeHash = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
 
         Invoke-Msi `
             -Operation Install `
             -Package $MsiPath `
             -Log (Join-Path $artifactRoot 'upgrade.log')
 
-        $remainingPrevious = Get-InstalledProduct -DisplayName @('DualVideoStudio')
+        $remainingPrevious = @(
+            Get-InstalledProduct -DisplayName @('VCStation') |
+                Where-Object { $_.DisplayVersion -ceq '1.1.0' }
+        )
         if ($remainingPrevious) {
-            throw 'The DualVideoStudio 1.0.0 ARP entry remained after the VCStation upgrade.'
+            throw 'The VCStation 1.1.0 ARP entry remained after the VCStation upgrade.'
         }
-        if (Test-Path -LiteralPath $previousGui -PathType Leaf) {
-            throw "The previous executable remained after upgrade: $previousGui"
-        }
-        $previousShortcut = Find-CommonShortcut -Name 'DualVideoStudio.lnk'
-        if ($previousShortcut) {
-            throw "The previous Start Menu shortcut remained: $($previousShortcut.FullName)"
+        if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash -cne
+                $settingsProbeHash) {
+            throw 'The VCStation settings file changed during the 1.1.0 to 1.2.0 upgrade.'
         }
     }
 
@@ -157,7 +177,7 @@ try {
     $installRoot = Join-Path $env:ProgramFiles 'VCStation'
     $gui = Join-Path $installRoot 'VCStation.exe'
     $cli = Join-Path $installRoot 'VCStationCli.exe'
-    $shell = Join-Path $installRoot 'VCStationShell.dll'
+    $shell = Join-Path $installRoot 'VCStationShell-1.2.dll'
     foreach ($path in @($gui, $cli, $shell)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Installed executable is missing: $path"
@@ -220,7 +240,11 @@ try {
 }
 finally {
     $cleanupFailures = [Collections.Generic.List[string]]::new()
-    if (Get-InstalledProduct -DisplayName @('VCStation')) {
+    $installedCurrent = @(
+        Get-InstalledProduct -DisplayName @('VCStation') |
+            Where-Object { $_.DisplayVersion -ceq $ExpectedVersion }
+    )
+    if ($installedCurrent) {
         try {
             Invoke-Msi `
                 -Operation Uninstall `
@@ -231,7 +255,11 @@ finally {
             $cleanupFailures.Add($_.Exception.Message)
         }
     }
-    if ($PreviousMsiPath -and (Get-InstalledProduct -DisplayName @('DualVideoStudio'))) {
+    $installedPrevious = @(
+        Get-InstalledProduct -DisplayName @('VCStation') |
+            Where-Object { $_.DisplayVersion -ceq '1.1.0' }
+    )
+    if ($PreviousMsiPath -and $installedPrevious) {
         try {
             Invoke-Msi `
                 -Operation Uninstall `
@@ -240,6 +268,13 @@ finally {
         }
         catch {
             $cleanupFailures.Add($_.Exception.Message)
+        }
+    }
+    if ($settingsProbeHash) {
+        if ($settingsExistedBefore) {
+            Copy-Item -LiteralPath $settingsBackup -Destination $settingsPath -Force
+        } else {
+            Remove-Item -LiteralPath $settingsPath -Force -ErrorAction SilentlyContinue
         }
     }
     if ($cleanupFailures.Count -ne 0) {

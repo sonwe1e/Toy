@@ -1520,6 +1520,90 @@ TEST(ComparisonSurfaceWarpTests, WipeSplitUsesSurfaceCoordinatesAcrossLetterboxi
     EXPECT_TRUE(actor.shutdown(2s));
 }
 
+TEST(ComparisonSurfaceWarpTests, WipePreservesDirectionalSamplingAtQuarterTurnRotations) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Wipe);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And1);
+    harness.surface.setWipePosition(0.5);
+    ASSERT_TRUE(harness.start());
+
+    constexpr std::array<std::uint8_t, 16U> kDarkToLight{
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+    };
+    constexpr std::array<std::uint8_t, 16U> kLightToDark{
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        235U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+        16U,
+    };
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+
+    const auto renderRotation = [&](const std::uint16_t rotation, const std::uint64_t requestId) {
+        std::optional<application::FrameSet> set =
+            makeHorizontalLumaSet(*budget,
+                                  domain::FrameId{static_cast<std::int64_t>(requestId)},
+                                  kDarkToLight,
+                                  kLightToDark,
+                                  application::FramePresentation{.rotationDegrees = rotation});
+        EXPECT_TRUE(set.has_value());
+        if (!set.has_value()) {
+            return QImage{};
+        }
+        EXPECT_EQ(actor.submit(makeContext(requestId), std::move(*set)),
+                  platform::GpuTransferSubmitResult::Accepted);
+        EXPECT_TRUE(actor.waitUntilIdle(5s));
+        return harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    };
+
+    const QImage clockwise = renderRotation(90U, 43U);
+    ASSERT_FALSE(clockwise.isNull());
+    const int leftX = clockwise.width() / 2 - clockwise.width() / 12;
+    const int rightX = clockwise.width() / 2 + clockwise.width() / 12;
+    const int upperY = clockwise.height() / 4;
+    const int lowerY = clockwise.height() * 3 / 4;
+    EXPECT_GT(clockwise.pixelColor(leftX, upperY).red(), clockwise.pixelColor(leftX, lowerY).red());
+    EXPECT_LT(clockwise.pixelColor(rightX, upperY).red(),
+              clockwise.pixelColor(rightX, lowerY).red());
+
+    const QImage counterClockwise = renderRotation(270U, 44U);
+    ASSERT_FALSE(counterClockwise.isNull());
+    EXPECT_LT(counterClockwise.pixelColor(leftX, upperY).red(),
+              counterClockwise.pixelColor(leftX, lowerY).red());
+    EXPECT_GT(counterClockwise.pixelColor(rightX, upperY).red(),
+              counterClockwise.pixelColor(rightX, lowerY).red());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
 TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedDiffInOneAnalysisGrid) {
     SurfaceWarpHarness harness;
     harness.surface.setViewMode(ComparisonSurface::AnalysisGrid);

@@ -1,8 +1,7 @@
 #include "ExplorerCommand.h"
 
-#include <algorithm>
-#include <array>
-#include <cwctype>
+#include "ExplorerCommandSupport.h"
+
 #include <filesystem>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -12,22 +11,6 @@
 
 namespace dvs::shell {
 namespace {
-
-constexpr std::array<std::wstring_view, 5U> kSupportedExtensions{
-    L".mp4",
-    L".mkv",
-    L".mov",
-    L".avi",
-    L".m4v",
-};
-
-[[nodiscard]] bool supportedExtension(const std::filesystem::path& path) {
-    std::wstring extension = path.extension().wstring();
-    for (wchar_t& character : extension) {
-        character = static_cast<wchar_t>(std::towlower(character));
-    }
-    return std::ranges::find(kSupportedExtensions, extension) != kSupportedExtensions.end();
-}
 
 [[nodiscard]] std::vector<std::filesystem::path> selectedPaths(IShellItemArray* selection) {
     std::vector<std::filesystem::path> paths;
@@ -58,37 +41,13 @@ constexpr std::array<std::wstring_view, 5U> kSupportedExtensions{
         const DWORD attributes = GetFileAttributesW(path.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES ||
             (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0U ||
-            PathIsNetworkPathW(path.c_str()) != FALSE || !supportedExtension(path)) {
+            PathIsNetworkPathW(path.c_str()) != FALSE || !hasSupportedVideoExtension(path)) {
             paths.clear();
             return paths;
         }
         paths.push_back(std::move(path));
     }
     return paths;
-}
-
-[[nodiscard]] std::wstring quoteArgument(const std::wstring_view argument) {
-    std::wstring quoted;
-    quoted.push_back(L'"');
-    std::size_t slashes = 0U;
-    for (const wchar_t character : argument) {
-        if (character == L'\\') {
-            ++slashes;
-            continue;
-        }
-        if (character == L'"') {
-            quoted.append(slashes * 2U + 1U, L'\\');
-            quoted.push_back(L'"');
-            slashes = 0U;
-            continue;
-        }
-        quoted.append(slashes, L'\\');
-        slashes = 0U;
-        quoted.push_back(character);
-    }
-    quoted.append(slashes * 2U, L'\\');
-    quoted.push_back(L'"');
-    return quoted;
 }
 
 [[nodiscard]] std::filesystem::path executablePath() {
@@ -138,7 +97,7 @@ ULONG ExplorerCommand::Release() noexcept {
 }
 
 HRESULT ExplorerCommand::GetTitle(IShellItemArray*, LPWSTR* const title) noexcept {
-    return title == nullptr ? E_POINTER : SHStrDupW(L"使用 VCStation 对比", title);
+    return title == nullptr ? E_POINTER : SHStrDupW(L"Compare with VCStation", title);
 }
 
 HRESULT ExplorerCommand::GetIcon(IShellItemArray*, LPWSTR* const icon) noexcept {
@@ -155,8 +114,9 @@ HRESULT ExplorerCommand::GetIcon(IShellItemArray*, LPWSTR* const icon) noexcept 
 }
 
 HRESULT ExplorerCommand::GetToolTip(IShellItemArray*, LPWSTR* const toolTip) noexcept {
-    return toolTip == nullptr ? E_POINTER
-                              : SHStrDupW(L"在 VCStation 中逐帧对比选中的两个视频", toolTip);
+    return toolTip == nullptr
+               ? E_POINTER
+               : SHStrDupW(L"Compare the two selected videos frame by frame", toolTip);
 }
 
 HRESULT ExplorerCommand::GetCanonicalName(GUID* const commandName) noexcept {
@@ -191,9 +151,7 @@ HRESULT ExplorerCommand::Invoke(IShellItemArray* const selection, IBindCtx*) noe
         if (executable.empty()) {
             return HRESULT_FROM_WIN32(GetLastError());
         }
-        std::wstring commandLine = quoteArgument(executable.wstring()) + L" --compare " +
-                                   quoteArgument(paths[0].wstring()) + L" " +
-                                   quoteArgument(paths[1].wstring());
+        std::wstring commandLine = buildCompareCommandLine(executable, paths);
         STARTUPINFOW startupInfo{
             .cb = sizeof(STARTUPINFOW),
         };

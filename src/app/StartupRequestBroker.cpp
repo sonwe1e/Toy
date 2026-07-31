@@ -9,6 +9,8 @@
 #include <QLockFile>
 #include <QThread>
 
+#include <cstddef>
+#include <deque>
 #include <utility>
 
 namespace dvs::app {
@@ -18,6 +20,7 @@ constexpr qsizetype kMaximumFrameBytes = 64 * 1024;
 constexpr int kConnectAttemptMilliseconds = 50;
 constexpr int kConnectWindowMilliseconds = 1000;
 constexpr int kAcknowledgementTimeoutMilliseconds = 1000;
+constexpr std::size_t kMaximumPendingRequests = 8U;
 
 [[nodiscard]] QString serverName() {
     const QByteArray userIdentity =
@@ -110,6 +113,14 @@ public:
 
     void setRequestHandler(std::function<void(StartupRequest)> handler) {
         handler_ = std::move(handler);
+        if (!handler_) {
+            return;
+        }
+        while (!pendingRequests_.empty()) {
+            StartupRequest request = std::move(pendingRequests_.front());
+            pendingRequests_.pop_front();
+            handler_(std::move(request));
+        }
     }
 
 private:
@@ -143,8 +154,12 @@ private:
         const QByteArray payload = iterator.value().first(terminator);
         iterator.value().remove(0, terminator + 1);
         const StartupRequestParseResult decoded = decodeStartupRequest(payload);
-        if (decoded && handler_) {
-            handler_(std::move(*decoded.request));
+        if (decoded && (handler_ || pendingRequests_.size() < kMaximumPendingRequests)) {
+            if (handler_) {
+                handler_(std::move(*decoded.request));
+            } else {
+                pendingRequests_.push_back(std::move(*decoded.request));
+            }
             static_cast<void>(socket.write(QByteArrayLiteral("OK\n")));
             static_cast<void>(socket.flush());
         }
@@ -157,6 +172,7 @@ private:
     QLocalServer server_;
     QHash<QLocalSocket*, QByteArray> buffers_;
     std::function<void(StartupRequest)> handler_;
+    std::deque<StartupRequest> pendingRequests_;
 };
 
 StartupRequestBroker::StartupRequestBroker(QObject* const parent)

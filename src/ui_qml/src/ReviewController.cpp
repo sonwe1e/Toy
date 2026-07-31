@@ -93,6 +93,7 @@ struct ReviewView final {
     QString sourceBFilename;
     QString sourceCFilename;
     QVariantList sourceUrls;
+    int sourceCount = 0;
     ReviewController::ReviewDisplayState displayState = ReviewController::ReviewDisplayState::Empty;
     bool busy = false;
     bool framePending = false;
@@ -953,6 +954,7 @@ private:
                 });
             }
         }
+        next.sourceCount = static_cast<int>(sourceRows.size());
         sourceModel_.setRows(std::move(sourceRows));
 
         next.busy = pendingCommand_.has_value() && !stopped_;

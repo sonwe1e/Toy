@@ -187,11 +187,11 @@ jobs:
 
           $previousRoot = Join-Path $env:RUNNER_TEMP "vcstation-previous-${{ github.run_id }}"
           New-Item -ItemType Directory -Path $previousRoot -Force | Out-Null
-          gh release download v1.0.0 `
-            --pattern 'DualVideoStudio-1.0.0-windows-x64.msi' `
+          gh release download v1.1.0 `
+            --pattern 'VCStation-1.1.0-windows-x64.msi' `
             --dir $previousRoot `
             --clobber
-          $previousMsi = Join-Path $previousRoot 'DualVideoStudio-1.0.0-windows-x64.msi'
+          $previousMsi = Join-Path $previousRoot 'VCStation-1.1.0-windows-x64.msi'
           if (-not (Test-Path -LiteralPath $previousMsi -PathType Leaf)) {
             throw "Previous release MSI was not downloaded: $previousMsi"
           }
@@ -215,7 +215,7 @@ jobs:
             -Path @(
               '.\out\build\release\bin\VCStation.exe',
               '.\out\build\release\bin\VCStationCli.exe',
-              '.\out\build\release\bin\VCStationShell.dll'
+              '.\out\build\release\bin\VCStationShell-1.2.dll'
             ) `
             -PfxPath $env:DVS_SIGNING_PFX `
             -PfxPassword $password

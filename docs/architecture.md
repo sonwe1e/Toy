@@ -10,8 +10,8 @@ threshold masks, the four-panel analysis grid, exact-plane difference with a per
 exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
 transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
 array slices flow directly to plane SRVs while an AVFrame lifetime anchor prevents premature
-surface reuse. The active visible-window hardware matrix covers three-source 1080p60 for five
-continuous minutes and two-/three-source 1080p120 for one minute with no source split, bounded
+surface reuse. The active visible-window hardware matrix covers single-/three-source 1080p60 for
+five continuous minutes and single-/two-/three-source 1080p120 for one minute with no source split, bounded
 frame memory, stable worker counts, and shutdown well below the seven-second limit. Small P010
 fixtures retain 10-bit and zero-copy correctness coverage without an active 4K profile.
 The historical A/B design is archived in
@@ -77,10 +77,20 @@ actors. A replacement open stops active cadence, captures the displayed canonica
 advances session epoch and playback generation, opens the new 1–3 source topology, maps the saved
 time through the new canonical timeline, and presents that complete FrameSet while paused.
 
+When the rebuilt session belongs to a saved project, `Project::replaceReviewState()` validates the
+new source set, view layout, alignment payload, and displayed frame as one aggregate. No transient
+Single-with-two-sources or comparison-without-an-edge state is observable by persistence.
+
+The per-user startup broker begins listening before QML loads. Valid requests arriving during that
+window enter a bounded eight-request FIFO and are acknowledged only after they are either queued or
+delivered; registering the handler drains the queue in order exactly once.
+
 The QML shell is canvas-first: the viewport owns the window and menu/source/comparison/inspector/
 transport chrome only contributes margins while visible. `ReviewActions` remains instantiated when
 chrome is hidden, so transport controls, menus, and shortcuts share one command path. Full screen
 and chrome visibility are independent transient window states and are not persisted in projects.
+Entering pure-canvas mode explicitly returns keyboard focus to the viewport and removes its border,
+corner radius, surface margin, labels, and analysis controls.
 
 ## Frame-step semantics
 

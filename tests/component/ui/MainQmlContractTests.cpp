@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QGuiApplication>
+#include <QKeyEvent>
 #include <QObject>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -38,6 +39,16 @@ namespace {
         messages.push_back(error.toString());
     }
     return messages.join(QStringLiteral("\n")).toStdString();
+}
+
+void sendKey(QWindow& window,
+             const int key,
+             const Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QKeyEvent press{QEvent::KeyPress, key, modifiers};
+    QKeyEvent release{QEvent::KeyRelease, key, modifiers};
+    QCoreApplication::sendEvent(&window, &press);
+    QCoreApplication::sendEvent(&window, &release);
+    QCoreApplication::processEvents();
 }
 
 } // namespace
@@ -105,12 +116,22 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
                 },
         },
     };
+    std::vector<application::PlaybackCommand> submitted;
+    std::vector<application::CommandTerminal> terminals;
     ReviewController controller{
         ReviewController::Dependencies{
             .submit =
-                [](application::PlaybackCommand) { return application::PortSubmitResult::Closed; },
+                [&submitted](application::PlaybackCommand command) {
+                    submitted.push_back(std::move(command));
+                    return application::PortSubmitResult::Accepted;
+                },
             .snapshot = [snapshot] { return snapshot; },
-            .takeCompletedCommands = [] { return std::vector<application::CommandTerminal>{}; },
+            .takeCompletedCommands =
+                [&terminals] {
+                    std::vector<application::CommandTerminal> result = std::move(terminals);
+                    terminals.clear();
+                    return result;
+                },
         },
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
@@ -165,6 +186,12 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
     auto* const transportBar = root->findChild<QQuickItem*>(QStringLiteral("transportBar"));
     auto* const viewport = root->findChild<QQuickItem*>(QStringLiteral("mediaViewportFocusTarget"));
+    auto* const surface = root->findChild<QQuickItem*>(QStringLiteral("dualVideoSurface"));
+    auto* const viewModeCombo = root->findChild<QQuickItem*>(QStringLiteral("viewModeCombo"));
+    QObject* const analysisChrome =
+        root->findChild<QObject*>(QStringLiteral("analysisControlsChrome"));
+    QObject* const surfaceLabelRepeater =
+        root->findChild<QObject*>(QStringLiteral("surfaceLabelRepeater"));
     QObject* const immersiveHud = root->findChild<QObject*>(QStringLiteral("immersiveReviewHud"));
     auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
     auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
@@ -174,6 +201,10 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(transport, nullptr);
     ASSERT_NE(transportBar, nullptr);
     ASSERT_NE(viewport, nullptr);
+    ASSERT_NE(surface, nullptr);
+    ASSERT_NE(viewModeCombo, nullptr);
+    ASSERT_NE(analysisChrome, nullptr);
+    ASSERT_NE(surfaceLabelRepeater, nullptr);
     ASSERT_NE(immersiveHud, nullptr);
     ASSERT_NE(firstButton, nullptr);
     ASSERT_NE(lastButton, nullptr);
@@ -185,6 +216,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_GT(transport->width(), 0.0);
     EXPECT_GT(firstButton->width(), 0.0);
     EXPECT_GT(lastButton->width(), 0.0);
+    EXPECT_TRUE(analysisChrome->property("visible").toBool());
+    EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 2);
 
     window->resize(960, 640);
     window->show();
@@ -199,20 +232,55 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         << "left=" << transportTopLeft.x() << " barWidth=" << transportBar->width()
         << " contentWidth=" << window->contentItem()->width();
 
-    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "toggleChrome"));
+    viewModeCombo->forceActiveFocus();
+    ASSERT_TRUE(viewModeCombo->hasActiveFocus());
+    EXPECT_FALSE(root->property("globalMediaShortcutsEnabled").toBool());
+    sendKey(*window, Qt::Key_Tab);
     QCoreApplication::processEvents();
     EXPECT_FALSE(root->property("chromeVisible").toBool());
+    EXPECT_TRUE(root->property("globalMediaShortcutsEnabled").toBool());
+    EXPECT_TRUE(viewport->hasActiveFocus());
     EXPECT_FALSE(transport->isVisible());
+    EXPECT_FALSE(analysisChrome->property("visible").toBool());
+    EXPECT_DOUBLE_EQ(viewport->property("radius").toDouble(), 0.0);
+    QObject* const viewportBorder = viewport->property("border").value<QObject*>();
+    ASSERT_NE(viewportBorder, nullptr);
+    EXPECT_EQ(viewportBorder->property("width").toInt(), 0);
     const QPointF immersiveTopLeft = viewport->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
     EXPECT_DOUBLE_EQ(immersiveTopLeft.x(), 0.0);
     EXPECT_DOUBLE_EQ(immersiveTopLeft.y(), 0.0);
     EXPECT_DOUBLE_EQ(viewport->width(), window->contentItem()->width());
     EXPECT_DOUBLE_EQ(viewport->height(), window->contentItem()->height());
+    EXPECT_DOUBLE_EQ(surface->x(), 0.0);
+    EXPECT_DOUBLE_EQ(surface->y(), 0.0);
+    EXPECT_DOUBLE_EQ(surface->width(), viewport->width());
+    EXPECT_DOUBLE_EQ(surface->height(), viewport->height());
 
-    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "toggleChrome"));
+    sendKey(*window, Qt::Key_Right);
+    ASSERT_FALSE(submitted.empty());
+    const auto* const step = std::get_if<application::StepFramesCommand>(&submitted.back());
+    ASSERT_NE(step, nullptr);
+    EXPECT_EQ(step->delta, 1);
+    snapshot->displayedFrame = domain::FrameId{1};
+    terminals.push_back(application::CommandTerminal{
+        .context = application::commandContext(submitted.back()),
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    sendKey(*window, Qt::Key_Space);
+    ASSERT_FALSE(submitted.empty());
+    EXPECT_NE(std::get_if<application::PlayCommand>(&submitted.back()), nullptr);
+
+    sendKey(*window, Qt::Key_Tab);
     QCoreApplication::processEvents();
     EXPECT_TRUE(root->property("chromeVisible").toBool());
     EXPECT_TRUE(transport->isVisible());
+
+    snapshot->sources.resize(1U);
+    snapshot->presentedSources.resize(1U);
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 1);
 }
 
 } // namespace

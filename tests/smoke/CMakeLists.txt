@@ -162,7 +162,7 @@ dvs_add_test(
 
 if(DVS_PREVIOUS_RELEASE_MSI)
     dvs_add_test(
-        NAME package.msi-upgrade-from-1.0.0
+        NAME package.msi-upgrade-from-1.1.0
         LAYER packaged
         MODULE app
         TIMEOUT 240

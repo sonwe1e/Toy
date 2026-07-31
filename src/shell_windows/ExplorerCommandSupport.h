@@ -1,0 +1,16 @@
+#pragma once
+
+#include <filesystem>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace dvs::shell {
+
+[[nodiscard]] bool hasSupportedVideoExtension(const std::filesystem::path& path);
+[[nodiscard]] std::wstring quoteWindowsArgument(std::wstring_view argument);
+[[nodiscard]] std::wstring
+buildCompareCommandLine(const std::filesystem::path& executable,
+                        std::span<const std::filesystem::path> selectedPaths);
+
+} // namespace dvs::shell

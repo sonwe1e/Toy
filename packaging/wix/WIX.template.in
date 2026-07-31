@@ -96,7 +96,7 @@
                 <RegistryValue
                     Root="HKLM"
                     Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}\InprocServer32"
-                    Value="[INSTALL_ROOT]VCStationShell.dll"
+                    Value="[INSTALL_ROOT]VCStationShell-1.2.dll"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -108,7 +108,7 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.mp4\shell\VCStation.Compare"
                     Name="MUIVerb"
-                    Value="使用 VCStation 对比"
+                    Value="Compare with VCStation"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -126,7 +126,7 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.mkv\shell\VCStation.Compare"
                     Name="MUIVerb"
-                    Value="使用 VCStation 对比"
+                    Value="Compare with VCStation"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -144,7 +144,7 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.mov\shell\VCStation.Compare"
                     Name="MUIVerb"
-                    Value="使用 VCStation 对比"
+                    Value="Compare with VCStation"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -162,7 +162,7 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.avi\shell\VCStation.Compare"
                     Name="MUIVerb"
-                    Value="使用 VCStation 对比"
+                    Value="Compare with VCStation"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -180,7 +180,7 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
                     Name="MUIVerb"
-                    Value="使用 VCStation 对比"
+                    Value="Compare with VCStation"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"

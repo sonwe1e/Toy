@@ -125,6 +125,12 @@ public:
     // A fresh media probe supplies a new validated comparison set and the original aggregate is
     // never modified.
     [[nodiscard]] Result<Project> replaceSources(ValidatedComparisonSet sources) const;
+    // Replaces all source-dependent review state as one validated aggregate transaction. This is
+    // required when a saved review changes between single-source and comparison topologies.
+    [[nodiscard]] Result<Project> replaceReviewState(ValidatedComparisonSet sources,
+                                                     ProjectViewState viewState,
+                                                     ProjectAlignmentState alignmentState,
+                                                     FrameId lastDisplayedFrame) const;
 
     [[nodiscard]] const ProjectId& id() const noexcept;
     [[nodiscard]] const std::string& displayName() const noexcept;

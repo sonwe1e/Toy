@@ -201,9 +201,16 @@ public:
             displayName = "VCStation Review Project";
         }
 
+        const std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceAlignments =
+            dependencies_.acceptedSequenceAlignments();
+        const domain::ProjectAlignmentState alignmentState =
+            alignmentStateFor(*playback, sequenceAlignments);
         domain::Result<domain::Project> prepared =
             currentProject_.has_value()
-                ? currentProject_->replaceSources(*playback->validatedComparison)
+                ? currentProject_->replaceReviewState(*playback->validatedComparison,
+                                                      viewState,
+                                                      alignmentState,
+                                                      *playback->displayedFrame)
                 : domain::Project::create(
                       dependencies_.createProjectId(), displayName, *playback->validatedComparison);
         if (!prepared) {
@@ -216,9 +223,7 @@ public:
             setError(status.error());
             return PortSubmitResult::Busy;
         }
-        const std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceAlignments =
-            dependencies_.acceptedSequenceAlignments();
-        status = project.setAlignmentState(alignmentStateFor(*playback, sequenceAlignments));
+        status = project.setAlignmentState(alignmentState);
         if (!status) {
             setError(status.error());
             return PortSubmitResult::Busy;

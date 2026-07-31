@@ -34,6 +34,8 @@ G:\GitHubActions\tools\wix\wix.exe extension add `
 计算校验和前签名 GUI、CLI、Shell DLL 和 MSI。MSI 是 per-machine，
 因此执行 `packaged-smoke` 的交互式 runner 进程仍必须以管理员身份启动；测试会
 拒绝覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
+Release workflow 会下载 `VCStation-1.1.0-windows-x64.msi`，先完成一次启动/关闭，再安装
+1.2.0，验证设置未变以及 ARP、快捷方式、文件关联和版本化 Explorer Shell COM 注册。
 
 ## 固定下载
 

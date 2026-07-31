@@ -632,7 +632,9 @@ runDesktop(int& argc,
     bool completed = false;
     bool failed = false;
     std::string failureReason;
-    const std::size_t expectedSourceCount = sources.third.has_value() ? 3U : 2U;
+    const std::size_t expectedSourceCount = 1U +
+                                            static_cast<std::size_t>(sources.second.has_value()) +
+                                            static_cast<std::size_t>(sources.third.has_value());
 
     const auto fail = [&](std::string reason) {
         if (!failed) {
@@ -714,18 +716,21 @@ runDesktop(int& argc,
             if (!controller.graphicsReady()) {
                 return;
             }
+            bool openAccepted = false;
             if (!sources.second.has_value()) {
-                fail("performance-requires-two-sources");
-                return;
+                openAccepted = desktop.reviewLocalFiles({localFileUrl(sources.first)});
+            } else {
+                const bool sourcesSelected =
+                    sources.third.has_value()
+                        ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                                  localFileUrl(*sources.second),
+                                                                  localFileUrl(*sources.third))
+                        : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                                  localFileUrl(*sources.second));
+                openAccepted =
+                    sourcesSelected && desktop.clickControlForAutomation("openPairButton");
             }
-            const bool sourcesSelected =
-                sources.third.has_value()
-                    ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                              localFileUrl(*sources.second),
-                                                              localFileUrl(*sources.third))
-                    : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                              localFileUrl(*sources.second));
-            if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
+            if (!openAccepted) {
                 fail("open-rejected");
                 return;
             }
@@ -833,6 +838,12 @@ runDesktop(int& argc,
             std::ranges::sort(warmStepMilliseconds);
             metrics.warmStepP50Milliseconds = warmStepMilliseconds[9U];
             metrics.warmStepP95Milliseconds = warmStepMilliseconds[18U];
+            if (expectedSourceCount == 1U) {
+                metrics.finalThreads = dvs::platform::sampleCurrentProcessTelemetry().threadCount;
+                completed = true;
+                desktop.exit(EXIT_SUCCESS);
+                return;
+            }
             analysisSignatureBaseline = runtime->decodedSignatureCount();
             analysisTimer.start();
             if (!controller.estimateAlignment()) {
@@ -959,7 +970,8 @@ runDesktop(int& argc,
     if (!completed || metrics.sourceSplitObservations != 0U || dropRatio > 0.005 ||
         metrics.playbackResponseMilliseconds < 0 || metrics.playbackResponseMilliseconds > 100 ||
         metrics.seekP95Milliseconds < 0 || metrics.seekP95Milliseconds > 500 ||
-        metrics.warmStepP95Milliseconds < 0 || metrics.analysisDecodedFrames == 0U ||
+        metrics.warmStepP95Milliseconds < 0 ||
+        (expectedSourceCount > 1U && metrics.analysisDecodedFrames == 0U) ||
         metrics.peakFrameBytes > kMaximumFrameBytes || !allHardware ||
         metrics.finalThreads > metrics.baselineThreads + 2U || transfer.deviceLossReports != 0U) {
         result = EXIT_FAILURE;
@@ -1130,13 +1142,16 @@ int main(int argc, char* argv[]) {
                                   .third = std::filesystem::path{argv[4]},
                               });
         }
-        if ((argc == 6 || argc == 7) && std::string_view{argv[1]} == "--ui-performance" &&
+        if ((argc >= 5 && argc <= 7) && std::string_view{argv[1]} == "--ui-performance" &&
             std::string_view{argv[argc - 2]} == "--seconds") {
             const auto duration = parseDuration(argv[argc - 1]);
             if (!duration) {
                 return dvs::app::reportFatalStartup(
                     "Performance duration must be between 5 and 3600 seconds.", true);
             }
+            const std::optional<std::filesystem::path> second =
+                argc >= 6 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[3]}}
+                          : std::nullopt;
             const std::optional<std::filesystem::path> third =
                 argc == 7 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[4]}}
                           : std::nullopt;
@@ -1144,7 +1159,7 @@ int main(int argc, char* argv[]) {
                                   argv,
                                   SmokeSources{
                                       .first = std::filesystem::path{argv[2]},
-                                      .second = std::filesystem::path{argv[3]},
+                                      .second = second,
                                       .third = third,
                                   },
                                   *duration);

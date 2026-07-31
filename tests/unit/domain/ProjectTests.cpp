@@ -62,6 +62,19 @@ makeSet(const std::int64_t frameCount = 5,
     return std::move(result).value();
 }
 
+[[nodiscard]] ValidatedComparisonSet makeSingleSet(const std::int64_t frameCount = 5) {
+    const RationalRate rate = makeRate();
+    auto result = ComparisonValidator::validate({ComparisonSource{
+        .id = 0,
+        .role = ComparisonRole::kPrediction,
+        .descriptor = makeDescriptor(
+            "single.mp4", rate, frameCount, MediaExtent{.width = 1'920, .height = 1'080}),
+        .displayName = "single",
+    }});
+    EXPECT_TRUE(result.hasValue());
+    return std::move(result).value().set;
+}
+
 } // namespace
 
 TEST(ProjectTests, AcceptsBoundaryMarksAndRejectsOutOfRangeMarks) {
@@ -170,6 +183,33 @@ TEST(ProjectTests, RejectsInvalidSourceReplacementWithoutMutatingTheOriginalProj
     ASSERT_TRUE(project.inMark().has_value());
     EXPECT_EQ(*project.inMark(), FrameId{3});
     EXPECT_EQ(*project.outMark(), FrameId{4});
+}
+
+TEST(ProjectTests, AtomicallyReplacesSingleAndComparisonReviewTopologies) {
+    auto singleCreated = Project::create(ProjectId{"single-project"}, "Single", makeSingleSet());
+    ASSERT_TRUE(singleCreated);
+    Project single = std::move(singleCreated).value();
+
+    const ProjectViewState comparisonView{
+        .layout = ProjectViewLayout::kSideBySide,
+        .differenceEdge = std::array<SourceId, 2U>{0U, 1U},
+    };
+    auto comparison =
+        single.replaceReviewState(makeSet(), comparisonView, ProjectAlignmentState{}, FrameId{2});
+    ASSERT_TRUE(comparison);
+    EXPECT_EQ(comparison.value().sources().sourceCount(), 2U);
+    EXPECT_EQ(comparison.value().viewState(), comparisonView);
+    EXPECT_EQ(comparison.value().lastDisplayedFrame(), FrameId{2});
+
+    ProjectViewState singleView;
+    singleView.layout = ProjectViewLayout::kSingle;
+    singleView.differenceEdge.reset();
+    auto singleAgain = comparison.value().replaceReviewState(
+        makeSingleSet(), singleView, ProjectAlignmentState{}, FrameId{1});
+    ASSERT_TRUE(singleAgain);
+    EXPECT_EQ(singleAgain.value().sources().sourceCount(), 1U);
+    EXPECT_EQ(singleAgain.value().viewState(), singleView);
+    EXPECT_EQ(singleAgain.value().lastDisplayedFrame(), FrameId{1});
 }
 
 TEST(ProjectTests, RejectsInvalidCreationAndSupportsMarkAndWorkspaceMutations) {

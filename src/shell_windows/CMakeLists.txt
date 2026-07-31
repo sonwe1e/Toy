@@ -10,6 +10,8 @@ add_library(
     ClassFactory.cpp
     ExplorerCommand.cpp
     ExplorerCommand.h
+    ExplorerCommandSupport.cpp
+    ExplorerCommandSupport.h
     VCStationShell.def
     "${CMAKE_CURRENT_BINARY_DIR}/VCStationShell.rc"
 )
@@ -22,4 +24,5 @@ set_target_properties(
     PROPERTIES
         FOLDER "Application"
         PREFIX ""
+        OUTPUT_NAME "VCStationShell-${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
 )

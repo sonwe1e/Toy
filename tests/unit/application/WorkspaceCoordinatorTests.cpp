@@ -366,6 +366,49 @@ TEST(WorkspaceCoordinatorTests, SavesASingleSourceProjectWithSingleViewAndNoDiff
     EXPECT_EQ(repository->saveRequest->project.viewState(), view);
 }
 
+TEST(WorkspaceCoordinatorTests, SavesTopologyChangesAsOneSourceAndViewTransaction) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSingleSet(), domain::FrameId{2});
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    const std::filesystem::path projectPath = "C:/projects/topology.dvsproj";
+    domain::ProjectViewState singleView;
+    singleView.layout = domain::ProjectViewLayout::kSingle;
+    singleView.differenceEdge.reset();
+    ASSERT_EQ(workspace->saveProject(projectPath, "Topology", singleView),
+              PortSubmitResult::Accepted);
+    repository->post(ApplicationEvent{ProjectSaved{
+        .context = repository->saveRequest->context,
+    }});
+    postSucceeded(*repository, repository->saveRequest->context.request);
+    EXPECT_FALSE(workspace->snapshot()->busy);
+
+    playback->makeReady(makeSet(), domain::FrameId{3});
+    const domain::ProjectViewState comparisonView{
+        .layout = domain::ProjectViewLayout::kSideBySide,
+        .differenceEdge = std::array<domain::SourceId, 2U>{0U, 1U},
+    };
+    ASSERT_EQ(workspace->saveProject(projectPath, "Topology", comparisonView),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(repository->saveRequest.has_value());
+    EXPECT_EQ(repository->saveRequest->project.sources().sourceCount(), 2U);
+    EXPECT_EQ(repository->saveRequest->project.viewState(), comparisonView);
+    repository->post(ApplicationEvent{ProjectSaved{
+        .context = repository->saveRequest->context,
+    }});
+    postSucceeded(*repository, repository->saveRequest->context.request);
+    EXPECT_FALSE(workspace->snapshot()->busy);
+
+    playback->makeReady(makeSingleSet(), domain::FrameId{1});
+    ASSERT_EQ(workspace->saveProject(projectPath, "Topology", singleView),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(repository->saveRequest.has_value());
+    EXPECT_EQ(repository->saveRequest->project.sources().sourceCount(), 1U);
+    EXPECT_EQ(repository->saveRequest->project.viewState(), singleView);
+}
+
 TEST(WorkspaceCoordinatorTests, KeepsInvalidProjectAvailableForExplicitRelinkThenReopensFresh) {
     auto repository = std::make_shared<FakeProjectRepository>();
     auto playback = std::make_shared<FakePlayback>();

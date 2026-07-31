@@ -71,5 +71,39 @@ TEST(StartupRequestBrokerTests, ForwardsUnicodeComparisonToExistingPrimary) {
     EXPECT_EQ(*received, request);
 }
 
+TEST(StartupRequestBrokerTests, QueuesForwardedRequestUntilPrimaryRegistersHandler) {
+    ensureCoreApplication();
+    const QString endpoint = QStringLiteral("VCStation.StartupRequest.Test.%1")
+                                 .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    StartupRequestBroker primary{endpoint};
+    ASSERT_EQ(primary.startOrForward(StartupRequest{}), StartupRequestBroker::StartResult::Primary);
+
+    const StartupRequest request{
+        .kind = StartupRequest::Kind::Compare,
+        .sources =
+            {
+                std::filesystem::path{LR"(C:\素材\启动 甲.mp4)"},
+                std::filesystem::path{LR"(D:\素材\启动 乙.mkv)"},
+            },
+    };
+    std::promise<StartupRequestBroker::StartResult> forwardedPromise;
+    std::future<StartupRequestBroker::StartResult> forwarded = forwardedPromise.get_future();
+    std::jthread secondary{[endpoint, request, promise = std::move(forwardedPromise)]() mutable {
+        StartupRequestBroker broker{endpoint};
+        promise.set_value(broker.startOrForward(request));
+    }};
+    ASSERT_TRUE(
+        waitUntil([&forwarded] { return forwarded.wait_for(0ms) == std::future_status::ready; }));
+    EXPECT_EQ(forwarded.get(), StartupRequestBroker::StartResult::Forwarded);
+
+    std::vector<StartupRequest> received;
+    primary.setRequestHandler(
+        [&received](StartupRequest queued) { received.push_back(std::move(queued)); });
+    ASSERT_EQ(received.size(), 1U);
+    EXPECT_EQ(received.front(), request);
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    EXPECT_EQ(received.size(), 1U);
+}
+
 } // namespace
 } // namespace dvs::app

@@ -1,6 +1,12 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('1080p60', '1080p120-2source', '1080p120-3source')]
+    [ValidateSet(
+        '1080p60-1source',
+        '1080p60',
+        '1080p120-1source',
+        '1080p120-2source',
+        '1080p120-3source'
+    )]
     [string]$Profile,
 
     [Parameter(Mandatory = $true)]
@@ -29,11 +35,17 @@ New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $resolvedLogRoot = (Resolve-Path -LiteralPath $LogRoot).Path
 
 $fixtureNames = switch ($Profile) {
+    '1080p60-1source' {
+        @('gate-1080p60-a.mp4')
+    }
     '1080p60' {
         @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4', 'gate-1080p60-c.mp4')
     }
     '1080p120-2source' {
         @('gate-1080p120-a.mp4', 'gate-1080p120-b.mp4')
+    }
+    '1080p120-1source' {
+        @('gate-1080p120-a.mp4')
     }
     '1080p120-3source' {
         @('gate-1080p120-a.mp4', 'gate-1080p120-b.mp4', 'gate-1080p120-c.mp4')
@@ -64,7 +76,11 @@ if (-not $resultLine) {
 }
 
 $json = $resultLine.Substring('DVS_PERFORMANCE_RESULT '.Length) | ConvertFrom-Json
-$expectedSourceCount = if ($Profile -eq '1080p120-2source') { 2 } else { 3 }
+$expectedSourceCount = switch -Wildcard ($Profile) {
+    '*-1source' { 1 }
+    '*-2source' { 2 }
+    default { 3 }
+}
 if ($json.expected_source_count -ne $expectedSourceCount) {
     throw (
         "The $Profile gate reported expected_source_count=" +
