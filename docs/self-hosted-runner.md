@@ -29,11 +29,11 @@ G:\GitHubActions\tools\wix\wix.exe extension add `
   --global WixToolset.UI.wixext/4.0.4
 ```
 
-把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。Release job 还要求
-Windows SDK 的 `signtool.exe`，以及仓库 Secrets
-`DVS_SIGNING_PFX_BASE64`、`DVS_SIGNING_PFX_PASSWORD`。MSI 是 per-machine，
-因此执行 `packaged-smoke` 的交互式 runner 进程必须以管理员身份启动；测试会拒绝
-覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
+把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。v1.1.0 经明确批准以
+无 Authenticode 签名的 ZIP/MSI 发布；该例外只适用于 v1.1.0，后续版本恢复签名后
+仍需要 Windows SDK 的 `signtool.exe` 以及对应证书 Secrets。MSI 是 per-machine，
+因此执行 `packaged-smoke` 的交互式 runner 进程仍必须以管理员身份启动；测试会
+拒绝覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
 
 ## 固定下载
 
