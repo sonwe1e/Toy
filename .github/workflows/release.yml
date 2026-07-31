@@ -162,6 +162,12 @@ jobs:
             throw 'Set the DVS_VCPKG_ROOT repository variable.'
           }
           "VCPKG_ROOT=$vcpkgRoot" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          $llvmBin = Join-Path $env:VCINSTALLDIR 'Tools\Llvm\x64\bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $llvmBin 'clang-format.exe'))) {
+            throw "Visual Studio LLVM tools were not found: $llvmBin"
+          }
+          $llvmBin | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+
           $wixPath = Join-Path $env:RUNNER_TEMP 'wix'
           $wix = Join-Path $wixPath 'wix.exe'
           if (-not (Test-Path -LiteralPath $wix -PathType Leaf)) {
