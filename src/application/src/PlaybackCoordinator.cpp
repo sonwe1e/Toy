@@ -455,6 +455,7 @@ private:
     struct PendingProbe final {
         CommandContext command;
         std::vector<PendingProbeSlot> slots;
+        std::optional<domain::MediaTime> resumeTime;
         bool preservesReadySession = false;
     };
 
@@ -1222,7 +1223,16 @@ private:
     void beginOpenValidated(CommandContext commandContext,
                             domain::ValidatedComparisonSet set,
                             domain::CompatibilityReport report,
-                            domain::CanonicalTimeline timeline) {
+                            domain::CanonicalTimeline timeline,
+                            const std::optional<domain::MediaTime> resumeTime = std::nullopt) {
+        domain::FrameId initialFrame{0};
+        if (resumeTime.has_value()) {
+            auto mapped = domain::canonicalFrameAtOrBefore(timeline, *resumeTime);
+            if (mapped) {
+                const std::int64_t maximum = (std::max)(set.canonicalFrameCount() - 1, 0LL);
+                initialFrame = domain::FrameId{std::clamp(mapped.value().value(), 0LL, maximum)};
+            }
+        }
         if (sources_.has_value() || state_.displayedFrame.has_value()) {
             const PlaybackRequestContext previousScope = currentPlaybackScope();
             dependencies_.directFrameProvider->cancel(previousScope);
@@ -1244,7 +1254,7 @@ private:
         state_.sessionState = domain::SessionState::kLoading;
         state_.playbackState = domain::PlaybackState::kSeeking;
         state_.displayedFrame.reset();
-        state_.requestedFrame = domain::FrameId{0};
+        state_.requestedFrame = initialFrame;
         state_.canonicalFrameCount = static_cast<std::uint64_t>(sources_->canonicalFrameCount());
         state_.sources.clear();
         state_.sources.reserve(sources_->sourceCount());
@@ -1283,6 +1293,7 @@ private:
             .providerContext = context,
             .frameContext = std::nullopt,
             .set = std::nullopt,
+            .expectedFrame = initialFrame,
         };
         publishSnapshot();
 
@@ -1537,7 +1548,8 @@ private:
         beginOpenValidated(completed.command,
                            std::move(validation.value().set),
                            std::move(validation.value().report),
-                           std::move(*activeTimeline));
+                           std::move(*activeTimeline),
+                           completed.resumeTime);
     }
 
     void beginOpenPaths(const OpenComparisonCommand& command) {
@@ -1546,7 +1558,7 @@ private:
                           CommandOutcome::Failed,
                           probeCoordinatorError(domain::MediaErrorCode::kInvalidArgument,
                                                 std::nullopt,
-                                                "At least two source paths are required.",
+                                                "At least one source path is required.",
                                                 false));
             return;
         }
@@ -1580,9 +1592,20 @@ private:
             });
         }
 
+        std::optional<domain::MediaTime> resumeTime;
+        if (command.preserveDisplayedTime && state_.displayedFrame.has_value() &&
+            canonicalTimeline_.has_value()) {
+            auto currentTime =
+                domain::canonicalFrameStartTime(*canonicalTimeline_, *state_.displayedFrame);
+            if (currentTime) {
+                resumeTime = currentTime.value();
+            }
+        }
+
         PendingProbe pending{
             .command = command.context,
             .slots = std::move(slots),
+            .resumeTime = resumeTime,
             .preservesReadySession = preservesReadySession,
         };
 
@@ -2050,6 +2073,25 @@ private:
                                              true));
             return;
         }
+        const bool isAlignmentCommand =
+            std::holds_alternative<SetAlignmentOffsetsCommand>(command) ||
+            std::holds_alternative<EstimateAlignmentCommand>(command) ||
+            std::holds_alternative<AnalyzeSequenceAlignmentCommand>(command) ||
+            std::holds_alternative<CancelAlignmentAnalysisCommand>(command) ||
+            std::holds_alternative<ConfirmAutomaticAlignmentCommand>(command) ||
+            std::holds_alternative<UndoAutomaticAlignmentCommand>(command) ||
+            std::holds_alternative<RestoreSequenceAlignmentCommand>(command) ||
+            std::holds_alternative<SetManualAlignmentAnchorCommand>(command) ||
+            std::holds_alternative<ClearManualAlignmentAnchorsCommand>(command);
+        if (isAlignmentCommand && sources_.has_value() && sources_->sourceCount() < 2U) {
+            completeCommand(
+                context,
+                CommandOutcome::Failed,
+                coordinatorError(domain::MediaErrorCode::kInvalidArgument,
+                                 "Alignment commands require at least two review sources.",
+                                 false));
+            return;
+        }
         if (std::holds_alternative<CancelAlignmentAnalysisCommand>(command)) {
             beginCancelAlignmentAnalysis(std::get<CancelAlignmentAnalysisCommand>(command));
             return;
@@ -2076,6 +2118,12 @@ private:
             pendingProbe_.has_value()) {
             // A new open supersedes in-flight probes instead of bouncing off a Busy gate.
             supersedePendingProbes();
+        }
+        if (isOpenCommand && playbackRun_.has_value()) {
+            // Source-count transitions are controlled session rebuilds. Pause and discard the
+            // active cadence before probing the replacement set so old-generation frames cannot
+            // mix with the new source topology.
+            stopPlayback();
         }
         const bool isNavigationCommand =
             std::holds_alternative<SeekFrameCommand>(command) ||
@@ -2187,7 +2235,8 @@ private:
         }
         const PendingPhase phase = pending_->phase;
         if (phase == PendingPhase::kOpeningProvider) {
-            submitFirstOrSeekFrame(domain::FrameId{0}, PendingPhase::kOpeningFirstFrame);
+            submitFirstOrSeekFrame(pending_->expectedFrame.value_or(domain::FrameId{0}),
+                                   PendingPhase::kOpeningFirstFrame);
             return;
         }
         if (phase == PendingPhase::kOpeningFirstFrame || phase == PendingPhase::kSeekingFrame) {

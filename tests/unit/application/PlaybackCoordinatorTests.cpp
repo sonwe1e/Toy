@@ -2651,6 +2651,80 @@ TEST(PlaybackCoordinatorTests, ASecondOpenSupersedesInFlightProbes) {
     EXPECT_EQ(probe->request(3U)->sourcePath, std::filesystem::path{"C:/media/second-b.mp4"});
 }
 
+TEST(PlaybackCoordinatorTests, ReplacementOpenMapsDisplayedMediaTimeOntoNewCanonicalRate) {
+    const auto probe = std::make_shared<FakeMediaProbe>();
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render, probe);
+    openReady(coordinator, provider, render);
+
+    const auto ready = coordinator->snapshot();
+    ASSERT_EQ(coordinator->submit(SeekFrameCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = ready->sessionId,
+                          .sessionEpoch = ready->sessionEpoch,
+                          .commandId = domain::CommandId{2},
+                      },
+                  .frameId = domain::FrameId{9},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const auto seek = provider->frameRequest(1U);
+    ASSERT_TRUE(seek.has_value());
+    ASSERT_TRUE(provider->postFrameReady(*seek, makeFrameSet(domain::FrameId{9})));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*seek));
+    presentPublished(coordinator, render, 1U);
+    EXPECT_EQ(waitForTerminals(coordinator, 1U).front().outcome, CommandOutcome::Succeeded);
+    ASSERT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{9});
+
+    const auto positioned = coordinator->snapshot();
+    ASSERT_EQ(coordinator->submit(OpenComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = positioned->sessionId,
+                          .sessionEpoch = positioned->sessionEpoch,
+                          .commandId = domain::CommandId{3},
+                      },
+                  .sources =
+                      {
+                          OpenComparisonSource{.path = "C:/media/replacement-a.mp4",
+                                               .role = domain::ComparisonRole::kReference,
+                                               .displayName = "a"},
+                          OpenComparisonSource{.path = "C:/media/replacement-b.mp4",
+                                               .role = domain::ComparisonRole::kPrediction,
+                                               .displayName = "b"},
+                      },
+                  .preserveDisplayedTime = true,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(probe->waitForRequestCount(2U));
+    ASSERT_TRUE(
+        probe->postCompleted(0U,
+                             makeDescriptor("C:/media/replacement-a.mp4",
+                                            domain::MediaExtent{.width = 320, .height = 180},
+                                            120,
+                                            60)));
+    ASSERT_TRUE(probe->postSucceeded(0U));
+    ASSERT_TRUE(
+        probe->postCompleted(1U,
+                             makeDescriptor("C:/media/replacement-b.mp4",
+                                            domain::MediaExtent{.width = 320, .height = 180},
+                                            120,
+                                            60)));
+    ASSERT_TRUE(probe->postSucceeded(1U));
+
+    ASSERT_TRUE(provider->waitForOpenRequestCount(2U));
+    const auto replacement = provider->openRequest(1U);
+    ASSERT_TRUE(replacement.has_value());
+    ASSERT_TRUE(provider->postOpenSucceeded(*replacement));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const auto resumed = provider->frameRequest(2U);
+    ASSERT_TRUE(resumed.has_value());
+    EXPECT_EQ(resumed->frameId, domain::FrameId{18});
+}
+
 TEST(PlaybackCoordinatorTests, ProbeFailureCancelsSiblingAndPreservesReadyReplacementSession) {
     const auto probe = std::make_shared<FakeMediaProbe>();
     const auto provider = std::make_shared<FakeFrameProvider>();

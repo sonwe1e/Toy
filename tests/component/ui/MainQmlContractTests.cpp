@@ -163,12 +163,18 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         root->findChild<QObject*>(QStringLiteral("advancedAlignmentInspector"));
     auto* const scroller = root->findChild<QQuickItem*>(QStringLiteral("comparisonScroller"));
     auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
+    auto* const transportBar = root->findChild<QQuickItem*>(QStringLiteral("transportBar"));
+    auto* const viewport = root->findChild<QQuickItem*>(QStringLiteral("mediaViewportFocusTarget"));
+    QObject* const immersiveHud = root->findChild<QObject*>(QStringLiteral("immersiveReviewHud"));
     auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
     auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
     QObject* const badCaseDialog = root->findChild<QObject*>(QStringLiteral("badCaseFolderDialog"));
     ASSERT_NE(inspector, nullptr);
     ASSERT_NE(scroller, nullptr);
     ASSERT_NE(transport, nullptr);
+    ASSERT_NE(transportBar, nullptr);
+    ASSERT_NE(viewport, nullptr);
+    ASSERT_NE(immersiveHud, nullptr);
     ASSERT_NE(firstButton, nullptr);
     ASSERT_NE(lastButton, nullptr);
     ASSERT_NE(badCaseDialog, nullptr);
@@ -179,6 +185,34 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_GT(transport->width(), 0.0);
     EXPECT_GT(firstButton->width(), 0.0);
     EXPECT_GT(lastButton->width(), 0.0);
+
+    window->resize(960, 640);
+    window->show();
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        QCoreApplication::processEvents();
+    }
+    const QPointF transportTopLeft =
+        transportBar->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
+    EXPECT_EQ(window->contentItem()->width(), window->width());
+    EXPECT_GE(transportTopLeft.x(), 0.0);
+    EXPECT_LE(transportTopLeft.x() + transportBar->width(), window->width())
+        << "left=" << transportTopLeft.x() << " barWidth=" << transportBar->width()
+        << " contentWidth=" << window->contentItem()->width();
+
+    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "toggleChrome"));
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(root->property("chromeVisible").toBool());
+    EXPECT_FALSE(transport->isVisible());
+    const QPointF immersiveTopLeft = viewport->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
+    EXPECT_DOUBLE_EQ(immersiveTopLeft.x(), 0.0);
+    EXPECT_DOUBLE_EQ(immersiveTopLeft.y(), 0.0);
+    EXPECT_DOUBLE_EQ(viewport->width(), window->contentItem()->width());
+    EXPECT_DOUBLE_EQ(viewport->height(), window->contentItem()->height());
+
+    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "toggleChrome"));
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(root->property("chromeVisible").toBool());
+    EXPECT_TRUE(transport->isVisible());
 }
 
 } // namespace

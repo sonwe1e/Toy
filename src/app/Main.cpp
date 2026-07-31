@@ -12,7 +12,10 @@
 
 #include "ReviewRuntime.h"
 #include "StartupFailureReporter.h"
+#include "StartupRequest.h"
+#include "StartupRequestBroker.h"
 
+#include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -62,7 +65,7 @@ enum class SmokeStage {
 
 struct SmokeSources final {
     std::filesystem::path first;
-    std::filesystem::path second;
+    std::optional<std::filesystem::path> second;
     std::optional<std::filesystem::path> third;
 };
 
@@ -124,6 +127,28 @@ void writeStandardError(std::string_view message) noexcept {
     return QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
 }
 
+[[nodiscard]] bool applyStartupRequest(const dvs::app::StartupRequest& request,
+                                       dvs::ui::DesktopApplication& desktop,
+                                       dvs::app::ReviewRuntime& runtime) {
+    desktop.activateWindow();
+    switch (request.kind) {
+    case dvs::app::StartupRequest::Kind::Empty:
+        return true;
+    case dvs::app::StartupRequest::Kind::OpenProject:
+        return runtime.workspace()->openProject(localFileUrl(request.sources.front()));
+    case dvs::app::StartupRequest::Kind::PlaySingle:
+    case dvs::app::StartupRequest::Kind::Compare: {
+        QList<QUrl> sources;
+        sources.reserve(static_cast<qsizetype>(request.sources.size()));
+        for (const auto& source : request.sources) {
+            sources.push_back(localFileUrl(source));
+        }
+        return desktop.reviewLocalFiles(sources);
+    }
+    }
+    return false;
+}
+
 [[nodiscard]] int
 runDesktop(int& argc,
            char** argv,
@@ -140,6 +165,25 @@ runDesktop(int& argc,
             .preferSoftwareDevice = smokeMode,
         },
     };
+    std::unique_ptr<dvs::app::StartupRequestBroker> startupBroker;
+    dvs::app::StartupRequest startupRequest;
+    if (!smokeMode) {
+        const dvs::app::StartupRequestParseResult parsed =
+            dvs::app::parseStartupRequest(QCoreApplication::arguments());
+        if (!parsed) {
+            return dvs::app::reportFatalStartup(parsed.error.toStdString(), false);
+        }
+        startupRequest = *parsed.request;
+        startupBroker = std::make_unique<dvs::app::StartupRequestBroker>();
+        const auto brokerResult = startupBroker->startOrForward(startupRequest);
+        if (brokerResult == dvs::app::StartupRequestBroker::StartResult::Forwarded) {
+            return EXIT_SUCCESS;
+        }
+        if (brokerResult == dvs::app::StartupRequestBroker::StartResult::Failed) {
+            return dvs::app::reportFatalStartup(
+                "The VCStation startup request broker could not be initialized.", false);
+        }
+    }
     std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
     if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
         runtime->workspace() == nullptr ||
@@ -162,7 +206,20 @@ runDesktop(int& argc,
         }
         return dvs::app::reportFatalStartup("DVS_UI_LOAD_FAILED", smokeMode);
     }
-    if (initialProject.has_value() &&
+    if (!smokeMode && !applyStartupRequest(startupRequest, desktop, *runtime)) {
+        runtime->prepareForSceneGraphRelease();
+        desktop.releaseSceneGraph();
+        static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
+        return dvs::app::reportFatalStartup("The requested startup action could not be opened.",
+                                            false);
+    }
+    if (startupBroker) {
+        startupBroker->setRequestHandler(
+            [&desktop, runtimePointer = runtime.get()](dvs::app::StartupRequest request) {
+                static_cast<void>(applyStartupRequest(request, desktop, *runtimePointer));
+            });
+    }
+    if (smokeMode && initialProject.has_value() &&
         !runtime->workspace()->openProject(localFileUrl(*initialProject))) {
         runtime->prepareForSceneGraphRelease();
         desktop.releaseSceneGraph();
@@ -203,15 +260,22 @@ runDesktop(int& argc,
                     desktop.exit(EXIT_SUCCESS);
                     return;
                 }
-                const bool sourcesSelected = smokeSources->third.has_value()
-                                                 ? desktop.setSelectedSourcesForAutomation(
-                                                       localFileUrl(smokeSources->first),
-                                                       localFileUrl(smokeSources->second),
-                                                       localFileUrl(*smokeSources->third))
-                                                 : desktop.setSelectedSourcesForAutomation(
-                                                       localFileUrl(smokeSources->first),
-                                                       localFileUrl(smokeSources->second));
-                if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
+                bool openAccepted = false;
+                if (!smokeSources->second.has_value()) {
+                    openAccepted = desktop.reviewLocalFiles({localFileUrl(smokeSources->first)});
+                } else {
+                    const bool sourcesSelected = smokeSources->third.has_value()
+                                                     ? desktop.setSelectedSourcesForAutomation(
+                                                           localFileUrl(smokeSources->first),
+                                                           localFileUrl(*smokeSources->second),
+                                                           localFileUrl(*smokeSources->third))
+                                                     : desktop.setSelectedSourcesForAutomation(
+                                                           localFileUrl(smokeSources->first),
+                                                           localFileUrl(*smokeSources->second));
+                    openAccepted =
+                        sourcesSelected && desktop.clickControlForAutomation("openPairButton");
+                }
+                if (!openAccepted) {
                     std::cerr << "DVS_UI_SMOKE_OPEN_REJECTED\n";
                     desktop.exit(EXIT_FAILURE);
                     return;
@@ -312,6 +376,16 @@ runDesktop(int& argc,
                 if (controller.busy() || controller.currentFrame() != 0) {
                     return;
                 }
+                if (!smokeSources->second.has_value()) {
+                    if (!desktop.focusControlForAutomation("mediaViewportFocusTarget") ||
+                        !desktop.sendKeyForAutomation(Qt::Key_End)) {
+                        std::cerr << "DVS_UI_SMOKE_SINGLE_SHORTCUT_END_REJECTED\n";
+                        desktop.exit(EXIT_FAILURE);
+                        return;
+                    }
+                    smokeStage = SmokeStage::WaitingForShortcutLast;
+                    return;
+                }
                 if (!desktop.focusControlForAutomation("viewModeCombo") ||
                     !desktop.sendKeyForAutomation(Qt::Key_Space) ||
                     !desktop.sendKeyForAutomation(Qt::Key_Up)) {
@@ -374,8 +448,9 @@ runDesktop(int& argc,
                 return;
             case SmokeStage::WaitingForShortcutPrevious:
                 if (!controller.busy() && controller.currentFrame() == 0) {
-                    if (!desktop.sendKeyForAutomation(Qt::Key_Up)) {
-                        std::cerr << "DVS_UI_SMOKE_SHORTCUT_UP_REJECTED\n";
+                    if (!desktop.sendKeyForAutomation(Qt::Key_Right,
+                                                      static_cast<int>(Qt::ShiftModifier))) {
+                        std::cerr << "DVS_UI_SMOKE_SHORTCUT_SHIFT_RIGHT_REJECTED\n";
                         desktop.exit(EXIT_FAILURE);
                         return;
                     }
@@ -385,13 +460,13 @@ runDesktop(int& argc,
             case SmokeStage::WaitingForLargeStepForward:
                 if (!controller.busy() && controller.totalFrames() > 0U) {
                     const qint64 expected =
-                        std::min<qint64>(static_cast<qint64>(controller.totalFrames() - 1U),
-                                         runtime->preferences()->largeStepFrames());
+                        std::min<qint64>(static_cast<qint64>(controller.totalFrames() - 1U), 5);
                     if (controller.currentFrame() != expected) {
                         return;
                     }
-                    if (!desktop.sendKeyForAutomation(Qt::Key_Down)) {
-                        std::cerr << "DVS_UI_SMOKE_SHORTCUT_DOWN_REJECTED\n";
+                    if (!desktop.sendKeyForAutomation(Qt::Key_Left,
+                                                      static_cast<int>(Qt::ShiftModifier))) {
+                        std::cerr << "DVS_UI_SMOKE_SHORTCUT_SHIFT_LEFT_REJECTED\n";
                         desktop.exit(EXIT_FAILURE);
                         return;
                     }
@@ -424,11 +499,21 @@ runDesktop(int& argc,
                 if (!controller.busy() && controller.totalFrames() > 0U &&
                     controller.currentFrame() ==
                         static_cast<qint64>(controller.totalFrames() - 1U)) {
+                    if (!smokeSources->second.has_value()) {
+                        smokeCompleted = true;
+                        desktop.exit(EXIT_SUCCESS);
+                        return;
+                    }
                     std::filesystem::path missingSource = smokeSources->first;
                     missingSource += ".missing";
-                    if (!desktop.setSelectedSourcesForAutomation(
-                            localFileUrl(missingSource), localFileUrl(smokeSources->second)) ||
-                        !desktop.clickControlForAutomation("openPairButton")) {
+                    const bool errorOpenAccepted =
+                        smokeSources->second.has_value()
+                            ? desktop.setSelectedSourcesForAutomation(
+                                  localFileUrl(missingSource),
+                                  localFileUrl(*smokeSources->second)) &&
+                                  desktop.clickControlForAutomation("openPairButton")
+                            : desktop.reviewLocalFiles({localFileUrl(missingSource)});
+                    if (!errorOpenAccepted) {
                         std::cerr << "DVS_UI_SMOKE_ERROR_PATH_REJECTED\n";
                         desktop.exit(EXIT_FAILURE);
                         return;
@@ -629,13 +714,17 @@ runDesktop(int& argc,
             if (!controller.graphicsReady()) {
                 return;
             }
+            if (!sources.second.has_value()) {
+                fail("performance-requires-two-sources");
+                return;
+            }
             const bool sourcesSelected =
                 sources.third.has_value()
                     ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                              localFileUrl(sources.second),
+                                                              localFileUrl(*sources.second),
                                                               localFileUrl(*sources.third))
                     : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                              localFileUrl(sources.second));
+                                                              localFileUrl(*sources.second));
             if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
                 fail("open-rejected");
                 return;
@@ -1007,15 +1096,20 @@ runDesktop(int& argc,
 int main(int argc, char* argv[]) {
     const bool smokeArgument = argc >= 2 && std::string_view{argv[1]}.starts_with("--ui-");
     try {
-        if (argc == 1) {
-            return runDesktop(argc, argv, false);
-        }
         if (argc == 2 && std::string_view{argv[1]} == "--ui-stderr-smoke") {
             writeStandardError("DVS_GUI_STDERR_OK\n");
             return EXIT_SUCCESS;
         }
         if (argc == 2 && std::string_view{argv[1]} == "--ui-smoke") {
             return runDesktop(argc, argv, true);
+        }
+        if (argc == 3 && std::string_view{argv[1]} == "--ui-smoke") {
+            return runDesktop(argc,
+                              argv,
+                              true,
+                              SmokeSources{
+                                  .first = std::filesystem::path{argv[2]},
+                              });
         }
         if (argc == 4 && std::string_view{argv[1]} == "--ui-smoke") {
             return runDesktop(argc,
@@ -1068,14 +1162,7 @@ int main(int argc, char* argv[]) {
         if (argc == 2 && std::string_view{argv[1]} == "--ui-fatal-startup-smoke") {
             return dvs::app::reportFatalStartup("DVS_UI_FATAL_STARTUP_SMOKE", true);
         }
-        if (argc == 2) {
-            const std::filesystem::path projectPath{argv[1]};
-            if (projectPath.extension() == ".dvsproj") {
-                return runDesktop(argc, argv, false, std::nullopt, false, projectPath);
-            }
-        }
-        return dvs::app::reportFatalStartup(
-            "Unsupported GUI argument. Use VCStationCli.exe for diagnostics.", smokeArgument);
+        return runDesktop(argc, argv, false);
     } catch (const std::exception& exception) {
         return dvs::app::reportFatalStartup(exception.what(), smokeArgument);
     } catch (...) {

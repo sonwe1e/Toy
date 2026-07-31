@@ -170,6 +170,28 @@ public:
         return activeScreenRefreshRate_;
     }
 
+    [[nodiscard]] bool reviewLocalFiles(const QList<QUrl>& files) {
+        if (window_ == nullptr || files.isEmpty()) {
+            return false;
+        }
+        QVariantList values;
+        values.reserve(files.size());
+        for (const QUrl& file : files) {
+            values.push_back(file);
+        }
+        return QMetaObject::invokeMethod(
+            window_, "reviewDroppedUrls", Q_ARG(QVariant, QVariant::fromValue(values)));
+    }
+
+    void activateWindow() noexcept {
+        if (window_ == nullptr) {
+            return;
+        }
+        window_->show();
+        window_->raise();
+        window_->requestActivate();
+    }
+
     [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
                                                        const QUrl& sourceB) noexcept {
         if (window_ == nullptr) {
@@ -243,12 +265,13 @@ public:
         return pressed && released;
     }
 
-    [[nodiscard]] bool sendKeyForAutomation(const int key) noexcept {
+    [[nodiscard]] bool sendKeyForAutomation(const int key, const int modifiers) noexcept {
         if (window_ == nullptr || key == 0) {
             return false;
         }
-        QKeyEvent press{QEvent::KeyPress, key, Qt::NoModifier};
-        QKeyEvent release{QEvent::KeyRelease, key, Qt::NoModifier};
+        const Qt::KeyboardModifiers keyboardModifiers{modifiers};
+        QKeyEvent press{QEvent::KeyPress, key, keyboardModifiers};
+        QKeyEvent release{QEvent::KeyRelease, key, keyboardModifiers};
         static_cast<void>(QCoreApplication::sendEvent(window_, &press));
         static_cast<void>(QCoreApplication::sendEvent(window_, &release));
         return true;
@@ -332,6 +355,14 @@ double DesktopApplication::activeScreenRefreshRate() const noexcept {
     return impl_->activeScreenRefreshRate();
 }
 
+bool DesktopApplication::reviewLocalFiles(const QList<QUrl>& files) {
+    return impl_->reviewLocalFiles(files);
+}
+
+void DesktopApplication::activateWindow() noexcept {
+    impl_->activateWindow();
+}
+
 bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,
                                                          const QUrl& sourceB) noexcept {
     return impl_->setSelectedSourcesForAutomation(sourceA, sourceB);
@@ -355,8 +386,8 @@ bool DesktopApplication::clickTimelineForAutomation(const double normalizedPosit
     return impl_->clickTimelineForAutomation(normalizedPosition);
 }
 
-bool DesktopApplication::sendKeyForAutomation(const int key) noexcept {
-    return impl_->sendKeyForAutomation(key);
+bool DesktopApplication::sendKeyForAutomation(const int key, const int modifiers) noexcept {
+    return impl_->sendKeyForAutomation(key, modifiers);
 }
 
 std::optional<std::string>

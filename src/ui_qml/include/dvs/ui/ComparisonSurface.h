@@ -33,6 +33,7 @@ class ComparisonSurface : public QQuickItem {
                    NOTIFY differenceFilterChanged)
     Q_PROPERTY(
         qreal wipePosition READ wipePosition WRITE setWipePosition NOTIFY wipePositionChanged)
+    Q_PROPERTY(qreal wipeSplitLogicalX READ wipeSplitLogicalX NOTIFY presentationGeometryChanged)
     Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
                    exactPlaneAvailableChanged)
     Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
@@ -53,12 +54,13 @@ class ComparisonSurface : public QQuickItem {
 
 public:
     enum ViewMode {
-        SideBySide,
-        ThreeUp,
-        ReferenceFocus,
-        Difference,
-        AnalysisGrid,
-        Wipe,
+        SideBySide = 0,
+        ThreeUp = 1,
+        ReferenceFocus = 2,
+        Difference = 3,
+        AnalysisGrid = 4,
+        Wipe = 5,
+        Single = 6,
     };
     Q_ENUM(ViewMode)
 
@@ -121,6 +123,7 @@ public:
     void setDifferenceFilter(DifferenceFilter value);
     [[nodiscard]] qreal wipePosition() const noexcept;
     void setWipePosition(qreal value);
+    [[nodiscard]] qreal wipeSplitLogicalX() const noexcept;
     [[nodiscard]] bool exactPlaneAvailable() const noexcept;
     void setExactPlaneAvailable(bool value);
     [[nodiscard]] bool thresholdEnabled() const noexcept;
@@ -145,6 +148,14 @@ public:
     Q_INVOKABLE void resetViewport();
     Q_INVOKABLE void setRoiNormalized(qreal left, qreal top, qreal right, qreal bottom);
     Q_INVOKABLE void clearRoi();
+    Q_INVOKABLE void restoreViewport(qreal centerX,
+                                     qreal centerY,
+                                     qreal scale,
+                                     bool roiEnabled,
+                                     qreal roiLeft,
+                                     qreal roiTop,
+                                     qreal roiRight,
+                                     qreal roiBottom);
 
     [[nodiscard]] bool
     attachRendererServices(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -161,6 +172,7 @@ signals:
     void differenceEdgeChanged();
     void differenceFilterChanged();
     void wipePositionChanged();
+    void presentationGeometryChanged();
     void exactPlaneAvailableChanged();
     void thresholdChanged();
     void viewportChanged();

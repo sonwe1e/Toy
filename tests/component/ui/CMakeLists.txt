@@ -72,3 +72,60 @@ foreach(dvs_qml_style IN ITEMS Basic Windows)
             ENVIRONMENT "QT_QUICK_CONTROLS_STYLE=${dvs_qml_style}"
     )
 endforeach()
+
+set(
+    dvs_drop_confirmation_qml_test
+    "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_drop_confirmation_dialog.qml"
+)
+foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+    string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
+    add_test(
+        NAME "ui.DropConfirmationDialog.scale-${dvs_scale_name}"
+        COMMAND
+            "$<TARGET_FILE:Qt6::qmltestrunner>"
+            -input "${dvs_drop_confirmation_qml_test}"
+    )
+    set_tests_properties(
+        "ui.DropConfirmationDialog.scale-${dvs_scale_name}"
+        PROPERTIES
+            LABELS "component;ui_qml"
+            TIMEOUT 20
+            RUN_SERIAL TRUE
+            ENVIRONMENT
+                "QSG_RHI_BACKEND=d3d11;QSG_RENDER_LOOP=basic;QT_QUICK_CONTROLS_STYLE=Basic;QT_SCALE_FACTOR=${dvs_scale_factor}"
+    )
+endforeach()
+
+set(dvs_wipe_handle_qml_test "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_wipe_handle.qml")
+foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+    string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
+    add_test(
+        NAME "ui.WipeHandle.scale-${dvs_scale_name}"
+        COMMAND
+            "$<TARGET_FILE:Qt6::qmltestrunner>"
+            -input "${dvs_wipe_handle_qml_test}"
+    )
+    set_tests_properties(
+        "ui.WipeHandle.scale-${dvs_scale_name}"
+        PROPERTIES
+            LABELS "component;ui_qml"
+            TIMEOUT 20
+            RUN_SERIAL TRUE
+            ENVIRONMENT
+                "QSG_RHI_BACKEND=d3d11;QSG_RENDER_LOOP=basic;QT_SCALE_FACTOR=${dvs_scale_factor}"
+    )
+endforeach()
+
+add_test(
+    NAME ui.ReviewActions
+    COMMAND
+        "$<TARGET_FILE:Qt6::qmltestrunner>"
+        -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_review_actions.qml"
+)
+set_tests_properties(
+    ui.ReviewActions
+    PROPERTIES
+        LABELS "component;ui_qml"
+        TIMEOUT 15
+        RUN_SERIAL TRUE
+)

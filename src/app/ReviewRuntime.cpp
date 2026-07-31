@@ -119,6 +119,33 @@ private:
     ui::ReviewController* controller_ = nullptr;
 };
 
+class WorkspaceProjectionBridge final {
+public:
+    void bind(ui::WorkspaceController& controller) noexcept {
+        std::scoped_lock lock(mutex_);
+        controller_ = &controller;
+    }
+
+    void unbind() noexcept {
+        std::scoped_lock lock(mutex_);
+        controller_ = nullptr;
+    }
+
+    void notify() noexcept {
+        std::scoped_lock lock(mutex_);
+        if (controller_ == nullptr) {
+            return;
+        }
+        ui::WorkspaceController* const controller = controller_;
+        static_cast<void>(QMetaObject::invokeMethod(
+            controller, [controller] { controller->refreshProjection(); }, Qt::QueuedConnection));
+    }
+
+private:
+    std::mutex mutex_;
+    ui::WorkspaceController* controller_ = nullptr;
+};
+
 class GraphicsNotificationPump final {
 public:
     GraphicsNotificationPump(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -330,6 +357,7 @@ public:
         acknowledgementMailbox_ = std::make_shared<platform::PresentationAckMailbox>();
         activityBridge_ = std::make_shared<RenderActivityBridge>();
         projectionBridge_ = std::make_shared<ReviewProjectionBridge>();
+        workspaceProjectionBridge_ = std::make_shared<WorkspaceProjectionBridge>();
         transferActor_ = std::make_shared<platform::GpuTransferActor>(
             frameBudget_, deviceBroker_, frameMailbox_, activityBridge_);
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
@@ -395,6 +423,7 @@ public:
                         return domain::ProjectId{"project-" +
                                                  std::to_string(nextProjectId.fetch_add(1U))};
                     },
+                .statePublished = [bridge = workspaceProjectionBridge_] { bridge->notify(); },
             });
         if (!workspaceCoordinator_) {
             throw std::runtime_error{"The workspace coordinator could not be created."};
@@ -420,6 +449,7 @@ public:
         preferences_ = std::make_unique<ui::ReviewPreferencesController>(settingsRepository_);
         workspaceController_ =
             std::make_unique<ui::WorkspaceController>(*workspaceCoordinator_, *preferences_);
+        workspaceProjectionBridge_->bind(*workspaceController_);
         graphicsPump_ = std::make_unique<GraphicsNotificationPump>(
             deviceBroker_,
             frameMailbox_,
@@ -509,6 +539,9 @@ public:
 
         if (projectionBridge_) {
             projectionBridge_->unbind();
+        }
+        if (workspaceProjectionBridge_) {
+            workspaceProjectionBridge_->unbind();
         }
         if (controller_) {
             controller_->stop();
@@ -617,6 +650,7 @@ private:
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox_;
     std::shared_ptr<RenderActivityBridge> activityBridge_;
     std::shared_ptr<ReviewProjectionBridge> projectionBridge_;
+    std::shared_ptr<WorkspaceProjectionBridge> workspaceProjectionBridge_;
     std::shared_ptr<platform::GpuTransferActor> transferActor_;
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;

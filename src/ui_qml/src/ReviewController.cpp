@@ -92,6 +92,7 @@ struct ReviewView final {
     QString sourceAFilename;
     QString sourceBFilename;
     QString sourceCFilename;
+    QVariantList sourceUrls;
     ReviewController::ReviewDisplayState displayState = ReviewController::ReviewDisplayState::Empty;
     bool busy = false;
     bool framePending = false;
@@ -204,6 +205,16 @@ public:
                                          const QUrl& second,
                                          const QUrl& third,
                                          const int referenceSourceIndex) {
+        QVariantList urls{first, second};
+        if (!third.isEmpty()) {
+            urls.push_back(third);
+        }
+        return openSources(urls, referenceSourceIndex, false);
+    }
+
+    [[nodiscard]] bool openSources(const QVariantList& urls,
+                                   const int referenceSourceIndex,
+                                   const bool preserveDisplayedTime) {
         if (!onOwnerThread() || stopped_) {
             return false;
         }
@@ -212,34 +223,34 @@ public:
             return false;
         }
 
-        LocalFileValidation validatedA;
-        LocalFileValidation validatedB;
-        LocalFileValidation validatedC;
+        if (urls.empty() || urls.size() > 3 || referenceSourceIndex < -1 ||
+            referenceSourceIndex >= urls.size()) {
+            return false;
+        }
+
+        std::array<LocalFileValidation, 3U> validated;
         try {
-            validatedA = validateLocalFile(first);
-            validatedB = validateLocalFile(second);
-            if (!third.isEmpty()) {
-                validatedC = validateLocalFile(third);
+            for (qsizetype index = 0; index < urls.size(); ++index) {
+                validated[static_cast<std::size_t>(index)] = validateLocalFile(urls[index].toUrl());
             }
         } catch (...) {
-            validatedA = LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
-            validatedB = LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
-            if (!third.isEmpty()) {
-                validatedC = LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
+            for (qsizetype index = 0; index < urls.size(); ++index) {
+                validated[static_cast<std::size_t>(index)] =
+                    LocalFileValidation{.errorKey = QStringLiteral("invalid-argument")};
             }
         }
 
-        sourceA_ = std::move(validatedA.candidate);
-        sourceB_ = std::move(validatedB.candidate);
-        sourceC_ = std::move(validatedC.candidate);
-        localSourceAErrorKey_ = std::move(validatedA.errorKey);
-        localSourceBErrorKey_ = std::move(validatedB.errorKey);
-        localSourceCErrorKey_ = std::move(validatedC.errorKey);
+        sourceA_ = std::move(validated[0U].candidate);
+        sourceB_ = urls.size() > 1 ? std::move(validated[1U].candidate) : std::nullopt;
+        sourceC_ = urls.size() > 2 ? std::move(validated[2U].candidate) : std::nullopt;
+        localSourceAErrorKey_ = std::move(validated[0U].errorKey);
+        localSourceBErrorKey_ = urls.size() > 1 ? std::move(validated[1U].errorKey) : QString{};
+        localSourceCErrorKey_ = urls.size() > 2 ? std::move(validated[2U].errorKey) : QString{};
         publishProjection();
 
-        const int sourceCount = sourceC_.has_value() ? 3 : 2;
-        if (!sourceA_.has_value() || !sourceB_.has_value() || !localSourceCErrorKey_.isEmpty() ||
-            referenceSourceIndex < -1 || referenceSourceIndex >= sourceCount || !view_.canOpen) {
+        const int sourceCount = static_cast<int>(urls.size());
+        if (!sourceA_.has_value() || (sourceCount > 1 && !sourceB_.has_value()) ||
+            (sourceCount > 2 && !sourceC_.has_value()) || !view_.canOpen) {
             return false;
         }
         const std::optional<application::CommandContext> context = allocateCommandContext();
@@ -259,13 +270,16 @@ public:
             });
         };
         appendSource(*sourceA_, 0);
-        appendSource(*sourceB_, 1);
+        if (sourceB_.has_value()) {
+            appendSource(*sourceB_, 1);
+        }
         if (sourceC_.has_value()) {
             appendSource(*sourceC_, 2);
         }
         return dispatch(application::OpenComparisonCommand{
             .context = *context,
             .sources = std::move(sources),
+            .preserveDisplayedTime = preserveDisplayedTime,
         });
     }
 
@@ -331,7 +345,7 @@ public:
                 const application::CommandContext& context) {
                 std::vector<application::SourceFrameOffset> offsets;
                 const std::array<qint64, 3U> values{sourceAFrames, sourceBFrames, sourceCFrames};
-                const std::size_t sourceCount = sourceC_.has_value() ? 3U : 2U;
+                const std::size_t sourceCount = static_cast<std::size_t>(sourceModel_.rowCount());
                 offsets.reserve(sourceCount);
                 for (std::size_t index = 0U; index < sourceCount; ++index) {
                     if (values[index] != 0) {
@@ -614,6 +628,22 @@ private:
                 snapshot_->validatedComparison->canonicalRate().has_value()) {
                 next.oneSecondStepFrames = std::clamp(
                     qRound(snapshot_->validatedComparison->canonicalRate()->displayFps()), 1, 1000);
+            }
+            if (snapshot_->validatedComparison) {
+                for (const domain::ComparisonSource& source :
+                     snapshot_->validatedComparison->sources()) {
+                    const QString sourcePath =
+                        QString::fromStdWString(source.descriptor.normalizedPath.wstring());
+                    next.sourceUrls.push_back(QUrl::fromLocalFile(sourcePath));
+                    const QString filename = QFileInfo{sourcePath}.fileName();
+                    if (source.id == 0U && next.sourceAFilename.isEmpty()) {
+                        next.sourceAFilename = filename;
+                    } else if (source.id == 1U && next.sourceBFilename.isEmpty()) {
+                        next.sourceBFilename = filename;
+                    } else if (source.id == 2U && next.sourceCFilename.isEmpty()) {
+                        next.sourceCFilename = filename;
+                    }
+                }
             }
             next.playing = snapshot_->playbackState == domain::PlaybackState::kPlaying ||
                            snapshot_->playbackState == domain::PlaybackState::kBuffering;
@@ -1153,8 +1183,16 @@ QString ReviewController::sourceCFilename() const {
     return impl_->view().sourceCFilename;
 }
 
+QVariantList ReviewController::sourceUrls() const {
+    return impl_->view().sourceUrls;
+}
+
 QAbstractItemModel* ReviewController::sources() const noexcept {
     return impl_->sources();
+}
+
+int ReviewController::sourceCount() const noexcept {
+    return impl_->sources()->rowCount();
 }
 
 ReviewController::ReviewDisplayState ReviewController::displayState() const noexcept {
@@ -1315,6 +1353,14 @@ bool ReviewController::canPause() const noexcept {
 
 bool ReviewController::openComparison(const QUrl& first, const QUrl& second) {
     return impl_->openComparison(first, second);
+}
+
+bool ReviewController::openSources(const QVariantList& urls, const int referenceSourceIndex) {
+    return impl_->openSources(urls, referenceSourceIndex, false);
+}
+
+bool ReviewController::reopenSources(const QVariantList& urls, const int referenceSourceIndex) {
+    return impl_->openSources(urls, referenceSourceIndex, true);
 }
 
 bool ReviewController::openComparisonSet(const QUrl& first,

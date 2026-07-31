@@ -277,6 +277,27 @@ TEST_F(ReviewControllerTests, DispatchesThreeSourcesWithTheSelectedReferenceRole
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests, ReopenSourcesRequestsMediaTimePreservingSessionRebuild) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("reference.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("prediction.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    ASSERT_TRUE(controller.reopenSources(
+        {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, 0));
+
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* const command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+    EXPECT_TRUE(command->preserveDisplayedTime);
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, RejectsAnAbsentOrOutOfRangeReferenceSource) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());

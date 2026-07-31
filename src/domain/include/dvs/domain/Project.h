@@ -47,10 +47,13 @@ struct ProjectAlignmentState final {
 };
 
 enum class ProjectViewLayout {
-    kSideBySide,
-    kThreeUp,
-    kReferenceFocus,
-    kDifference,
+    kSideBySide = 0,
+    kThreeUp = 1,
+    kReferenceFocus = 2,
+    kDifference = 3,
+    kAnalysisGrid = 4,
+    kWipe = 5,
+    kSingle = 6,
 };
 
 enum class ProjectDifferenceMetric {
@@ -61,11 +64,40 @@ enum class ProjectDifferenceMetric {
     kExactPlanes,
 };
 
+enum class ProjectDifferenceFilter {
+    kNearest,
+    kBilinear,
+    kBicubic,
+};
+
+struct ProjectViewTransform final {
+    float centerX = 0.5F;
+    float centerY = 0.5F;
+    float scale = 1.0F;
+
+    [[nodiscard]] bool operator==(const ProjectViewTransform&) const = default;
+};
+
+struct ProjectNormalizedRect final {
+    float left = 0.0F;
+    float top = 0.0F;
+    float right = 1.0F;
+    float bottom = 1.0F;
+
+    [[nodiscard]] bool operator==(const ProjectNormalizedRect&) const = default;
+};
+
 struct ProjectViewState final {
     ProjectViewLayout layout = ProjectViewLayout::kSideBySide;
-    std::array<SourceId, 2U> differenceEdge{0U, 1U};
+    std::optional<std::array<SourceId, 2U>> differenceEdge;
     ProjectDifferenceMetric differenceMetric = ProjectDifferenceMetric::kRgbAbsolute;
+    ProjectDifferenceFilter differenceFilter = ProjectDifferenceFilter::kBilinear;
     std::uint8_t gain = 1U;
+    float wipePosition = 0.5F;
+    bool thresholdEnabled = false;
+    float threshold = 0.0F;
+    ProjectViewTransform viewport;
+    std::optional<ProjectNormalizedRect> roi;
 
     [[nodiscard]] bool operator==(const ProjectViewState&) const = default;
 };

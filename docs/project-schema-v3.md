@@ -1,5 +1,8 @@
 # Project Schema v3
 
+> **Status: historical migration input.** VCStation 1.2.0 writes Schema v4. See
+> [project-schema-v4.md](project-schema-v4.md) for the active contract.
+
 `.dvsproj` files are UTF-8 JSON documents with `schemaVersion: 3`, written by
 `dvs::persistence::ProjectJson`. Schema-2 documents are migrated with strict-index alignment and
 the default side-by-side view. Schema-1 and future versions are rejected.

@@ -61,12 +61,13 @@ struct D3dScissorRect final {
 };
 
 enum class SurfaceViewMode : std::uint8_t {
-    SideBySide,
-    ThreeUp,
-    ReferenceFocus,
-    Difference,
-    AnalysisGrid,
-    Wipe,
+    SideBySide = 0,
+    ThreeUp = 1,
+    ReferenceFocus = 2,
+    Difference = 3,
+    AnalysisGrid = 4,
+    Wipe = 5,
+    Single = 6,
 };
 
 enum class SurfaceDifferenceMetric : std::uint8_t {

@@ -1,7 +1,23 @@
 <RCC>
     <qresource prefix="/qml">
         <file alias="Main.qml">qml/Main.qml</file>
+        <file alias="DropConfirmationDialog.qml">qml/DropConfirmationDialog.qml</file>
+        <file alias="ReviewActions.qml">qml/ReviewActions.qml</file>
         <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>
+        <file alias="TransportBar.qml">qml/TransportBar.qml</file>
+        <file alias="WipeHandle.qml">qml/WipeHandle.qml</file>
+    </qresource>
+    <qresource prefix="/icons">
+        <file alias="first.svg">../../assets/icons/first.svg</file>
+        <file alias="last.svg">../../assets/icons/last.svg</file>
+        <file alias="previous.svg">../../assets/icons/previous.svg</file>
+        <file alias="next.svg">../../assets/icons/next.svg</file>
+        <file alias="previous-five.svg">../../assets/icons/previous-five.svg</file>
+        <file alias="next-five.svg">../../assets/icons/next-five.svg</file>
+        <file alias="previous-second.svg">../../assets/icons/previous-second.svg</file>
+        <file alias="next-second.svg">../../assets/icons/next-second.svg</file>
+        <file alias="play.svg">../../assets/icons/play.svg</file>
+        <file alias="pause.svg">../../assets/icons/pause.svg</file>
     </qresource>
     <qresource prefix="/branding">
         <file alias="vcstation-icon.png">../../assets/branding/vcstation-icon.png</file>

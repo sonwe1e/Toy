@@ -1,7 +1,7 @@
 name: Hardware and Performance
 
 # Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
-# interactively logged-in self-hosted runner and nine external performance fixtures.
+# interactively logged-in self-hosted runner and six external performance fixtures.
 # They run on demand instead of accepting pull-request code on the workstation.
 
 on:
@@ -115,12 +115,7 @@ jobs:
 
       - name: Release-blocking performance gates
         shell: pwsh
-        # The 4K30 Main10 profile remains registered for follow-up tuning, but is intentionally
-        # deferred from the v1.1.0 release gate. The three 1080p profiles stay fail-closed.
-        run: >
-          ctest --preset performance-d3d11
-          --exclude-regex "^performance\.4k30-main10$"
-          --output-on-failure
+        run: ctest --preset performance-d3d11 --output-on-failure
 
       - name: Collect performance logs
         if: always()
@@ -131,12 +126,10 @@ jobs:
           $env:DVS_TESTED_SHA |
             Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
           @(
-            'v1.1.0 release-blocking profiles:',
+            'Release-blocking profiles:',
             '- 1080p60',
             '- 1080p120-2source',
-            '- 1080p120-3source',
-            '',
-            '4k30-main10 is deferred and was not executed by this workflow.'
+            '- 1080p120-3source'
           ) | Set-Content (Join-Path $artifactRoot 'release-gate-policy.txt') -Encoding ascii
           $resultRoot = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT 'results'
           if (Test-Path -LiteralPath $resultRoot) {

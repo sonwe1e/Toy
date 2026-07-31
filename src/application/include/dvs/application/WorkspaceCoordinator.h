@@ -40,6 +40,7 @@ public:
         std::function<std::shared_ptr<const std::vector<SequenceAlignmentResult>>()>
             acceptedSequenceAlignments;
         std::function<domain::ProjectId()> createProjectId;
+        std::function<void()> statePublished;
     };
 
     [[nodiscard]] static std::unique_ptr<WorkspaceCoordinator> create(Dependencies dependencies);

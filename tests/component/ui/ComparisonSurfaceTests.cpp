@@ -412,21 +412,34 @@ TEST(ComparisonSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOn
 TEST(ComparisonSurfacePropertyTests, ClampsWipePositionAndNotifiesOnlyOnChange) {
     ComparisonSurface surface;
     int changes = 0;
+    int geometryChanges = 0;
     QObject::connect(&surface, &ComparisonSurface::wipePositionChanged, [&] { ++changes; });
+    QObject::connect(
+        &surface, &ComparisonSurface::presentationGeometryChanged, [&] { ++geometryChanges; });
 
+    surface.setWidth(640.0);
     EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.5);
+    EXPECT_DOUBLE_EQ(surface.wipeSplitLogicalX(), 320.0);
     surface.setViewMode(ComparisonSurface::Wipe);
     surface.setWipePosition(0.25);
     EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.25);
+    EXPECT_DOUBLE_EQ(surface.wipeSplitLogicalX(), 160.0);
     EXPECT_EQ(changes, 1);
+    EXPECT_GE(geometryChanges, 2);
 
     surface.setWipePosition(0.25);
     EXPECT_EQ(changes, 1);
     surface.setWipePosition(-1.0);
-    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.05);
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.0);
     surface.setWipePosition(2.0);
-    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.95);
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 1.0);
     EXPECT_EQ(changes, 3);
+}
+
+TEST(ComparisonSurfacePropertyTests, AcceptsExplicitSingleViewModeValue) {
+    ComparisonSurface surface;
+    surface.setViewMode(ComparisonSurface::Single);
+    EXPECT_EQ(surface.viewMode(), ComparisonSurface::Single);
 }
 
 TEST(ComparisonSurfacePropertyTests, ValidatesThresholdAndSynchronizedViewportMutations) {
@@ -729,6 +742,31 @@ makeSolidSetWithMetadata(platform::FrameBudget& budget,
                                         .range = domain::ColorRange::kFull,
                                         .matrixInferred = false,
                                     });
+}
+
+[[nodiscard]] std::optional<application::FrameSet> makeSingleSolidSet(platform::FrameBudget& budget,
+                                                                      const domain::FrameId frameId,
+                                                                      const std::uint8_t luma) {
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    platform::FrameResourceFactory factory{budget};
+    const std::optional<application::FrameHandle> frame =
+        makeSolidFrame(factory, 16U, 9U, luma, 128U, 128U, metadata);
+    if (!frame.has_value()) {
+        return std::nullopt;
+    }
+    return application::FrameSet::create(frameId,
+                                         domain::MediaTime{0},
+                                         {application::MappedSourceFrame{
+                                             .sourceId = 0U,
+                                             .sourceFrameId = frameId,
+                                             .frame = *frame,
+                                             .presentationTime = domain::MediaTime{0},
+                                             .matchKind = application::FrameMatchKind::ExactIndex,
+                                         }});
 }
 
 [[nodiscard]] std::optional<application::FrameSet>
@@ -1402,6 +1440,82 @@ TEST(ComparisonSurfaceWarpTests, WipeUsesTheSelectedPairAndDraggableSplitPositio
     EXPECT_LT(left.blue(), right.blue());
     EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
+    for (const ComparisonSurface::DifferenceEdge edge : {ComparisonSurface::Edge0And1,
+                                                         ComparisonSurface::Edge0And2,
+                                                         ComparisonSurface::Edge1And2}) {
+        harness.surface.setDifferenceEdge(edge);
+        harness.surface.setWipePosition(0.5);
+        const QImage pairImage = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+        ASSERT_FALSE(pairImage.isNull());
+        const QColor pairLeft = pairImage.pixelColor(pairImage.width() / 4, pairImage.height() / 2);
+        const QColor pairRight =
+            pairImage.pixelColor(pairImage.width() * 3 / 4, pairImage.height() / 2);
+        EXPECT_LT(pairLeft.red(), pairRight.red());
+        EXPECT_LT(pairLeft.green(), pairRight.green());
+        EXPECT_LT(pairLeft.blue(), pairRight.blue());
+    }
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, WipeSplitUsesSurfaceCoordinatesAcrossLetterboxing) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Wipe);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And1);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    const domain::ColorMetadata metadata{
+        .matrix = domain::ColorMatrix::kBt709,
+        .range = domain::ColorRange::kFull,
+        .matrixInferred = false,
+    };
+    std::optional<application::FrameSet> set =
+        makeSolidSetWithMetadata(*budget,
+                                 domain::FrameId{42},
+                                 32U,
+                                 128U,
+                                 128U,
+                                 metadata,
+                                 224U,
+                                 128U,
+                                 128U,
+                                 metadata,
+                                 application::FramePresentation{.rotationDegrees = 90});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(42U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    harness.surface.setWipePosition(0.25);
+    const QImage rightImage = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(rightImage.isNull());
+    harness.surface.setWipePosition(0.75);
+    const QImage leftImage = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(leftImage.isNull());
+
+    const int sampleX = leftImage.width() * 13 / 20;
+    const int sampleY = leftImage.height() / 2;
+    const QColor right = rightImage.pixelColor(sampleX, sampleY);
+    const QColor left = leftImage.pixelColor(sampleX, sampleY);
+    EXPECT_LT(left.red(), right.red());
+    EXPECT_LT(left.green(), right.green());
+    EXPECT_LT(left.blue(), right.blue());
+
+    harness.surface.zoomAt(0.5, 0.5, 2.0);
+    harness.surface.setRoiNormalized(0.1, 0.1, 0.9, 0.9);
+    harness.surface.setWipePosition(0.25);
+    const QImage transformedRight = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    harness.surface.setWipePosition(0.75);
+    const QImage transformedLeft = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(transformedRight.isNull());
+    ASSERT_FALSE(transformedLeft.isNull());
+    const QColor roiRight = transformedRight.pixelColor(sampleX, sampleY);
+    const QColor roiLeft = transformedLeft.pixelColor(sampleX, sampleY);
+    EXPECT_LT(roiLeft.red(), roiRight.red());
+
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));
 }
@@ -1432,6 +1546,31 @@ TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedDiffInOneAnalysis
     EXPECT_GT(difference.red() + difference.green() + difference.blue(), 20);
     ASSERT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
     EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, SingleViewUsesTheWholeSurfaceForItsOnlySource) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Single);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(4U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeSingleSolidSet(*budget, domain::FrameId{44}, 192U);
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(44U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    const QColor upper = image.pixelColor(image.width() / 2, image.height() / 4);
+    const QColor lower = image.pixelColor(image.width() / 2, image.height() * 3 / 4);
+    EXPECT_GT(upper.red() + upper.green() + upper.blue(), 100);
+    expectColorNear(lower, upper, 2);
 
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));

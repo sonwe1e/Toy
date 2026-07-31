@@ -72,6 +72,15 @@ TEST(ComparisonValidatorTests, AcceptsTwoIdenticalSourcesWithFirstAsCanonical) {
     EXPECT_EQ(*result.value().set.canonicalRate(), makeRate());
 }
 
+TEST(ComparisonValidatorTests, AcceptsSingleReviewSourceAsCanonical) {
+    const auto result = ComparisonValidator::validate({makeSource(0)});
+
+    ASSERT_TRUE(result.hasValue());
+    EXPECT_EQ(result.value().set.sourceCount(), 1U);
+    EXPECT_EQ(result.value().set.canonicalSourceId(), 0U);
+    EXPECT_TRUE(result.value().report.isEmpty());
+}
+
 TEST(ComparisonValidatorTests, ReferenceRoleWinsCanonicalSelection) {
     const auto result =
         ComparisonValidator::validate({makeSource(0), makeSource(1, ComparisonRole::kReference)});
@@ -93,10 +102,10 @@ TEST(ComparisonValidatorTests, AcceptsThreeSourcesAndExposesAllById) {
     EXPECT_EQ(result.value().set.find(7), nullptr);
 }
 
-TEST(ComparisonValidatorTests, RejectsFewerThanTwoOrMoreThanThreeSources) {
-    const auto single = ComparisonValidator::validate({makeSource(0)});
-    ASSERT_FALSE(single.hasValue());
-    EXPECT_EQ(single.error().code, MediaErrorCode::kInvalidArgument);
+TEST(ComparisonValidatorTests, RejectsEmptyOrMoreThanThreeSources) {
+    const auto empty = ComparisonValidator::validate({});
+    ASSERT_FALSE(empty.hasValue());
+    EXPECT_EQ(empty.error().code, MediaErrorCode::kInvalidArgument);
 
     const auto quadruple =
         ComparisonValidator::validate({makeSource(0), makeSource(1), makeSource(2), makeSource(3)});

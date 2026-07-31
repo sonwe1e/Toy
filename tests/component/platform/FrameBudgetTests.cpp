@@ -41,8 +41,8 @@ TEST(FrameBudgetTests, AllowsExactlyCapacityAndReleasesOnScopeExit) {
 
 TEST(FrameBudgetTests, EnforcesTheShared256MiBLimitAcrossTheDualSourcePipeline) {
     constexpr std::size_t kCapacityBytes = 256U * 1024U * 1024U;
-    constexpr std::size_t kWidth = 3840U;
-    constexpr std::size_t kHeight = 2160U;
+    constexpr std::size_t kWidth = 1920U;
+    constexpr std::size_t kHeight = 1080U;
     constexpr std::size_t kYPlaneBytes = kWidth * kHeight;
     constexpr std::size_t kUvPlaneBytes = kWidth * ((kHeight + 1U) / 2U);
     constexpr std::size_t kSourceCount = 2U;

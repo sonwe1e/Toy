@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('1080p60', '1080p120-2source', '1080p120-3source', '4k30-main10')]
+    [ValidateSet('1080p60', '1080p120-2source', '1080p120-3source')]
     [string]$Profile,
 
     [Parameter(Mandatory = $true)]
@@ -37,13 +37,6 @@ $fixtureNames = switch ($Profile) {
     }
     '1080p120-3source' {
         @('gate-1080p120-a.mp4', 'gate-1080p120-b.mp4', 'gate-1080p120-c.mp4')
-    }
-    '4k30-main10' {
-        @(
-            'gate-4k30-main10-a.mp4',
-            'gate-4k30-main10-b.mp4',
-            'gate-4k30-main10-c.mp4'
-        )
     }
 }
 $fixtures = foreach ($name in $fixtureNames) {

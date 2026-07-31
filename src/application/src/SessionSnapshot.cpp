@@ -113,7 +113,7 @@ bool SessionSnapshot::isConsistent() const noexcept {
     case domain::SessionState::kLoading:
         return !displayedFrame.has_value() && !validatedComparison;
     case domain::SessionState::kReady:
-        return canonicalFrameCount != 0U && sources.size() >= 2U;
+        return canonicalFrameCount != 0U && !sources.empty();
     case domain::SessionState::kInvalid:
     case domain::SessionState::kError:
         return playbackState == domain::PlaybackState::kPaused;

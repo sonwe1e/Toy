@@ -137,15 +137,21 @@ jobs:
         with:
           arch: x64
 
-      - name: Verify approved unsigned release scope
+      - name: Materialize release signing certificate
         shell: pwsh
+        env:
+          DVS_SIGNING_PFX_BASE64: ${{ secrets.DVS_SIGNING_PFX_BASE64 }}
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
         run: |
-          if ($env:GITHUB_REF_NAME -cne 'v1.1.0') {
-            throw (
-              'The unsigned release exception is approved only for v1.1.0. ' +
-              'Restore Authenticode signing before publishing another version.'
-            )
+          if (-not $env:DVS_SIGNING_PFX_BASE64 -or -not $env:DVS_SIGNING_PFX_PASSWORD) {
+            throw 'Release signing secrets are required.'
           }
+          $certificatePath = Join-Path $env:RUNNER_TEMP "vcstation-signing-${{ github.run_id }}.pfx"
+          [IO.File]::WriteAllBytes(
+            $certificatePath,
+            [Convert]::FromBase64String($env:DVS_SIGNING_PFX_BASE64)
+          )
+          "DVS_SIGNING_PFX=$certificatePath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Resolve toolchain and previous release
         shell: pwsh
@@ -199,8 +205,25 @@ jobs:
           cmake --build --preset release
           ctest --preset release --output-on-failure
 
+      - name: Sign application binaries
+        shell: pwsh
+        env:
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
+        run: |
+          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+          .\tools\sign-release.ps1 `
+            -Path @(
+              '.\out\build\release\bin\VCStation.exe',
+              '.\out\build\release\bin\VCStationCli.exe',
+              '.\out\build\release\bin\VCStationShell.dll'
+            ) `
+            -PfxPath $env:DVS_SIGNING_PFX `
+            -PfxPassword $password
+
       - name: Package and validate release identity
         shell: pwsh
+        env:
+          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
         run: |
           cpack --preset release-zip
           cpack --preset release-msi
@@ -208,6 +231,11 @@ jobs:
           $zip = Resolve-Path ".\out\package\zip\VCStation-$version-windows-x64.zip"
           $msi = Resolve-Path ".\out\package\msi\VCStation-$version-windows-x64.msi"
           wix msi validate $msi.Path
+          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+          .\tools\sign-release.ps1 `
+            -Path $msi.Path `
+            -PfxPath $env:DVS_SIGNING_PFX `
+            -PfxPassword $password
           .\tools\verify-release-version.ps1 `
             -Tag $env:GITHUB_REF_NAME `
             -Executable '.\out\build\release\bin\VCStation.exe' `
@@ -231,11 +259,19 @@ jobs:
           }
           $lines | Set-Content '.\out\package\SHA256SUMS.txt' -Encoding ascii
 
+      - name: Remove release signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          if ($env:DVS_SIGNING_PFX -and (Test-Path -LiteralPath $env:DVS_SIGNING_PFX)) {
+            Remove-Item -LiteralPath $env:DVS_SIGNING_PFX -Force
+          }
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
         with:
           draft: true
-          body_path: docs/releases/v1.1.0.md
+          body_path: docs/releases/v1.2.0.md
           files: |
             out/package/zip/VCStation-${{ needs.validate-version.outputs.version }}-windows-x64.zip
             out/package/msi/VCStation-${{ needs.validate-version.outputs.version }}-windows-x64.msi

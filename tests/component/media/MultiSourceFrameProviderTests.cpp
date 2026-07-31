@@ -306,6 +306,31 @@ TEST(MultiSourceFrameProviderTests, OpensDirectSourcesAndPublishesOnlyACompleteE
     EXPECT_GT(budget.reservedBytes(), 0U);
 }
 
+TEST(MultiSourceFrameProviderTests, OpensAndDecodesOneCanonicalSourceAsACompleteFrameSet) {
+    platform::FrameBudget budget{4U * 1024U * 1024U};
+    MultiSourceFrameProvider provider{budget};
+    const auto events = std::make_shared<RecordingEventSink>();
+    application::FrameProviderOpenRequest open = makeOpenRequest(702U);
+    open.sources.erase(open.sources.begin() + 1, open.sources.end());
+
+    ASSERT_EQ(provider.submit(open, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(1U));
+
+    const application::FrameRequest request{
+        .context = makeFrameContext(703U),
+        .frameId = domain::FrameId{0},
+        .priority = application::FrameRequestPriority::Exact,
+    };
+    ASSERT_EQ(provider.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForEventCount(3U));
+
+    const auto ready = findFrameSetReady(events, request.context);
+    ASSERT_TRUE(ready.has_value());
+    EXPECT_EQ(ready->set.sources().size(), 1U);
+    ASSERT_NE(ready->set.find(0U), nullptr);
+    EXPECT_TRUE(ready->set.find(0U)->hasFrame());
+}
+
 TEST(AlignmentAnalysisServiceTests, CompletesSequenceJobOnIndependentDecodeProvider) {
     AlignmentAnalysisService service;
     const auto events = std::make_shared<AnalysisEventSink>();
@@ -643,8 +668,8 @@ TEST(MultiSourceFrameProviderTests, PublishesForwardSequentialPairsAcrossPlaybac
 
 TEST(MultiSourceFrameProviderTests, SequentialPlaybackDoesNotRetainHistoricalCpuPairs) {
     // One decoded A/B pair fits, but retaining that pair would leave too little budget to decode
-    // the next one. This is the small-fixture equivalent of sustained 4K playback under the
-    // application's fixed 256 MiB frame budget.
+    // the next one. This is the small-fixture equivalent of sustained multi-source playback
+    // under the application's fixed 256 MiB frame budget.
     platform::FrameBudget budget{128U * 1024U};
     MultiSourceFrameProvider provider{budget};
     const auto events = std::make_shared<RecordingEventSink>();

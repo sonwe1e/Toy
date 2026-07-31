@@ -25,11 +25,15 @@ struct OpenComparisonSource final {
     std::string displayName;
 };
 
-// Opens 2-3 sources in one atomic session operation. Source ids are assigned in submission
+// Opens 1-3 sources in one atomic session operation. Source ids are assigned in submission
 // order (0, 1, 2).
 struct OpenComparisonCommand final {
     CommandContext context;
     std::vector<OpenComparisonSource> sources;
+    // Rebuilding a live 1-3 source review session may retain the current canonical media time.
+    // The coordinator captures the old timeline position before advancing the session epoch and
+    // maps it onto the new canonical timeline after probing completes.
+    bool preserveDisplayedTime = false;
 };
 
 // Direct descriptor open bypasses probing (CLI diagnostics and tests). Descriptors must already

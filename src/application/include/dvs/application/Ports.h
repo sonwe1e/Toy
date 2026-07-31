@@ -37,7 +37,7 @@ struct MediaProbeRequest final {
 
 struct FrameProviderOpenRequest final {
     PlaybackRequestContext context;
-    // The session's compared sources, two or three entries in session order. The provider opens
+    // The session's review sources, one to three entries in session order. The provider opens
     // one decode slot per entry and publishes one FrameSet entry per slot.
     std::vector<domain::ComparisonSource> sources;
     // Canonical ownership is explicit because Reference is a semantic role, not a source-order

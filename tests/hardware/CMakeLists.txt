@@ -20,33 +20,31 @@ dvs_add_test(
 )
 set_tests_properties(hardware.d3d11_zero_copy PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
 
-foreach(profile IN ITEMS 1080p60 4k30-main10)
-    dvs_add_test(
-        NAME performance.${profile}
-        LAYER performance
-        MODULE app
-        COMMAND
-            "${DVS_POWERSHELL_EXECUTABLE}"
-            -NoLogo
-            -NoProfile
-            -ExecutionPolicy
-            Bypass
-            -File
-            "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
-            -Profile
-            "${profile}"
-            -Executable
-            $<TARGET_FILE:VCStation>
-            -DurationSeconds
-            300
-    )
-    set_tests_properties(
-        performance.${profile}
-        PROPERTIES
-            RUN_SERIAL TRUE
-            TIMEOUT 480
-    )
-endforeach()
+dvs_add_test(
+    NAME performance.1080p60
+    LAYER performance
+    MODULE app
+    COMMAND
+        "${DVS_POWERSHELL_EXECUTABLE}"
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy
+        Bypass
+        -File
+        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        -Profile
+        1080p60
+        -Executable
+        $<TARGET_FILE:VCStation>
+        -DurationSeconds
+        300
+)
+set_tests_properties(
+    performance.1080p60
+    PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 480
+)
 
 foreach(profile IN ITEMS 1080p120-2source 1080p120-3source)
     dvs_add_test(

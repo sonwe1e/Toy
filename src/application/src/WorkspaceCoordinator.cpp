@@ -853,6 +853,13 @@ private:
 
     void publishSnapshot() {
         publishedSnapshot_ = std::make_shared<const WorkspaceSnapshot>(state_);
+        if (dependencies_.statePublished) {
+            try {
+                dependencies_.statePublished();
+            } catch (...) {
+                // Publication callbacks are wake-up hints and must not alter coordinator state.
+            }
+        }
     }
 
     Dependencies dependencies_;

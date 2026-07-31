@@ -103,7 +103,8 @@ struct PreparedSetDraw final {
 [[nodiscard]] bool isValid(const SurfaceViewMode value) noexcept {
     return value == SurfaceViewMode::SideBySide || value == SurfaceViewMode::ThreeUp ||
            value == SurfaceViewMode::ReferenceFocus || value == SurfaceViewMode::Difference ||
-           value == SurfaceViewMode::AnalysisGrid || value == SurfaceViewMode::Wipe;
+           value == SurfaceViewMode::AnalysisGrid || value == SurfaceViewMode::Wipe ||
+           value == SurfaceViewMode::Single;
 }
 
 [[nodiscard]] bool isValid(const SurfaceDifferenceMetric value) noexcept {
@@ -431,8 +432,8 @@ bool SurfaceRenderState::isValid() const noexcept {
            dvs::platform::isValid(differenceEdge) && dvs::platform::isValid(differenceFilter) &&
            dvs::platform::isValid(thresholdPolicy) && std::isfinite(threshold) &&
            threshold >= 0.0F && threshold <= 1.0F && viewTransform.isValid() &&
-           (!roiEnabled || roi.isValid()) && std::isfinite(wipePosition) && wipePosition >= 0.05F &&
-           wipePosition <= 0.95F && referenceSlot < 3U;
+           (!roiEnabled || roi.isValid()) && std::isfinite(wipePosition) && wipePosition >= 0.0F &&
+           wipePosition <= 1.0F && referenceSlot < 3U;
 }
 
 SurfaceSplitLayout computeSurfaceSplit(const float logicalWidth,
@@ -1158,18 +1159,28 @@ private:
             }
             appendLetterboxBars(state, bounds, destination, prepared);
 
-            const float position = std::clamp(state.wipePosition, 0.05F, 0.95F);
+            const float position = std::clamp(state.wipePosition, 0.0F, 1.0F);
+            const float splitX = bounds.x + bounds.width * position;
+            const float leftWidth = std::clamp(splitX - destination.x, 0.0F, destination.width);
+            const float contentPosition = leftWidth / destination.width;
             VideoDraw left = makeVideoDraw(state, destination, *leftFrame, *leftBacking);
             VideoDraw right = makeVideoDraw(state, destination, *rightFrame, *rightBacking);
-            left.compose.destinationRect[2U] *= position;
-            left.compose.sourceUvRect[2U] *= position;
-            right.compose.destinationRect[0U] += destination.width * position;
-            right.compose.destinationRect[2U] *= 1.0F - position;
-            right.compose.sourceUvRect[0U] += right.compose.sourceUvRect[2U] * position;
-            right.compose.sourceUvRect[2U] *= 1.0F - position;
-            prepared.videoDraws[0U] = std::move(left);
-            prepared.videoDraws[1U] = std::move(right);
-            prepared.videoDrawCount = 2U;
+            const float sourceUvWidth = left.compose.sourceUvRect[2U];
+            if (leftWidth > 0.0F) {
+                left.compose.destinationRect[2U] = leftWidth;
+                left.compose.sourceUvRect[2U] = sourceUvWidth * contentPosition;
+                prepared.videoDraws[prepared.videoDrawCount] = std::move(left);
+                ++prepared.videoDrawCount;
+            }
+            const float rightWidth = destination.width - leftWidth;
+            if (rightWidth > 0.0F) {
+                right.compose.destinationRect[0U] = destination.x + leftWidth;
+                right.compose.destinationRect[2U] = rightWidth;
+                right.compose.sourceUvRect[0U] += sourceUvWidth * contentPosition;
+                right.compose.sourceUvRect[2U] = sourceUvWidth * (1.0F - contentPosition);
+                prepared.videoDraws[prepared.videoDrawCount] = std::move(right);
+                ++prepared.videoDrawCount;
+            }
             return true;
         };
 
@@ -1203,7 +1214,15 @@ private:
             std::array<std::size_t, 3U> regionSlots{0U, 1U, 2U};
             std::size_t regionCount = 0U;
             std::optional<SurfaceRect> gridDifferenceBounds;
-            if (state.viewMode == SurfaceViewMode::AnalysisGrid) {
+            if (state.viewMode == SurfaceViewMode::Single) {
+                regions[0U] = SurfaceRect{
+                    .x = 0.0F,
+                    .y = 0.0F,
+                    .width = state.logicalWidth,
+                    .height = state.logicalHeight,
+                };
+                regionCount = 1U;
+            } else if (state.viewMode == SurfaceViewMode::AnalysisGrid) {
                 const std::uint32_t leftPixels = state.pixelWidth / 2U;
                 const std::uint32_t topPixels = state.pixelHeight / 2U;
                 const float leftWidth = state.logicalWidth * static_cast<float>(leftPixels) /

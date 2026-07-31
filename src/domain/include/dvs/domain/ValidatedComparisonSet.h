@@ -10,7 +10,7 @@
 
 namespace dvs::domain {
 
-// An immutable set of 2-3 validated sources sharing one canonical timeline definition. The
+// An immutable set of 1-3 validated sources sharing one canonical timeline definition. The
 // canonical source defines frame positions through its rational rate (when CFR) and its
 // display-order frame count. When a reference role is assigned it is always the canonical
 // source; otherwise the first source in load order is canonical.

@@ -29,9 +29,9 @@ G:\GitHubActions\tools\wix\wix.exe extension add `
   --global WixToolset.UI.wixext/4.0.4
 ```
 
-把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。v1.1.0 经明确批准以
-无 Authenticode 签名的 ZIP/MSI 发布；该例外只适用于 v1.1.0，后续版本恢复签名后
-仍需要 Windows SDK 的 `signtool.exe` 以及对应证书 Secrets。MSI 是 per-machine，
+把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。v1.1.0 的未签名例外已经
+结束；v1.2.0 起必须提供 Windows SDK 的 `signtool.exe` 以及对应证书 Secrets，并在
+计算校验和前签名 GUI、CLI、Shell DLL 和 MSI。MSI 是 per-machine，
 因此执行 `packaged-smoke` 的交互式 runner 进程仍必须以管理员身份启动；测试会
 拒绝覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
 
@@ -83,14 +83,8 @@ gate-1080p120-b.mp4
 gate-1080p120-c.mp4
 ```
 
-4K30 Main10 当前不阻断 v1.1.0 发布，但测试入口仍然保留。后续恢复该门禁时，素材
-目录还需要包含：
-
-```text
-gate-4k30-main10-a.mp4
-gate-4k30-main10-b.mp4
-gate-4k30-main10-c.mp4
-```
+4K 不属于活动性能矩阵，runner 不需要 4K fixture。HEVC Main10/P010 与 D3D11VA
+零拷贝正确性继续由仓库内的小分辨率 fixture 覆盖。
 
 ## 运行方式与安全边界
 
@@ -121,8 +115,6 @@ status: online
 labels: self-hosted, Windows, X64, dvs-toolchain-4.4, dvs-gpu
 ```
 
-常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。v1.1.0 的阻断门槛
-包括 1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。4K30 Main10
-用例仍可通过 `ctest --preset performance-d3d11 -R
-"^performance\.4k30-main10$" --output-on-failure` 单独执行，但其结果暂不阻断
-v1.1.0。所有工作流日志作为 artifact 保留 14 天。
+常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。阻断门槛包括
+1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。所有工作流日志
+作为 artifact 保留 14 天。

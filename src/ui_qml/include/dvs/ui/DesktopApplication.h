@@ -1,12 +1,13 @@
 #pragma once
 
+#include <QList>
+#include <QUrl>
+
 #include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-
-class QUrl;
 
 namespace dvs::ui {
 
@@ -44,6 +45,8 @@ public:
     [[nodiscard]] int exec();
     void exit(int exitCode) noexcept;
     [[nodiscard]] double activeScreenRefreshRate() const noexcept;
+    [[nodiscard]] bool reviewLocalFiles(const QList<QUrl>& files);
+    void activateWindow() noexcept;
 
     // Drives the same QML properties, button handlers, and window key events as a user. These
     // helpers keep the end-to-end smoke path on the declarative UI boundary instead of calling
@@ -56,7 +59,7 @@ public:
     [[nodiscard]] bool clickControlForAutomation(std::string_view objectName) noexcept;
     [[nodiscard]] bool focusControlForAutomation(std::string_view objectName) noexcept;
     [[nodiscard]] bool clickTimelineForAutomation(double normalizedPosition) noexcept;
-    [[nodiscard]] bool sendKeyForAutomation(int key) noexcept;
+    [[nodiscard]] bool sendKeyForAutomation(int key, int modifiers = 0) noexcept;
     [[nodiscard]] std::optional<std::string>
     objectStringPropertyForAutomation(std::string_view objectName,
                                       std::string_view propertyName) const;

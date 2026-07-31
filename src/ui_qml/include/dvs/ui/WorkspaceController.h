@@ -6,6 +6,7 @@
 #include <QString>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <memory>
 
@@ -26,6 +27,9 @@ class WorkspaceController final : public QObject {
     Q_PROPERTY(bool relinkRequired READ relinkRequired NOTIFY stateChanged)
     Q_PROPERTY(int nextRelinkSourceId READ nextRelinkSourceId NOTIFY stateChanged)
     Q_PROPERTY(QVariantList sourceDiagnostics READ sourceDiagnostics NOTIFY stateChanged)
+    Q_PROPERTY(
+        QVariantMap restoredPresentationState READ restoredPresentationState NOTIFY stateChanged)
+    Q_PROPERTY(qulonglong restoredViewSerial READ restoredViewSerial NOTIFY stateChanged)
 
 public:
     explicit WorkspaceController(application::WorkspaceCoordinator& workspace,
@@ -46,11 +50,15 @@ public:
     [[nodiscard]] bool relinkRequired() const noexcept;
     [[nodiscard]] int nextRelinkSourceId() const noexcept;
     [[nodiscard]] QVariantList sourceDiagnostics() const;
+    [[nodiscard]] QVariantMap restoredPresentationState() const;
+    [[nodiscard]] qulonglong restoredViewSerial() const noexcept;
 
     Q_INVOKABLE bool openProject(const QUrl& projectFile);
     Q_INVOKABLE bool save();
     Q_INVOKABLE bool saveAs(const QUrl& projectFile);
     Q_INVOKABLE bool relinkSource(int sourceId, const QUrl& sourceFile);
+    Q_INVOKABLE bool updatePresentationState(const QVariantMap& state);
+    Q_INVOKABLE void refreshProjection();
     Q_INVOKABLE void stop() noexcept;
 
 Q_SIGNALS:

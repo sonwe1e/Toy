@@ -71,6 +71,8 @@ nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
         return platform::SurfaceViewMode::AnalysisGrid;
     case ComparisonSurface::Wipe:
         return platform::SurfaceViewMode::Wipe;
+    case ComparisonSurface::Single:
+        return platform::SurfaceViewMode::Single;
     case ComparisonSurface::SideBySide:
         break;
     }
@@ -309,7 +311,7 @@ ComparisonSurface::ViewMode ComparisonSurface::viewMode() const noexcept {
 
 void ComparisonSurface::setViewMode(const ViewMode value) {
     if ((value != SideBySide && value != ThreeUp && value != ReferenceFocus &&
-         value != Difference && value != AnalysisGrid && value != Wipe) ||
+         value != Difference && value != AnalysisGrid && value != Wipe && value != Single) ||
         viewMode_ == value) {
         return;
     }
@@ -383,13 +385,18 @@ void ComparisonSurface::setWipePosition(const qreal value) {
     if (!std::isfinite(value)) {
         return;
     }
-    const qreal clamped = std::clamp(value, 0.05, 0.95);
+    const qreal clamped = std::clamp(value, 0.0, 1.0);
     if (qFuzzyCompare(wipePosition_, clamped)) {
         return;
     }
     wipePosition_ = clamped;
     emit wipePositionChanged();
+    emit presentationGeometryChanged();
     update();
+}
+
+qreal ComparisonSurface::wipeSplitLogicalX() const noexcept {
+    return width() * wipePosition_;
 }
 
 bool ComparisonSurface::exactPlaneAvailable() const noexcept {
@@ -582,6 +589,41 @@ void ComparisonSurface::clearRoi() {
     update();
 }
 
+void ComparisonSurface::restoreViewport(const qreal centerX,
+                                        const qreal centerY,
+                                        const qreal scale,
+                                        const bool roiEnabled,
+                                        const qreal roiLeft,
+                                        const qreal roiTop,
+                                        const qreal roiRight,
+                                        const qreal roiBottom) {
+    if (!std::isfinite(centerX) || !std::isfinite(centerY) || !std::isfinite(scale) ||
+        !std::isfinite(roiLeft) || !std::isfinite(roiTop) || !std::isfinite(roiRight) ||
+        !std::isfinite(roiBottom) || scale < 1.0 || scale > 64.0) {
+        return;
+    }
+    const qreal visible = 1.0 / scale;
+    const qreal minimumCenter = visible * 0.5;
+    const qreal maximumCenter = 1.0 - minimumCenter;
+    if (centerX < minimumCenter || centerX > maximumCenter || centerY < minimumCenter ||
+        centerY > maximumCenter ||
+        (roiEnabled && (roiLeft < 0.0 || roiTop < 0.0 || roiRight > 1.0 || roiBottom > 1.0 ||
+                        roiLeft >= roiRight || roiTop >= roiBottom))) {
+        return;
+    }
+
+    viewCenterX_ = centerX;
+    viewCenterY_ = centerY;
+    viewScale_ = scale;
+    roiEnabled_ = roiEnabled;
+    roiLeft_ = roiEnabled ? roiLeft : 0.0;
+    roiTop_ = roiEnabled ? roiTop : 0.0;
+    roiRight_ = roiEnabled ? roiRight : 1.0;
+    roiBottom_ = roiEnabled ? roiBottom : 1.0;
+    emit viewportChanged();
+    update();
+}
+
 int ComparisonSurface::referenceSlot() const noexcept {
     return referenceSlot_;
 }
@@ -644,6 +686,7 @@ QSGNode* ComparisonSurface::updatePaintNode(QSGNode* const oldNode, UpdatePaintN
 void ComparisonSurface::geometryChange(const QRectF& newGeometry, const QRectF& oldGeometry) {
     QQuickItem::geometryChange(newGeometry, oldGeometry);
     if (newGeometry.size() != oldGeometry.size()) {
+        emit presentationGeometryChanged();
         update();
     }
 }

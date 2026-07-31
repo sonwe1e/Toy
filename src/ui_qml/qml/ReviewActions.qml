@@ -1,0 +1,72 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+
+QtObject {
+    id: actions
+
+    required property var controller
+    property bool shortcutsEnabled: true
+    property int oneSecondStepFrames: 30
+    property bool wipeEnabled: false
+    property real wipePosition: 0.5
+
+    readonly property bool canFirst: Boolean(controller && controller.canFirst)
+    readonly property bool canPrevious: Boolean(controller && controller.canPrevious)
+    readonly property bool canNext: Boolean(controller && controller.canNext)
+    readonly property bool canLast: Boolean(controller && controller.canLast)
+    readonly property bool canTogglePlayback: Boolean(controller && (controller.playing ? controller.canPause : controller.canPlay))
+
+    signal wipePositionRequested(real position)
+
+    function firstFrame() {
+        if (canFirst)
+            controller.first();
+    }
+
+    function previousFrame() {
+        if (canPrevious)
+            controller.previous();
+    }
+
+    function nextFrame() {
+        if (canNext)
+            controller.next();
+    }
+
+    function lastFrame() {
+        if (canLast)
+            controller.last();
+    }
+
+    function stepBackwardFive() {
+        if (canPrevious)
+            controller.stepFrames(-5);
+    }
+
+    function stepForwardFive() {
+        if (canNext)
+            controller.stepFrames(5);
+    }
+
+    function stepBackwardSecond() {
+        if (canPrevious)
+            controller.stepFrames(-Math.max(1, oneSecondStepFrames));
+    }
+
+    function stepForwardSecond() {
+        if (canNext)
+            controller.stepFrames(Math.max(1, oneSecondStepFrames));
+    }
+
+    function togglePlayback() {
+        if (canTogglePlayback)
+            controller.togglePlayback();
+    }
+
+    function moveWipe(delta) {
+        if (!wipeEnabled)
+            return;
+        wipePositionRequested(Math.max(0, Math.min(1, wipePosition + delta)));
+    }
+}

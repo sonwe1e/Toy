@@ -30,7 +30,9 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QString sourceAFilename READ sourceAFilename NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBFilename READ sourceBFilename NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCFilename READ sourceCFilename NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList sourceUrls READ sourceUrls NOTIFY stateChanged)
     Q_PROPERTY(QAbstractItemModel* sources READ sources CONSTANT)
+    Q_PROPERTY(int sourceCount READ sourceCount NOTIFY stateChanged)
     Q_PROPERTY(ReviewDisplayState displayState READ displayState NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool framePending READ framePending NOTIFY stateChanged)
@@ -100,7 +102,9 @@ public:
     [[nodiscard]] QString sourceAFilename() const;
     [[nodiscard]] QString sourceBFilename() const;
     [[nodiscard]] QString sourceCFilename() const;
+    [[nodiscard]] QVariantList sourceUrls() const;
     [[nodiscard]] QAbstractItemModel* sources() const noexcept;
+    [[nodiscard]] int sourceCount() const noexcept;
     [[nodiscard]] ReviewDisplayState displayState() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] bool framePending() const noexcept;
@@ -143,9 +147,13 @@ public:
     [[nodiscard]] bool canPause() const noexcept;
 
     Q_INVOKABLE bool openComparison(const QUrl& first, const QUrl& second);
+    Q_INVOKABLE bool openSources(const QVariantList& urls, int referenceSourceIndex);
+    // Rebuilds a ready session with a new 1-3 source topology while mapping the current
+    // canonical MediaTime onto the replacement timeline. The rebuilt session stays paused.
+    Q_INVOKABLE bool reopenSources(const QVariantList& urls, int referenceSourceIndex);
     // Opens two required sources plus one optional third source. referenceSourceIndex is -1 for
-    // prediction-only comparison or the zero-based index of the source that owns the canonical
-    // timeline. The core command remains a dynamic 2-3 source collection.
+    // prediction-only comparison or the zero-based canonical source. General 1-3 source opening
+    // uses openSources().
     Q_INVOKABLE bool openComparisonSet(const QUrl& first,
                                        const QUrl& second,
                                        const QUrl& third,

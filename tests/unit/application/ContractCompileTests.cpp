@@ -143,6 +143,11 @@ TEST(ContractCompileTests, FrameSetRequiresCanonicalValidityAndConsistentEntries
     EXPECT_EQ(complete->find(1)->sourceFrameId, domain::FrameId{0});
     EXPECT_EQ(complete->find(2), nullptr);
 
+    const auto single =
+        FrameSet::create(domain::FrameId{0}, domain::MediaTime{0}, {mapped(0, *handleA)});
+    ASSERT_TRUE(single.has_value());
+    EXPECT_TRUE(single->isComplete());
+
     const auto partial = FrameSet::create(
         domain::FrameId{0}, domain::MediaTime{0}, {mapped(0, *handleA), missing(1)});
     ASSERT_TRUE(partial.has_value());
@@ -178,6 +183,26 @@ TEST(ContractCompileTests, SnapshotCarriesIndependentGraphicsReadiness) {
 
     empty.graphicsReady = true;
     EXPECT_TRUE(empty.isConsistent());
+
+    SessionSnapshot singleReady{
+        .sessionId = domain::SessionId{9},
+        .sessionEpoch = domain::SessionEpoch{2},
+        .playbackGeneration = domain::PlaybackGeneration{7},
+        .deviceGeneration = domain::DeviceGeneration{2},
+        .sessionState = domain::SessionState::kReady,
+        .playbackState = domain::PlaybackState::kPaused,
+        .displayedFrame = domain::FrameId{0},
+        .canonicalFrameCount = 1U,
+        .sources =
+            {
+                SessionSourceView{
+                    .sourceId = 0U,
+                    .role = domain::ComparisonRole::kPrediction,
+                    .displayName = "A",
+                },
+            },
+    };
+    EXPECT_TRUE(singleReady.isConsistent());
 
     SessionSnapshot ready{
         .sessionId = domain::SessionId{10},

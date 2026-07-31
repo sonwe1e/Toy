@@ -84,6 +84,17 @@ dvs_add_test(
 )
 
 dvs_add_test(
+    NAME app.ui-single-source-smoke
+    LAYER e2e
+    MODULE app
+    TIMEOUT 40
+    COMMAND
+        $<TARGET_FILE:VCStation>
+        --ui-smoke
+        "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+)
+
+dvs_add_test(
     NAME app.ui-three-source-smoke
     LAYER e2e
     MODULE app

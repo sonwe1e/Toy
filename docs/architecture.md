@@ -1,30 +1,31 @@
 # Target Architecture
 
 Status: **phases 0–6 implemented and locally validated**. The FrameSet model,
-2–3 source validation with compatibility reports, missing-frame semantics, parallel
+1–3 source validation with compatibility reports, missing-frame semantics, parallel
 multi-source decode/render pipeline, three-up/reference-focus layouts, selectable
 difference edges, confidence-gated global/sequence alignment, manual anchors, and
 timeline diagnostics are in the codebase today. Phase 5 includes the GUI project
-open/save/relink loop and schema v3. Phase 6 now includes synchronized pan/zoom, ROI,
+open/save/relink loop and schema v4. Phase 6 now includes synchronized pan/zoom, ROI,
 threshold masks, the four-panel analysis grid, exact-plane difference with a persistent
 exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
 transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
 array slices flow directly to plane SRVs while an AVFrame lifetime anchor prevents premature
-surface reuse. Three-source 1080p60 and 4K30 Main10 visible-window hardware gates both pass
-for five continuous minutes with no source split, bounded frame memory, stable worker counts,
-and shutdown well below the seven-second limit.
+surface reuse. The active visible-window hardware matrix covers three-source 1080p60 for five
+continuous minutes and two-/three-source 1080p120 for one minute with no source split, bounded
+frame memory, stable worker counts, and shutdown well below the seven-second limit. Small P010
+fixtures retain 10-bit and zero-copy correctness coverage without an active 4K profile.
 The historical A/B design is archived in
 [design/architecture-overview.md](design/architecture-overview.md).
 
-VCStation (VideoCompareStation) is a VFI-dedicated comparator. Its job is not "play two videos" but
-"present one canonical frame position across 2–3 sources, atomically, with explicit
-alignment state and pairwise difference maps".
+VCStation (VideoCompareStation) is a frame-exact Windows video workstation. It directly plays one
+source, or presents one canonical frame position across two to three sources atomically with
+explicit alignment state and pairwise difference maps.
 
 ## Core data model (Phase 2)
 
 The hardcoded `FramePair` (two mandatory A/B frames) is replaced by `FrameSet`:
 
-- A `ComparisonSession` holds 2–3 `ComparisonSource` entries (`SourceId` +
+- A review session holds 1–3 `ComparisonSource` entries (`SourceId` +
   `ComparisonRole::Reference | Prediction`), an optional `referenceSource`,
   a `canonicalSource` that defines the frame timeline, and an `AlignmentPolicy`.
 - A `FrameSet` carries the canonical `FrameId`/time and one `MappedSourceFrame` per
@@ -46,6 +47,7 @@ the session, not reasons to refuse to open it.
 
 ```text
 QML
+  ├── ReviewActions             (shared menu/button/shortcut command semantics)
   │
 ReviewController / SourceListModel
   │
@@ -64,10 +66,21 @@ ComparisonSurface / D3D11      (2-up, 3-up, reference-focus, analysis-grid)
 PresentationAck                (UI frame counter advances only after real paint)
 ```
 
-Per-source decoder slots make frame latency `max(T_sources) + T_assemble` instead of
+Per-source decoder slots publish into a provider-owned completion event queue; no provider worker
+blocks waiting for every actor mailbox. Frame latency is `max(T_sources) + T_assemble` instead of
 serialized `T_A + T_B` work. The existing frame-provider
 priority scheme (control > exact > sequential > prefetch), cancellation by request
 identity, and bounded set cache remain intact.
+
+Source-count transitions use the same atomic open pipeline rather than hot-inserting decoder
+actors. A replacement open stops active cadence, captures the displayed canonical `MediaTime`,
+advances session epoch and playback generation, opens the new 1–3 source topology, maps the saved
+time through the new canonical timeline, and presents that complete FrameSet while paused.
+
+The QML shell is canvas-first: the viewport owns the window and menu/source/comparison/inspector/
+transport chrome only contributes margins while visible. `ReviewActions` remains instantiated when
+chrome is hidden, so transport controls, menus, and shortcuts share one command path. Full screen
+and chrome visibility are independent transient window states and are not persisted in projects.
 
 ## Frame-step semantics
 

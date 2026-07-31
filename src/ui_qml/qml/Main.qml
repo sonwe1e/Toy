@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
+import QtQuick.Dialogs as NativeDialogs
 import QtQuick.Window
 // Dvs.Ui is registered by the C++ host before this document is loaded.
 // qmllint disable import
@@ -41,11 +41,16 @@ ApplicationWindow {
     // -1 means prediction-only; otherwise the selected source defines the canonical timeline.
     property int referenceSourceIndex: 0
     property bool inspectorOpen: false
+    property bool chromeVisible: true
+    property int visibilityBeforeFullScreen: Window.Windowed
+    property string immersiveHudText: ""
+    property bool immersiveHudVisible: false
     property bool showFramePending: false
     property real wipePosition: 0.5
     property var pendingDroppedVideos: []
     property string dropError: ""
     property string exportMessage: ""
+    property var appliedRestoredViewSerial: 0
 
     readonly property bool busy: Boolean((controller && controller.busy) || (workspace && workspace.busy))
     readonly property bool framePending: Boolean(controller && controller.framePending)
@@ -55,6 +60,7 @@ ApplicationWindow {
     readonly property bool relinkRequired: Boolean(workspace && workspace.relinkRequired)
     readonly property string workspaceError: String(workspace && workspace.errorTechnicalDetail ? workspace.errorTechnicalDetail : "")
     readonly property bool playing: Boolean(controller && controller.playing)
+    readonly property bool fullScreen: visibility === Window.FullScreen
     readonly property bool graphicsReady: Boolean(controller && controller.graphicsReady)
     readonly property var currentFrame: controller ? controller.currentFrame : -1
     readonly property var totalFrames: controller ? controller.totalFrames : 0
@@ -65,6 +71,8 @@ ApplicationWindow {
     readonly property bool sourceAMissing: Boolean(!controller || controller.sourceAMissing)
     readonly property bool sourceBMissing: Boolean(!controller || controller.sourceBMissing)
     readonly property bool sourceCMissing: Boolean(!controller || controller.sourceCMissing)
+    readonly property int sourceCount: controller ? Number(controller.sourceCount) : 0
+    readonly property bool singleMode: sourceCount === 1
     readonly property string pairErrorKey: controller ? controller.pairErrorKey : ""
     readonly property string frameMappingStatus: controller ? controller.frameMappingStatus : ""
     readonly property string alignmentEstimateStatus: controller ? controller.alignmentEstimateStatus : ""
@@ -108,13 +116,21 @@ ApplicationWindow {
     readonly property bool canLastAction: graphicsReady && !busy && Boolean(controller && controller.canLast)
     readonly property bool canPlayAction: graphicsReady && !busy && Boolean(controller && controller.canPlay)
     readonly property bool canPauseAction: !busy && Boolean(controller && controller.canPause)
-    readonly property int largeStepFrames: preferences ? preferences.largeStepFrames : 10
     // ComparisonSurface is a C++ type registered by the host.
     // qmllint disable unqualified
-    readonly property bool analysisGridMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.AnalysisGrid : false
-    readonly property bool differenceMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Difference || analysisGridMode : false
-    readonly property bool wipeMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.Wipe : false
-    readonly property bool sideBySideMode: preferences ? Number(preferences.viewMode) === ComparisonSurface.SideBySide : false
+    readonly property int effectiveViewMode: {
+        if (singleMode)
+            return ComparisonSurface.Single;
+        const requested = preferences ? Number(preferences.viewMode) : ComparisonSurface.SideBySide;
+        if (sourceCount === 2 && (requested === ComparisonSurface.ThreeUp || requested === ComparisonSurface.ReferenceFocus || requested === ComparisonSurface.AnalysisGrid))
+            return ComparisonSurface.SideBySide;
+        return requested === ComparisonSurface.Single ? ComparisonSurface.SideBySide : requested;
+    }
+    readonly property bool analysisGridMode: effectiveViewMode === ComparisonSurface.AnalysisGrid
+    readonly property bool differenceMode: effectiveViewMode === ComparisonSurface.Difference || analysisGridMode
+    readonly property bool wipeMode: effectiveViewMode === ComparisonSurface.Wipe
+    readonly property bool sideBySideMode: effectiveViewMode === ComparisonSurface.SideBySide
+    readonly property bool threeUpMode: effectiveViewMode === ComparisonSurface.ThreeUp
     // qmllint enable unqualified
     readonly property int differenceEdge: preferences ? Number(preferences.differenceEdge) : 0
     property bool differenceThresholdEnabled: false
@@ -170,8 +186,8 @@ ApplicationWindow {
     readonly property bool timelineEnabled: graphicsReady && !busy && Boolean(controller && controller.canFirst) && totalFrames > 0
     readonly property bool globalMediaShortcutsEnabled: !focusBlocksGlobalMediaShortcuts(root.activeFocusItem)
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
-    readonly property string overlayTitle: busy ? qsTr("Loading comparison...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open comparison") : qsTr("Drop two or three videos here")))
-    readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Select two or three sources, choose the Reference, then open the comparison.")))
+    readonly property string overlayTitle: busy ? qsTr("Loading review...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open review") : qsTr("Drop one to three videos here")))
+    readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Open one video for playback and frame review, or two to three videos for comparison.")))
     readonly property bool overlayVisible: (busy && currentFrame < 0) || !graphicsReady || currentFrame < 0 || (hasErrors && !frameErrorBannerVisible)
 
     onFramePendingChanged: {
@@ -181,6 +197,16 @@ ApplicationWindow {
             framePendingDelay.stop();
             showFramePending = false;
         }
+    }
+
+    onCurrentFrameChanged: {
+        if (!chromeVisible && currentFrame >= 0)
+            showImmersiveHud(frameText);
+    }
+
+    onPlayingChanged: {
+        if (!chromeVisible && currentFrame >= 0)
+            showImmersiveHud(playing ? qsTr("Playing · %1").arg(frameText) : qsTr("Paused · %1").arg(frameText));
     }
 
     function fileName(fileUrl) {
@@ -238,11 +264,28 @@ ApplicationWindow {
             return;
         }
         if (normalizedUrls.length === 1) {
+            const existing = selectedSourceUrls();
+            if (sourceCount > 0 && existing.length === sourceCount && existing.length < 3) {
+                const candidate = normalizedUrls[0].toString();
+                for (const current of existing) {
+                    if (current.toString() === candidate) {
+                        dropError = qsTr("That video is already part of the current review.");
+                        return;
+                    }
+                }
+                existing.push(normalizedUrls[0]);
+                dropError = "";
+                setDroppedVideoOrder(existing);
+                dropReviewDialog.open();
+                return;
+            }
             selectedSourceA = normalizedUrls[0];
             selectedSourceB = "";
             selectedSourceC = "";
             sourceOffsetValues = {};
-            dropError = qsTr("Source A selected. Drop one or two more videos to compare.");
+            referenceSourceIndex = 0;
+            dropError = "";
+            controller.openSources([selectedSourceA], 0);
             return;
         }
         dropError = "";
@@ -250,13 +293,131 @@ ApplicationWindow {
         dropReviewDialog.open();
     }
 
-    function openDroppedComparison() {
+    function openDroppedComparison(referenceIndex) {
         selectedSourceA = pendingDroppedVideos[0];
         selectedSourceB = pendingDroppedVideos[1];
         selectedSourceC = pendingDroppedVideos.length > 2 ? pendingDroppedVideos[2] : "";
         sourceOffsetValues = {};
-        referenceSourceIndex = dropReferenceCombo.currentIndex === pendingDroppedVideos.length ? -1 : dropReferenceCombo.currentIndex;
-        controller.openComparisonSet(selectedSourceA, selectedSourceB, selectedSourceC, referenceSourceIndex);
+        referenceSourceIndex = referenceIndex;
+        if (preferences && pendingDroppedVideos.length === 3)
+            preferences.viewMode = 1;
+        const urls = selectedSourceUrls();
+        if (sourceCount > 0)
+            controller.reopenSources(urls, referenceSourceIndex);
+        else
+            controller.openSources(urls, referenceSourceIndex);
+    }
+
+    function selectedSourceUrls() {
+        const urls = [];
+        const loadedUrls = controller && controller.sourceUrls ? controller.sourceUrls : [];
+        if (hasSelectedSourceA)
+            urls.push(selectedSourceA);
+        else if (loadedUrls.length > 0)
+            urls.push(loadedUrls[0]);
+        if (hasSelectedSourceB)
+            urls.push(selectedSourceB);
+        else if (loadedUrls.length > 1)
+            urls.push(loadedUrls[1]);
+        if (hasSelectedSourceC)
+            urls.push(selectedSourceC);
+        else if (loadedUrls.length > 2)
+            urls.push(loadedUrls[2]);
+        return urls;
+    }
+
+    function openSelectedSources(preservePosition) {
+        const urls = selectedSourceUrls();
+        if (urls.length === 0)
+            return false;
+        const canonical = referenceSourceIndex >= 0 && referenceSourceIndex < urls.length ? referenceSourceIndex : 0;
+        sourceOffsetValues = {};
+        return preservePosition && sourceCount > 0 ? controller.reopenSources(urls, canonical) : controller.openSources(urls, canonical);
+    }
+
+    function removeSelectedSource(index) {
+        const urls = selectedSourceUrls();
+        if (index <= 0 || index >= urls.length)
+            return false;
+        urls.splice(index, 1);
+        selectedSourceA = urls.length > 0 ? urls[0] : "";
+        selectedSourceB = urls.length > 1 ? urls[1] : "";
+        selectedSourceC = urls.length > 2 ? urls[2] : "";
+        if (referenceSourceIndex === index)
+            referenceSourceIndex = 0;
+        else if (referenceSourceIndex > index)
+            referenceSourceIndex -= 1;
+        return controller.reopenSources(urls, referenceSourceIndex);
+    }
+
+    function showImmersiveHud(message) {
+        immersiveHudText = message;
+        immersiveHudVisible = true;
+        immersiveHudTimer.restart();
+    }
+
+    function toggleChrome() {
+        chromeVisible = !chromeVisible;
+        if (!chromeVisible) {
+            inspectorOpen = false;
+            showImmersiveHud(frameText);
+        }
+    }
+
+    function toggleFullScreen() {
+        if (fullScreen) {
+            if (visibilityBeforeFullScreen === Window.Maximized)
+                showMaximized();
+            else
+                showNormal();
+            return;
+        }
+        visibilityBeforeFullScreen = visibility;
+        showFullScreen();
+    }
+
+    function escapePresentationMode() {
+        if (fullScreen)
+            toggleFullScreen();
+        else if (!chromeVisible)
+            chromeVisible = true;
+    }
+
+    function capturePresentationState() {
+        if (!workspace)
+            return false;
+        return workspace.updatePresentationState({
+            "wipePosition": wipePosition,
+            "thresholdEnabled": differenceThresholdEnabled,
+            "threshold": Number(differenceThresholdCode) / 255,
+            "centerX": dualVideoSurface.viewCenterX,
+            "centerY": dualVideoSurface.viewCenterY,
+            "scale": dualVideoSurface.viewScale,
+            "roiEnabled": dualVideoSurface.roiEnabled,
+            "roiLeft": dualVideoSurface.roiLeft,
+            "roiTop": dualVideoSurface.roiTop,
+            "roiRight": dualVideoSurface.roiRight,
+            "roiBottom": dualVideoSurface.roiBottom
+        });
+    }
+
+    function saveCurrentProject() {
+        return capturePresentationState() && workspace.save();
+    }
+
+    function saveCurrentProjectAs(projectUrl) {
+        return capturePresentationState() && workspace.saveAs(projectUrl);
+    }
+
+    function applyRestoredPresentation() {
+        if (!workspace || Number(workspace.restoredViewSerial) === Number(appliedRestoredViewSerial))
+            return;
+        const state = workspace.restoredPresentationState;
+        appliedRestoredViewSerial = Number(workspace.restoredViewSerial);
+        wipePosition = Number(state.wipePosition);
+        differenceThresholdEnabled = Boolean(state.thresholdEnabled);
+        differenceThresholdCode = Math.round(Number(state.threshold) * 255);
+        dualVideoSurface.restoreViewport(Number(state.centerX), Number(state.centerY), Number(state.scale), Boolean(state.roiEnabled), Number(state.roiLeft || 0), Number(state.roiTop || 0), Number(state.roiRight || 1), Number(state.roiBottom || 1));
     }
 
     function sourceLabel(slot) {
@@ -302,7 +463,7 @@ ApplicationWindow {
     function panelPoint(x, y) {
         let columns = 1;
         let rows = 1;
-        const mode = preferences ? Number(preferences.viewMode) : 0;
+        const mode = effectiveViewMode;
         // ComparisonSurface enum values are mirrored by ReviewPreferencesController.
         if (mode === 0)
             columns = 2;
@@ -578,6 +739,8 @@ ApplicationWindow {
     }
 
     menuBar: MenuBar {
+        visible: root.chromeVisible
+
         Menu {
             title: qsTr("&File")
 
@@ -593,7 +756,7 @@ ApplicationWindow {
             MenuItem {
                 text: root.projectDirty ? qsTr("Save review project *") : qsTr("Save review project")
                 enabled: root.canSaveProject && root.hasProject && !root.busy
-                onTriggered: root.workspace.save()
+                onTriggered: root.saveCurrentProject()
             }
             MenuItem {
                 text: qsTr("另存评测项目…")
@@ -610,6 +773,7 @@ ApplicationWindow {
 
         Menu {
             title: qsTr("&Compare")
+            enabled: !root.singleMode
 
             MenuItem {
                 text: qsTr("Side by side")
@@ -644,6 +808,7 @@ ApplicationWindow {
 
         Menu {
             title: qsTr("&Analyze")
+            enabled: !root.singleMode
 
             MenuItem {
                 text: qsTr("Estimate global frame offset")
@@ -656,6 +821,130 @@ ApplicationWindow {
                 onTriggered: root.alignmentAnalysisRunning ? root.controller.cancelAlignmentAnalysis() : root.controller.analyzeSequenceAlignment()
             }
         }
+
+        Menu {
+            title: qsTr("&View")
+
+            MenuItem {
+                text: root.chromeVisible ? qsTr("Hide interface chrome · Tab") : qsTr("Show interface chrome · Tab")
+                onTriggered: root.toggleChrome()
+            }
+            MenuItem {
+                text: root.fullScreen ? qsTr("Exit full screen · F11") : qsTr("Enter full screen · F11")
+                onTriggered: root.toggleFullScreen()
+            }
+        }
+    }
+
+    ReviewActions {
+        id: reviewActions
+
+        controller: root.controller
+        shortcutsEnabled: root.globalMediaShortcutsEnabled
+        oneSecondStepFrames: root.oneSecondStepFrames
+        wipeEnabled: root.wipeMode
+        wipePosition: root.wipePosition
+        onWipePositionRequested: position => {
+            root.wipePosition = position;
+            if (!root.chromeVisible)
+                root.showImmersiveHud(qsTr("Wipe %1%").arg(Math.round(position * 100)));
+        }
+    }
+
+    Shortcut {
+        sequence: "Space"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canTogglePlayback
+        onActivated: reviewActions.togglePlayback()
+    }
+    Shortcut {
+        sequence: "Home"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canFirst
+        onActivated: reviewActions.firstFrame()
+    }
+    Shortcut {
+        sequence: "End"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canLast
+        onActivated: reviewActions.lastFrame()
+    }
+    Shortcut {
+        sequences: ["Left", "A"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: reviewActions.previousFrame()
+    }
+    Shortcut {
+        sequences: ["Right", "D"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: reviewActions.nextFrame()
+    }
+    Shortcut {
+        sequences: ["Down", "Shift+Left", "Shift+A"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: reviewActions.stepBackwardFive()
+    }
+    Shortcut {
+        sequences: ["Up", "Shift+Right", "Shift+D"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: reviewActions.stepForwardFive()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Left", "Ctrl+A"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: reviewActions.stepBackwardSecond()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Right", "Ctrl+D"]
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: reviewActions.stepForwardSecond()
+    }
+    Shortcut {
+        sequence: "Alt+Left"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.wipeEnabled
+        onActivated: reviewActions.moveWipe(-0.01)
+    }
+    Shortcut {
+        sequence: "Alt+Right"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.wipeEnabled
+        onActivated: reviewActions.moveWipe(0.01)
+    }
+    Shortcut {
+        sequence: "Shift+Alt+Left"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.wipeEnabled
+        onActivated: reviewActions.moveWipe(-0.05)
+    }
+    Shortcut {
+        sequence: "Shift+Alt+Right"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.wipeEnabled
+        onActivated: reviewActions.moveWipe(0.05)
+    }
+    Shortcut {
+        sequence: "Tab"
+        context: Qt.ApplicationShortcut
+        enabled: root.globalMediaShortcutsEnabled
+        onActivated: root.toggleChrome()
+    }
+    Shortcut {
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        onActivated: root.toggleFullScreen()
+    }
+    Shortcut {
+        sequence: "Esc"
+        context: Qt.ApplicationShortcut
+        enabled: root.fullScreen || !root.chromeVisible
+        onActivated: root.escapePresentationMode()
     }
 
     Timer {
@@ -674,6 +963,14 @@ ApplicationWindow {
         onTriggered: root.exportMessage = ""
     }
 
+    Timer {
+        id: immersiveHudTimer
+
+        interval: 800
+        repeat: false
+        onTriggered: root.immersiveHudVisible = false
+    }
+
     Connections {
         target: root.controller
 
@@ -688,7 +985,16 @@ ApplicationWindow {
         }
     }
 
-    FolderDialog {
+    Connections {
+        target: root.workspace
+        ignoreUnknownSignals: true
+
+        function onStateChanged() {
+            root.applyRestoredPresentation();
+        }
+    }
+
+    NativeDialogs.FolderDialog {
         id: badCaseFolderDialog
 
         objectName: "badCaseFolderDialog"
@@ -701,145 +1007,61 @@ ApplicationWindow {
         }
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: videoFilesDialog
 
         objectName: "videoFilesDialog"
-        title: qsTr("Open two or three videos")
-        fileMode: FileDialog.OpenFiles
+        title: qsTr("Open one to three videos")
+        fileMode: NativeDialogs.FileDialog.OpenFiles
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.reviewDroppedUrls(selectedFiles)
     }
 
-    Dialog {
+    DropConfirmationDialog {
         id: dropReviewDialog
 
-        objectName: "dropReviewDialog"
-        width: 560
-        modal: true
-        title: qsTr("Confirm source order and Reference")
-        standardButtons: Dialog.Ok | Dialog.Cancel
-        closePolicy: Popup.CloseOnEscape
-        anchors.centerIn: parent
-        onAccepted: root.openDroppedComparison()
-
-        background: Rectangle {
-            radius: 10
-            color: root.panelColor
-            border.color: root.borderColor
-        }
-
-        contentItem: Column {
-            spacing: 12
-
-            Text {
-                width: parent.width
-                text: qsTr("The order below becomes Source A/B/C. Choose which stream owns the canonical frame index before opening.")
-                color: root.mutedTextColor
-                wrapMode: Text.WordWrap
-            }
-
-            Repeater {
-                model: root.pendingDroppedVideos
-
-                delegate: Row {
-                    id: droppedRow
-
-                    required property int index
-                    required property var modelData
-
-                    width: parent.width
-                    spacing: 8
-
-                    Text {
-                        width: 34
-                        text: String.fromCharCode(65 + droppedRow.index)
-                        color: "#9fc3ff"
-                        font.bold: true
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                    Text {
-                        width: parent.width - 162
-                        text: root.fileName(droppedRow.modelData)
-                        color: root.primaryTextColor
-                        elide: Text.ElideMiddle
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-                    ActionButton {
-                        implicitWidth: 52
-                        implicitHeight: 30
-                        text: "↑"
-                        enabled: droppedRow.index > 0
-                        helpText: qsTr("Move this source earlier in A/B/C order.")
-                        onClicked: root.swapDroppedVideos(droppedRow.index, droppedRow.index - 1)
-                    }
-                    ActionButton {
-                        implicitWidth: 52
-                        implicitHeight: 30
-                        text: "↓"
-                        enabled: droppedRow.index + 1 < root.pendingDroppedVideos.length
-                        helpText: qsTr("Move this source later in A/B/C order.")
-                        onClicked: root.swapDroppedVideos(droppedRow.index, droppedRow.index + 1)
-                    }
-                }
-            }
-
-            Row {
-                spacing: 12
-
-                Text {
-                    text: qsTr("Reference")
-                    color: root.primaryTextColor
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-                ComboBox {
-                    id: dropReferenceCombo
-
-                    objectName: "dropReferenceCombo"
-                    width: 220
-                    model: root.pendingDroppedVideos.length === 3 ? [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None (prediction-only)")] : [qsTr("Source A"), qsTr("Source B"), qsTr("None (prediction-only)")]
-                    currentIndex: 0
-                }
-            }
-        }
+        pendingVideos: root.pendingDroppedVideos
+        fileNameFunction: root.fileName
+        onMoveRequested: (fromIndex, toIndex) => root.swapDroppedVideos(fromIndex, toIndex)
+        onAccepted: root.openDroppedComparison(referenceIndex)
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: sourceAFileDialog
 
         objectName: "sourceAFileDialog"
         title: qsTr("Select source A")
-        fileMode: FileDialog.OpenFile
+        fileMode: NativeDialogs.FileDialog.OpenFile
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.selectedSourceA = selectedFile
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: sourceBFileDialog
 
         objectName: "sourceBFileDialog"
         title: qsTr("Select source B")
-        fileMode: FileDialog.OpenFile
+        fileMode: NativeDialogs.FileDialog.OpenFile
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.selectedSourceB = selectedFile
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: sourceCFileDialog
 
         objectName: "sourceCFileDialog"
         title: qsTr("Select optional source C")
-        fileMode: FileDialog.OpenFile
+        fileMode: NativeDialogs.FileDialog.OpenFile
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.selectedSourceC = selectedFile
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: openProjectDialog
 
         objectName: "openProjectDialog"
         title: qsTr("Open review project")
-        fileMode: FileDialog.OpenFile
+        fileMode: NativeDialogs.FileDialog.OpenFile
         nameFilters: [qsTr("VCStation projects (*.dvsproj)"), qsTr("All files (*)")]
         onAccepted: {
             root.selectedSourceA = "";
@@ -850,23 +1072,23 @@ ApplicationWindow {
         }
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: saveProjectDialog
 
         objectName: "saveProjectDialog"
         title: qsTr("另存评测项目")
-        fileMode: FileDialog.SaveFile
+        fileMode: NativeDialogs.FileDialog.SaveFile
         defaultSuffix: "dvsproj"
         nameFilters: [qsTr("VCStation projects (*.dvsproj)")]
-        onAccepted: root.workspace.saveAs(selectedFile)
+        onAccepted: root.saveCurrentProjectAs(selectedFile)
     }
 
-    FileDialog {
+    NativeDialogs.FileDialog {
         id: relinkSourceDialog
 
         objectName: "relinkSourceDialog"
         title: qsTr("Relink missing or changed source")
-        fileMode: FileDialog.OpenFile
+        fileMode: NativeDialogs.FileDialog.OpenFile
         nameFilters: [qsTr("Video files (*.mp4 *.mkv *.mov *.avi *.m4v)"), qsTr("All files (*)")]
         onAccepted: root.workspace.relinkSource(root.workspace.nextRelinkSourceId, selectedFile)
     }
@@ -1001,7 +1223,8 @@ ApplicationWindow {
     Rectangle {
         id: commandBar
 
-        height: 56
+        height: root.chromeVisible ? 48 : 0
+        visible: root.chromeVisible
         color: root.panelColor
         border.color: root.borderColor
         anchors {
@@ -1066,7 +1289,7 @@ ApplicationWindow {
                 text: root.projectDirty ? qsTr("Save *") : qsTr("Save")
                 visible: false
                 enabled: root.canSaveProject && root.hasProject && !root.busy
-                onClicked: root.workspace.save()
+                onClicked: root.saveCurrentProject()
             }
 
             ActionButton {
@@ -1090,7 +1313,7 @@ ApplicationWindow {
                 implicitWidth: 126
                 implicitHeight: 36
                 text: qsTr("Open videos…")
-                helpText: qsTr("Choose two or three videos, then confirm their A/B/C order and Reference.")
+                helpText: qsTr("Choose one to three videos. A single video opens directly; comparisons confirm A/B/C order and Reference.")
                 enabled: root.graphicsReady && !root.busy
                 onClicked: videoFilesDialog.open()
             }
@@ -1099,6 +1322,7 @@ ApplicationWindow {
                 objectName: "advancedInspectorButton"
                 implicitWidth: 142
                 implicitHeight: 36
+                visible: !root.singleMode
                 text: root.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Advanced Inspector")
                 helpText: qsTr("Show frame offsets, automatic alignment, sequence analysis, and manual anchors.")
                 enabled: root.graphicsReady
@@ -1135,7 +1359,8 @@ ApplicationWindow {
     Rectangle {
         id: sourceBar
 
-        height: 92
+        height: root.chromeVisible ? 68 : 0
+        visible: root.chromeVisible
         color: "#111823"
         border.color: root.borderColor
         anchors {
@@ -1150,7 +1375,7 @@ ApplicationWindow {
             spacing: 12
             anchors {
                 fill: parent
-                margins: 14
+                margins: 8
             }
 
             Rectangle {
@@ -1242,7 +1467,7 @@ ApplicationWindow {
                         topMargin: 5
                         left: parent.left
                         leftMargin: 14
-                        right: selectSourceBButton.left
+                        right: removeSourceBButton.visible ? removeSourceBButton.left : selectSourceBButton.left
                         rightMargin: 12
                     }
                 }
@@ -1251,13 +1476,31 @@ ApplicationWindow {
                     id: selectSourceBButton
 
                     objectName: "selectSourceBButton"
-                    text: qsTr("Select B")
+                    implicitWidth: 86
+                    text: root.hasSelectedSourceB ? qsTr("Change") : qsTr("Add B")
                     enabled: root.graphicsReady && !root.busy
                     Accessible.name: qsTr("Select source B")
                     onClicked: sourceBFileDialog.open()
                     anchors {
                         right: parent.right
                         rightMargin: 10
+                        verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                ActionButton {
+                    id: removeSourceBButton
+
+                    objectName: "removeSourceBButton"
+                    visible: root.sourceCount > 1
+                    implicitWidth: 34
+                    text: "×"
+                    helpText: qsTr("Remove Source B and rebuild the current review at the same media time.")
+                    enabled: !root.busy
+                    onClicked: root.removeSelectedSource(1)
+                    anchors {
+                        right: selectSourceBButton.left
+                        rightMargin: 6
                         verticalCenter: parent.verticalCenter
                     }
                 }
@@ -1296,7 +1539,7 @@ ApplicationWindow {
                         topMargin: 5
                         left: parent.left
                         leftMargin: 14
-                        right: selectSourceCButton.left
+                        right: removeSourceCButton.visible ? removeSourceCButton.left : selectSourceCButton.left
                         rightMargin: 12
                     }
                 }
@@ -1305,6 +1548,7 @@ ApplicationWindow {
                     id: selectSourceCButton
 
                     objectName: "selectSourceCButton"
+                    implicitWidth: 86
                     text: root.hasSelectedSourceC ? qsTr("Change") : qsTr("Add C")
                     enabled: root.graphicsReady && !root.busy
                     Accessible.name: qsTr("Select optional source C")
@@ -1312,6 +1556,23 @@ ApplicationWindow {
                     anchors {
                         right: parent.right
                         rightMargin: 10
+                        verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                ActionButton {
+                    id: removeSourceCButton
+
+                    objectName: "removeSourceCButton"
+                    visible: root.sourceCount > 2
+                    implicitWidth: 34
+                    text: "×"
+                    helpText: qsTr("Remove Source C and rebuild the current review at the same media time.")
+                    enabled: !root.busy
+                    onClicked: root.removeSelectedSource(2)
+                    anchors {
+                        right: selectSourceCButton.left
+                        rightMargin: 6
                         verticalCenter: parent.verticalCenter
                     }
                 }
@@ -1324,11 +1585,10 @@ ApplicationWindow {
                 width: 148
                 height: 46
                 text: qsTr("Open")
-                enabled: root.hasSelectedSourceA && root.hasSelectedSourceB && root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canOpen)
-                Accessible.name: qsTr("Open selected comparison")
+                enabled: root.hasSelectedSourceA && root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canOpen)
+                Accessible.name: qsTr("Open selected review sources")
                 onClicked: {
-                    root.sourceOffsetValues = {};
-                    root.controller.openComparisonSet(root.selectedSourceA, root.selectedSourceB, root.selectedSourceC, root.referenceSourceIndex);
+                    root.openSelectedSources(root.sourceCount > 0);
                 }
                 anchors.verticalCenter: parent.verticalCenter
 
@@ -1345,7 +1605,8 @@ ApplicationWindow {
     Rectangle {
         id: comparisonBar
 
-        height: 58
+        height: root.chromeVisible && !root.singleMode ? 48 : 0
+        visible: root.chromeVisible && !root.singleMode
         color: root.panelColor
         border.color: root.borderColor
         anchors {
@@ -1489,27 +1750,6 @@ ApplicationWindow {
                 }
 
                 Text {
-                    text: qsTr("Step")
-                    color: root.mutedTextColor
-                    font.pixelSize: 11
-                    anchors.verticalCenter: parent.verticalCenter
-                }
-
-                ToolbarCombo {
-                    id: largeStepCombo
-
-                    objectName: "largeStepCombo"
-                    implicitWidth: 74
-                    model: ["5", "10"]
-                    currentIndex: root.largeStepFrames === 5 ? 0 : 1
-                    Accessible.name: qsTr("Up and down frame step")
-                    onActivated: index => {
-                        if (root.preferences)
-                            root.preferences.largeStepFrames = index === 0 ? 5 : 10;
-                    }
-                }
-
-                Text {
                     visible: root.differenceMode
                     text: qsTr("Size mismatch is resampled; result is not pixel-exact.")
                     color: root.mutedTextColor
@@ -1525,14 +1765,16 @@ ApplicationWindow {
 
         objectName: "advancedAlignmentInspector"
         width: 360
-        visible: root.inspectorOpen
+        visible: root.chromeVisible && root.inspectorOpen && !root.singleMode
         z: 20
         color: "#111823"
         border.color: root.borderColor
         anchors {
-            top: comparisonBar.bottom
+            top: parent.top
+            topMargin: commandBar.height + sourceBar.height + comparisonBar.height
             right: parent.right
-            bottom: transport.top
+            bottom: parent.bottom
+            bottomMargin: transport.height
         }
 
         Column {
@@ -1719,14 +1961,14 @@ ApplicationWindow {
         radius: 7
         clip: true
         anchors {
-            top: comparisonBar.bottom
-            topMargin: 12
-            bottom: transport.top
-            bottomMargin: 18
+            top: parent.top
+            topMargin: root.chromeVisible ? commandBar.height + sourceBar.height + comparisonBar.height + 10 : 0
+            bottom: parent.bottom
+            bottomMargin: root.chromeVisible ? transport.height + 12 : 0
             left: parent.left
-            leftMargin: 20
+            leftMargin: root.chromeVisible ? 14 : 0
             right: alignmentBar.visible ? alignmentBar.left : parent.right
-            rightMargin: 20
+            rightMargin: root.chromeVisible ? 14 : 0
         }
 
         TapHandler {
@@ -1740,7 +1982,7 @@ ApplicationWindow {
 
             objectName: "dualVideoSurface"
             Accessible.name: qsTr("VCStation synchronized comparison surface")
-            viewMode: root.preferences ? root.preferences.viewMode : ComparisonSurface.SideBySide
+            viewMode: root.effectiveViewMode
             differenceMetric: root.preferences ? root.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
             differenceGain: root.preferences ? root.preferences.differenceGain : ComparisonSurface.Gain1x
             differenceEdge: root.preferences ? root.preferences.differenceEdge : ComparisonSurface.Edge0And1
@@ -1759,7 +2001,7 @@ ApplicationWindow {
         // qmllint enable import unqualified unresolved-type
 
         Repeater {
-            model: root.sideBySideMode ? 1 : (Number(root.preferences.viewMode) === 1 ? 2 : 0)
+            model: root.sideBySideMode ? 1 : (root.threeUpMode ? 2 : 0)
 
             Rectangle {
                 required property int index
@@ -1774,47 +2016,43 @@ ApplicationWindow {
             }
         }
 
-        Rectangle {
-            id: wipeRail
-
+        WipeHandle {
             visible: root.wipeMode
-            x: Math.round(1 + (dualVideoSurface.width - 2) * root.wipePosition) - width / 2
-            y: 1
-            width: 3
-            height: parent.height - 2
-            color: "#ffffff"
             z: 30
+            surfaceItem: dualVideoSurface
+            position: root.wipePosition
+            onPositionRequested: position => root.wipePosition = position
+        }
 
-            Rectangle {
-                width: 28
-                height: 44
-                radius: 14
-                color: "#e6233246"
-                border.color: "#ffffff"
-                anchors.centerIn: parent
+        Rectangle {
+            objectName: "immersiveReviewHud"
+            visible: !root.chromeVisible && root.immersiveHudVisible && root.immersiveHudText.length > 0
+            opacity: visible ? 1.0 : 0.0
+            z: 45
+            width: immersiveHudLabel.implicitWidth + 24
+            height: 34
+            radius: 6
+            color: "#dc111923"
+            border.color: "#803d4d64"
+            anchors {
+                bottom: parent.bottom
+                bottomMargin: 18
+                horizontalCenter: parent.horizontalCenter
+            }
 
-                Text {
-                    text: "↔"
-                    color: "white"
-                    anchors.centerIn: parent
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 120
                 }
             }
 
-            MouseArea {
-                width: 30
-                height: parent.height
+            Text {
+                id: immersiveHudLabel
+
+                text: root.immersiveHudText
+                color: root.primaryTextColor
+                font.pixelSize: 13
                 anchors.centerIn: parent
-                cursorShape: Qt.SplitHCursor
-                onPressed: mouse => {
-                    const point = mapToItem(viewportFrame, mouse.x, mouse.y);
-                    root.wipePosition = Math.max(0.05, Math.min(0.95, point.x / viewportFrame.width));
-                }
-                onPositionChanged: mouse => {
-                    if (!pressed)
-                        return;
-                    const point = mapToItem(viewportFrame, mouse.x, mouse.y);
-                    root.wipePosition = Math.max(0.05, Math.min(0.95, point.x / viewportFrame.width));
-                }
             }
         }
 
@@ -2053,7 +2291,7 @@ ApplicationWindow {
         }
 
         Rectangle {
-            visible: root.combinedAlignmentStatus.length > 0
+            visible: root.chromeVisible && root.combinedAlignmentStatus.length > 0
             radius: 5
             color: "#d9232c3d"
             border.color: root.errorColor
@@ -2079,7 +2317,8 @@ ApplicationWindow {
         Row {
             id: surfaceLabels
 
-            height: 46
+            height: visible ? 46 : 0
+            visible: root.chromeVisible
             spacing: 8
             anchors {
                 top: parent.top
@@ -2259,7 +2498,8 @@ ApplicationWindow {
         id: transport
 
         objectName: "transport"
-        height: 144
+        height: root.chromeVisible ? 128 : 0
+        visible: root.chromeVisible
         color: root.panelColor
         border.color: root.borderColor
         anchors {
@@ -2383,109 +2623,35 @@ ApplicationWindow {
             }
         }
 
-        Row {
-            spacing: 7
+        TransportBar {
+            objectName: "transportBar"
             anchors {
                 bottom: parent.bottom
                 bottomMargin: 20
                 horizontalCenter: parent.horizontalCenter
             }
-
-            ActionButton {
-                id: firstButton
-
-                objectName: "firstButton"
-                implicitWidth: 72
-                text: qsTr("First")
-                enabled: root.canFirstAction
-                Accessible.name: qsTr("First frame")
-                onClicked: root.controller.first()
-            }
-
-            ActionButton {
-                objectName: "previousSecondButton"
-                implicitWidth: 72
-                text: qsTr("-1 s")
-                helpText: qsTr("Step backward by approximately one second (%1 frames at this source rate).").arg(root.oneSecondStepFrames)
-                enabled: root.canPreviousAction
-                onClicked: root.controller.stepFrames(-root.oneSecondStepFrames)
-            }
-
-            ActionButton {
-                objectName: "previousFiveButton"
-                implicitWidth: 72
-                text: "-5"
-                helpText: qsTr("Step backward five frames.")
-                enabled: root.canPreviousAction
-                onClicked: root.controller.stepFrames(-5)
-            }
-
-            ActionButton {
-                id: previousButton
-
-                objectName: "previousButton"
-                implicitWidth: 72
-                text: qsTr("-1")
-                enabled: root.canPreviousAction
-                Accessible.name: qsTr("Previous frame")
-                onClicked: root.controller.previous()
-            }
-
-            ActionButton {
-                id: playbackButton
-
-                objectName: "playbackButton"
-                implicitWidth: 86
-                text: root.playing ? qsTr("Pause") : qsTr("Play")
-                enabled: root.playing ? root.canPauseAction : root.canPlayAction
-                Accessible.name: root.playing ? qsTr("Pause playback") : qsTr("Play continuously")
-                onClicked: root.controller.togglePlayback()
-            }
-
-            ActionButton {
-                id: nextButton
-
-                objectName: "nextButton"
-                implicitWidth: 72
-                text: qsTr("+1")
-                enabled: root.canNextAction
-                Accessible.name: qsTr("Next frame")
-                onClicked: root.controller.next()
-            }
-
-            ActionButton {
-                objectName: "nextFiveButton"
-                implicitWidth: 72
-                text: "+5"
-                helpText: qsTr("Step forward five frames.")
-                enabled: root.canNextAction
-                onClicked: root.controller.stepFrames(5)
-            }
-
-            ActionButton {
-                objectName: "nextSecondButton"
-                implicitWidth: 72
-                text: qsTr("+1 s")
-                helpText: qsTr("Step forward by approximately one second (%1 frames at this source rate).").arg(root.oneSecondStepFrames)
-                enabled: root.canNextAction
-                onClicked: root.controller.stepFrames(root.oneSecondStepFrames)
-            }
-
-            ActionButton {
-                id: lastButton
-
-                objectName: "lastButton"
-                implicitWidth: 72
-                text: qsTr("Last")
-                enabled: root.canLastAction
-                Accessible.name: qsTr("Last frame")
-                onClicked: root.controller.last()
-            }
+            canFirst: root.canFirstAction
+            canPrevious: root.canPreviousAction
+            canPlay: root.canPlayAction
+            canPause: root.canPauseAction
+            canNext: root.canNextAction
+            canLast: root.canLastAction
+            playing: root.playing
+            focusTarget: viewportFrame
+            onFirstRequested: reviewActions.firstFrame()
+            onPreviousSecondRequested: reviewActions.stepBackwardSecond()
+            onPreviousFiveRequested: reviewActions.stepBackwardFive()
+            onPreviousRequested: reviewActions.previousFrame()
+            onPlaybackRequested: reviewActions.togglePlayback()
+            onNextRequested: reviewActions.nextFrame()
+            onNextFiveRequested: reviewActions.stepForwardFive()
+            onNextSecondRequested: reviewActions.stepForwardSecond()
+            onLastRequested: reviewActions.lastFrame()
         }
 
         Text {
             visible: root.width >= 1260
-            text: qsTr("A/D or ←/→: ±1 · Shift+A/D: ±5 · Ctrl+A/D: ±1 second")
+            text: qsTr("A/D or ←/→: ±1 · Shift+←/→: ±5 · Ctrl+←/→: ±1 second")
             color: root.mutedTextColor
             font.pixelSize: 11
             anchors {
@@ -2531,7 +2697,7 @@ ApplicationWindow {
                     anchors.horizontalCenter: parent.horizontalCenter
                 }
                 Text {
-                    text: qsTr("2–3 videos, or one .dvsproj project")
+                    text: qsTr("1–3 videos, or one .dvsproj project")
                     color: root.mutedTextColor
                     font.pixelSize: 14
                     anchors.horizontalCenter: parent.horizontalCenter
@@ -2566,105 +2732,6 @@ ApplicationWindow {
 
         TapHandler {
             onTapped: root.dropError = ""
-        }
-    }
-
-    Shortcut {
-        sequence: "Space"
-        enabled: root.globalMediaShortcutsEnabled && playbackButton.enabled
-        onActivated: {
-            playbackButton.click();
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "Home"
-        enabled: root.globalMediaShortcutsEnabled && firstButton.enabled
-        onActivated: {
-            firstButton.click();
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "End"
-        enabled: root.globalMediaShortcutsEnabled && lastButton.enabled
-        onActivated: {
-            lastButton.click();
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "Left"
-        enabled: root.globalMediaShortcutsEnabled && previousButton.enabled
-        onActivated: {
-            previousButton.click();
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "A"
-        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
-        onActivated: root.controller.previous()
-    }
-
-    Shortcut {
-        sequence: "Right"
-        enabled: root.globalMediaShortcutsEnabled && nextButton.enabled
-        onActivated: {
-            nextButton.click();
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "D"
-        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
-        onActivated: root.controller.next()
-    }
-
-    Shortcut {
-        sequence: "Shift+A"
-        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
-        onActivated: root.controller.stepFrames(-5)
-    }
-
-    Shortcut {
-        sequence: "Shift+D"
-        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
-        onActivated: root.controller.stepFrames(5)
-    }
-
-    Shortcut {
-        sequence: "Ctrl+A"
-        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
-        onActivated: root.controller.stepFrames(-root.oneSecondStepFrames)
-    }
-
-    Shortcut {
-        sequence: "Ctrl+D"
-        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
-        onActivated: root.controller.stepFrames(root.oneSecondStepFrames)
-    }
-
-    Shortcut {
-        sequence: "Up"
-        enabled: root.globalMediaShortcutsEnabled && root.canNextAction
-        onActivated: {
-            root.controller.stepFrames(root.largeStepFrames);
-            viewportFrame.forceActiveFocus();
-        }
-    }
-
-    Shortcut {
-        sequence: "Down"
-        enabled: root.globalMediaShortcutsEnabled && root.canPreviousAction
-        onActivated: {
-            root.controller.stepFrames(-root.largeStepFrames);
-            viewportFrame.forceActiveFocus();
         }
     }
 }

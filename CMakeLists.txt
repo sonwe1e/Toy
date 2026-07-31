@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(VCStation VERSION 1.1.0 LANGUAGES CXX)
+project(VCStation VERSION 1.2.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "VCStation supports Windows only.")
@@ -85,6 +85,7 @@ add_subdirectory(src/platform_windows)
 add_subdirectory(src/media_ffmpeg)
 add_subdirectory(src/persistence_json)
 add_subdirectory(src/ui_qml)
+add_subdirectory(src/shell_windows)
 add_subdirectory(src/app)
 
 if(BUILD_TESTING)

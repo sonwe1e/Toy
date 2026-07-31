@@ -1,7 +1,7 @@
 include_guard(GLOBAL)
 
 macro(dvs_resolve_dependencies)
-    find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Qml Quick ShaderTools)
+    find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Network Qml Quick ShaderTools)
 
     find_package(nlohmann_json CONFIG REQUIRED)
 

@@ -66,7 +66,9 @@ stated in the UI (`Resampled comparison — not pixel-exact`).
   renderer (no GPU→CPU→GPU), device-generation rejection, and software fallback with a
   queryable backend/fallback reason. H.264 NV12, HEVC Main10 P010, direct array-slice
   publication, and 10-bit signature normalization are covered on the local hardware runner.
-  Three-source 1080p60 and 4K30 Main10 visible-window gates pass for five continuous minutes.
+  Three-source 1080p60 visible-window gates pass for five continuous minutes. Small-fixture
+  P010 and 10-bit tests retain format and hardware-path correctness coverage; 4K is not part
+  of the active performance matrix.
 
 ## Optional compatibility proxies
 

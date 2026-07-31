@@ -6,6 +6,10 @@ add_executable(
     Main.cpp
     ReviewRuntime.cpp
     ReviewRuntime.h
+    StartupRequest.cpp
+    StartupRequest.h
+    StartupRequestBroker.cpp
+    StartupRequestBroker.h
     StartupFailureReporter.cpp
     StartupFailureReporter.h
     "${CMAKE_CURRENT_BINARY_DIR}/VCStation.rc"
@@ -27,7 +31,7 @@ foreach(target VCStation VCStationCli)
     set_target_properties(${target} PROPERTIES FOLDER "Application")
 endforeach()
 
-target_link_libraries(VCStation PRIVATE user32)
+target_link_libraries(VCStation PRIVATE Qt6::Network user32)
 
 add_custom_command(
     TARGET VCStation

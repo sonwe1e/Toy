@@ -122,7 +122,7 @@ TEST(ProjectTests, RestoresPersistedMarksAndPreservesLiveReplacementState) {
         .viewState =
             ProjectViewState{
                 .layout = ProjectViewLayout::kReferenceFocus,
-                .differenceEdge = {0U, 1U},
+                .differenceEdge = std::array<SourceId, 2U>{0U, 1U},
                 .differenceMetric = ProjectDifferenceMetric::kHeatmap,
                 .gain = 4U,
             },
@@ -246,7 +246,7 @@ TEST(ProjectTests, ValidatesAlignmentAndViewStateTransactionally) {
 
     const ProjectViewState validView{
         .layout = ProjectViewLayout::kDifference,
-        .differenceEdge = {0U, 1U},
+        .differenceEdge = std::array<SourceId, 2U>{0U, 1U},
         .differenceMetric = ProjectDifferenceMetric::kLuma,
         .gain = 8U,
     };
@@ -254,7 +254,7 @@ TEST(ProjectTests, ValidatesAlignmentAndViewStateTransactionally) {
     EXPECT_EQ(project.viewState(), validView);
 
     ProjectViewState invalidView = validView;
-    invalidView.differenceEdge = {0U, 2U};
+    invalidView.differenceEdge = std::array<SourceId, 2U>{0U, 2U};
     ASSERT_FALSE(project.setViewState(invalidView));
     EXPECT_EQ(project.viewState(), validView);
 

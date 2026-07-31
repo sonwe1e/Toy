@@ -79,7 +79,7 @@ makeSet(const std::filesystem::path& first = "C:/media/a.mp4",
     EXPECT_TRUE(project.setLastDisplayedFrame(domain::FrameId{3}));
     EXPECT_TRUE(project.setViewState(domain::ProjectViewState{
         .layout = domain::ProjectViewLayout::kReferenceFocus,
-        .differenceEdge = {0U, 1U},
+        .differenceEdge = std::array<domain::SourceId, 2U>{0U, 1U},
         .differenceMetric = domain::ProjectDifferenceMetric::kHeatmap,
         .gain = 4U,
     }));
@@ -101,6 +101,14 @@ makeSet(const std::filesystem::path& first = "C:/media/a.mp4",
         }));
     }
     return project;
+}
+
+[[nodiscard]] domain::ValidatedComparisonSet makeSingleSet() {
+    const domain::ValidatedComparisonSet pair = makeSet();
+    auto validated =
+        domain::ComparisonValidator::validate({domain::ComparisonSource{pair.sources().front()}});
+    EXPECT_TRUE(validated);
+    return std::move(validated).value().set;
 }
 
 [[nodiscard]] std::vector<SequenceAlignmentResult> makeSequenceResults() {
@@ -232,18 +240,14 @@ public:
         next->playbackState = domain::PlaybackState::kPaused;
         next->displayedFrame = displayed;
         next->canonicalFrameCount = canonicalFrameCount;
-        next->sources = {
-            SessionSourceView{
-                .sourceId = 0U,
-                .role = domain::ComparisonRole::kReference,
-                .displayName = "A",
-            },
-            SessionSourceView{
-                .sourceId = 1U,
-                .role = domain::ComparisonRole::kPrediction,
-                .displayName = "B",
-            },
-        };
+        next->sources.reserve(set.sourceCount());
+        for (const domain::ComparisonSource& source : set.sources()) {
+            next->sources.push_back(SessionSourceView{
+                .sourceId = source.id,
+                .role = source.role,
+                .displayName = source.displayName,
+            });
+        }
         next->validatedComparison =
             std::make_shared<const domain::ValidatedComparisonSet>(std::move(set));
         current = std::move(next);
@@ -341,6 +345,25 @@ TEST(WorkspaceCoordinatorTests, LoadsAndRestoresOffsetsAnchorsAndLastFrameInOrde
     ASSERT_TRUE(restored->restoredViewState.has_value());
     EXPECT_EQ(restored->restoredViewState->layout, domain::ProjectViewLayout::kReferenceFocus);
     EXPECT_TRUE(workspace->takeCompletedPlaybackCommands().empty());
+}
+
+TEST(WorkspaceCoordinatorTests, SavesASingleSourceProjectWithSingleViewAndNoDifferenceEdge) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSingleSet());
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    domain::ProjectViewState view;
+    view.layout = domain::ProjectViewLayout::kSingle;
+    view.differenceEdge.reset();
+    view.viewport = domain::ProjectViewTransform{.centerX = 0.4F, .centerY = 0.6F, .scale = 2.0F};
+
+    ASSERT_EQ(workspace->saveProject("C:/projects/single.dvsproj", "Single", view),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(repository->saveRequest.has_value());
+    EXPECT_EQ(repository->saveRequest->project.sources().sourceCount(), 1U);
+    EXPECT_EQ(repository->saveRequest->project.viewState(), view);
 }
 
 TEST(WorkspaceCoordinatorTests, KeepsInvalidProjectAvailableForExplicitRelinkThenReopensFresh) {
@@ -502,7 +525,7 @@ TEST(WorkspaceCoordinatorTests, SavesFreshPlaybackStateAndRoutesReviewTerminalsS
     const std::filesystem::path projectPath = "C:/projects/saved.dvsproj";
     const domain::ProjectViewState view{
         .layout = domain::ProjectViewLayout::kDifference,
-        .differenceEdge = {0U, 1U},
+        .differenceEdge = std::array<domain::SourceId, 2U>{0U, 1U},
         .differenceMetric = domain::ProjectDifferenceMetric::kLuma,
         .gain = 8U,
     };

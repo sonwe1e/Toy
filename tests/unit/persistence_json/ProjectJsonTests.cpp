@@ -109,9 +109,26 @@ makeProject(const std::filesystem::path& projectPath,
     }));
     EXPECT_TRUE(project.setViewState(domain::ProjectViewState{
         .layout = domain::ProjectViewLayout::kReferenceFocus,
-        .differenceEdge = {0U, 1U},
+        .differenceEdge = std::array<domain::SourceId, 2U>{0U, 1U},
         .differenceMetric = domain::ProjectDifferenceMetric::kHeatmap,
+        .differenceFilter = domain::ProjectDifferenceFilter::kBicubic,
         .gain = 4U,
+        .wipePosition = 0.25F,
+        .thresholdEnabled = true,
+        .threshold = 0.125F,
+        .viewport =
+            domain::ProjectViewTransform{
+                .centerX = 0.4F,
+                .centerY = 0.6F,
+                .scale = 2.0F,
+            },
+        .roi =
+            domain::ProjectNormalizedRect{
+                .left = 0.1F,
+                .top = 0.2F,
+                .right = 0.9F,
+                .bottom = 0.8F,
+            },
     }));
     return project;
 }
@@ -183,14 +200,14 @@ makeProject(const std::filesystem::path& projectPath,
     return project;
 }
 
-TEST(ProjectJsonTests, RoundTripsCompleteSchemaThreeDocument) {
+TEST(ProjectJsonTests, RoundTripsCompleteSchemaFourDocument) {
     const std::filesystem::path projectPath =
         std::filesystem::temp_directory_path() / "dvs-project-json" / "roundtrip.dvsproject";
     const domain::Project project = makeProject(projectPath);
 
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"mode\": \"manual-anchors\""), std::string::npos);
     EXPECT_NE(encoded.value().find("\"analysisCacheKey\": \"alignment-v2-cache-key\""),
               std::string::npos);
@@ -302,10 +319,10 @@ TEST(ProjectJsonTests, RejectsSchemaVersionOne) {
     ASSERT_TRUE(encoded);
 
     std::string legacyDocument = encoded.value();
-    const std::string schemaThree = "\"schemaVersion\": 3";
-    const std::size_t schemaPosition = legacyDocument.find(schemaThree);
+    const std::string schemaFour = "\"schemaVersion\": 4";
+    const std::size_t schemaPosition = legacyDocument.find(schemaFour);
     ASSERT_NE(schemaPosition, std::string::npos);
-    legacyDocument.replace(schemaPosition, schemaThree.size(), "\"schemaVersion\": 1");
+    legacyDocument.replace(schemaPosition, schemaFour.size(), "\"schemaVersion\": 1");
 
     const auto decoded = ProjectJson::decodeText(legacyDocument, projectPath);
     ASSERT_FALSE(decoded);
@@ -335,17 +352,68 @@ TEST(ProjectJsonTests, MigratesSchemaVersionTwoWithDefaultAlignmentAndViewState)
     EXPECT_EQ(decoded.value().viewState().gain, 1U);
 }
 
-TEST(ProjectJsonTests, RejectsFutureSchemaVersionFour) {
+TEST(ProjectJsonTests, MigratesSchemaVersionThreeViewDefaultsIntoSchemaFourModel) {
     const std::filesystem::path projectPath =
-        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema4.dvsproject";
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema3.dvsproject";
+    const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
+    ASSERT_TRUE(encoded);
+
+    nlohmann::json legacyDocument = nlohmann::json::parse(encoded.value());
+    legacyDocument["schemaVersion"] = 3;
+    legacyDocument["view"].erase("differenceFilter");
+    legacyDocument["view"].erase("wipePosition");
+    legacyDocument["view"].erase("thresholdEnabled");
+    legacyDocument["view"].erase("threshold");
+    legacyDocument["view"].erase("viewport");
+    legacyDocument["view"].erase("roi");
+
+    const auto decoded = ProjectJson::decodeText(legacyDocument.dump(), projectPath);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().viewState().layout, domain::ProjectViewLayout::kReferenceFocus);
+    EXPECT_EQ(decoded.value().viewState().differenceFilter,
+              domain::ProjectDifferenceFilter::kBilinear);
+    EXPECT_FLOAT_EQ(decoded.value().viewState().wipePosition, 0.5F);
+    EXPECT_EQ(decoded.value().viewState().viewport, domain::ProjectViewTransform{});
+    EXPECT_FALSE(decoded.value().viewState().roi.has_value());
+}
+
+TEST(ProjectJsonTests, RoundTripsSingleSourceProjectWithoutComparisonEdge) {
+    const std::filesystem::path projectPath =
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "single.dvsproject";
+    auto validated =
+        domain::ComparisonValidator::validate({makeSource(0,
+                                                          projectPath.parent_path() / "single.mp4",
+                                                          std::string(64, 'c'),
+                                                          domain::ComparisonRole::kPrediction,
+                                                          "Single")});
+    ASSERT_TRUE(validated);
+    auto created = domain::Project::create(
+        domain::ProjectId{"single-project"}, "Single", std::move(validated).value().set);
+    ASSERT_TRUE(created);
+    EXPECT_EQ(created.value().viewState().layout, domain::ProjectViewLayout::kSingle);
+    EXPECT_FALSE(created.value().viewState().differenceEdge.has_value());
+
+    const auto encoded = ProjectJson::encodeText(created.value(), projectPath);
+    ASSERT_TRUE(encoded);
+    EXPECT_NE(encoded.value().find("\"layout\": \"single\""), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"differenceEdge\": null"), std::string::npos);
+    const auto decoded = ProjectJson::decodeText(encoded.value(), projectPath);
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded.value().sources().sourceCount(), 1U);
+    EXPECT_EQ(decoded.value().viewState(), created.value().viewState());
+}
+
+TEST(ProjectJsonTests, RejectsFutureSchemaVersionFive) {
+    const std::filesystem::path projectPath =
+        std::filesystem::temp_directory_path() / "dvs-project-json" / "schema5.dvsproject";
     const auto encoded = ProjectJson::encodeText(makeProject(projectPath), projectPath);
     ASSERT_TRUE(encoded);
 
     std::string futureDocument = encoded.value();
-    const std::string schemaThree = "\"schemaVersion\": 3";
-    const std::size_t schemaPosition = futureDocument.find(schemaThree);
+    const std::string schemaFour = "\"schemaVersion\": 4";
+    const std::size_t schemaPosition = futureDocument.find(schemaFour);
     ASSERT_NE(schemaPosition, std::string::npos);
-    futureDocument.replace(schemaPosition, schemaThree.size(), "\"schemaVersion\": 4");
+    futureDocument.replace(schemaPosition, schemaFour.size(), "\"schemaVersion\": 5");
 
     const auto decoded = ProjectJson::decodeText(futureDocument, projectPath);
     ASSERT_FALSE(decoded);
@@ -361,7 +429,7 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"variable-frame-rate\""),
               std::string::npos);
 
@@ -397,7 +465,7 @@ TEST(ProjectJsonTests, VfrProjectSerializesNullFrameRateAndRoundTrips) {
 }
 
 TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
-    // The existing RoundTripsCompleteSchemaThreeDocument test already exercises a CFR project;
+    // The existing RoundTripsCompleteSchemaFourDocument test already exercises a CFR project;
     // this case makes the CFR compatibility assertion explicit and guards the non-null frame
     // rate serialization that the VFR path above deliberately avoids.
     const std::filesystem::path projectPath =
@@ -408,7 +476,7 @@ TEST(ProjectJsonTests, CfrProjectRoundTripsWithNonNullFrameRate) {
     const auto encoded = ProjectJson::encodeText(project, projectPath);
     ASSERT_TRUE(encoded);
 
-    EXPECT_NE(encoded.value().find("\"schemaVersion\": 3"), std::string::npos);
+    EXPECT_NE(encoded.value().find("\"schemaVersion\": 4"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"numerator\": 30"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"denominator\": 1"), std::string::npos);
     EXPECT_NE(encoded.value().find("\"timingConfidence\": \"verified-cfr\""), std::string::npos);

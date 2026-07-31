@@ -82,7 +82,7 @@ bool CompatibilityReport::hasAlignmentRequired() const noexcept {
 
 namespace {
 
-constexpr std::size_t kMinimumSources = 2U;
+constexpr std::size_t kMinimumSources = 1U;
 constexpr std::size_t kMaximumSources = 3U;
 
 [[nodiscard]] MediaError setFailure(const MediaErrorCode code, std::string technicalDetail) {
@@ -158,9 +158,8 @@ void comparePair(const ComparisonSource& first,
 
 Result<ComparisonValidation> ComparisonValidator::validate(std::vector<ComparisonSource> sources) {
     if (sources.size() < kMinimumSources || sources.size() > kMaximumSources) {
-        return Result<ComparisonValidation>::failure(
-            setFailure(MediaErrorCode::kInvalidArgument,
-                       "A comparison session requires two or three sources."));
+        return Result<ComparisonValidation>::failure(setFailure(
+            MediaErrorCode::kInvalidArgument, "A review session requires one to three sources."));
     }
 
     for (std::size_t index = 0; index < sources.size(); ++index) {

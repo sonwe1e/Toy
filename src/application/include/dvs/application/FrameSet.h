@@ -65,7 +65,7 @@ private:
 inline std::optional<FrameSet> FrameSet::create(const domain::FrameId canonicalFrameId,
                                                 const domain::MediaTime canonicalTime,
                                                 std::vector<MappedSourceFrame> sources) noexcept {
-    if (!canonicalFrameId.isValid() || canonicalTime.microseconds() < 0 || sources.size() < 2U) {
+    if (!canonicalFrameId.isValid() || canonicalTime.microseconds() < 0 || sources.empty()) {
         return std::nullopt;
     }
 

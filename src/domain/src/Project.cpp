@@ -1,6 +1,7 @@
 #include "dvs/domain/Project.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <string_view>
 #include <utility>
@@ -61,7 +62,14 @@ Project::create(ProjectId id, std::string displayName, ValidatedComparisonSet so
     }
 
     ProjectViewState viewState;
-    viewState.differenceEdge = {projectSources[0].id, projectSources[1].id};
+    if (projectSources.size() == 1U) {
+        viewState.layout = ProjectViewLayout::kSingle;
+    } else {
+        viewState.differenceEdge = std::array<SourceId, 2U>{
+            projectSources[0].id,
+            projectSources[1].id,
+        };
+    }
     return Result<Project>::success(Project{
         std::move(id),
         std::move(displayName),
@@ -308,7 +316,10 @@ Status Project::validateViewState(const ProjectViewState& viewState) const {
     const bool validLayout = viewState.layout == ProjectViewLayout::kSideBySide ||
                              viewState.layout == ProjectViewLayout::kThreeUp ||
                              viewState.layout == ProjectViewLayout::kReferenceFocus ||
-                             viewState.layout == ProjectViewLayout::kDifference;
+                             viewState.layout == ProjectViewLayout::kDifference ||
+                             viewState.layout == ProjectViewLayout::kAnalysisGrid ||
+                             viewState.layout == ProjectViewLayout::kWipe ||
+                             viewState.layout == ProjectViewLayout::kSingle;
     const bool validMetric = viewState.differenceMetric == ProjectDifferenceMetric::kRgbAbsolute ||
                              viewState.differenceMetric == ProjectDifferenceMetric::kLuma ||
                              viewState.differenceMetric == ProjectDifferenceMetric::kChroma ||
@@ -316,11 +327,40 @@ Status Project::validateViewState(const ProjectViewState& viewState) const {
                              viewState.differenceMetric == ProjectDifferenceMetric::kExactPlanes;
     const bool validGain = viewState.gain == 1U || viewState.gain == 2U || viewState.gain == 4U ||
                            viewState.gain == 8U || viewState.gain == 16U;
-    if (!validLayout || !validMetric || !validGain ||
-        viewState.differenceEdge[0] == viewState.differenceEdge[1] ||
-        sources_.find(viewState.differenceEdge[0]) == nullptr ||
-        sources_.find(viewState.differenceEdge[1]) == nullptr ||
-        (viewState.layout == ProjectViewLayout::kThreeUp && sources_.sourceCount() != 3U)) {
+    const bool validFilter = viewState.differenceFilter == ProjectDifferenceFilter::kNearest ||
+                             viewState.differenceFilter == ProjectDifferenceFilter::kBilinear ||
+                             viewState.differenceFilter == ProjectDifferenceFilter::kBicubic;
+    const bool validViewport =
+        std::isfinite(viewState.viewport.centerX) && std::isfinite(viewState.viewport.centerY) &&
+        std::isfinite(viewState.viewport.scale) && viewState.viewport.centerX >= 0.0F &&
+        viewState.viewport.centerX <= 1.0F && viewState.viewport.centerY >= 0.0F &&
+        viewState.viewport.centerY <= 1.0F && viewState.viewport.scale >= 1.0F &&
+        viewState.viewport.scale <= 64.0F;
+    const bool validRoi =
+        !viewState.roi.has_value() ||
+        (std::isfinite(viewState.roi->left) && std::isfinite(viewState.roi->top) &&
+         std::isfinite(viewState.roi->right) && std::isfinite(viewState.roi->bottom) &&
+         viewState.roi->left >= 0.0F && viewState.roi->top >= 0.0F &&
+         viewState.roi->right <= 1.0F && viewState.roi->bottom <= 1.0F &&
+         viewState.roi->left < viewState.roi->right && viewState.roi->top < viewState.roi->bottom);
+    const bool validEdge = !viewState.differenceEdge.has_value() ||
+                           ((*viewState.differenceEdge)[0] != (*viewState.differenceEdge)[1] &&
+                            sources_.find((*viewState.differenceEdge)[0]) != nullptr &&
+                            sources_.find((*viewState.differenceEdge)[1]) != nullptr);
+    const bool comparisonLayout = viewState.layout == ProjectViewLayout::kDifference ||
+                                  viewState.layout == ProjectViewLayout::kAnalysisGrid ||
+                                  viewState.layout == ProjectViewLayout::kWipe;
+    const bool singleSource = sources_.sourceCount() == 1U;
+    if (!validLayout || !validMetric || !validFilter || !validGain || !validViewport || !validRoi ||
+        !validEdge || !std::isfinite(viewState.wipePosition) || viewState.wipePosition < 0.0F ||
+        viewState.wipePosition > 1.0F || !std::isfinite(viewState.threshold) ||
+        viewState.threshold < 0.0F || viewState.threshold > 1.0F ||
+        (comparisonLayout && !viewState.differenceEdge.has_value()) ||
+        (singleSource != (viewState.layout == ProjectViewLayout::kSingle)) ||
+        (singleSource && viewState.differenceEdge.has_value()) ||
+        ((viewState.layout == ProjectViewLayout::kThreeUp ||
+          viewState.layout == ProjectViewLayout::kAnalysisGrid) &&
+         sources_.sourceCount() != 3U)) {
         return projectFailure(MediaErrorCode::kInvalidArgument,
                               MediaOperation::kProjectMutation,
                               std::nullopt,

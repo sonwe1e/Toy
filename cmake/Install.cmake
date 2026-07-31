@@ -5,7 +5,7 @@ set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 include(InstallRequiredSystemLibraries)
 
 install(
-    TARGETS VCStation VCStationCli
+    TARGETS VCStation VCStationCli VCStationShell
     RUNTIME_DEPENDENCIES
         DIRECTORIES
             "$<TARGET_FILE_DIR:VCStation>"

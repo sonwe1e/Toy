@@ -2,6 +2,7 @@
 
 #include "dvs/domain/ComparisonValidator.h"
 
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -19,8 +20,9 @@ namespace {
 
 using Json = nlohmann::json;
 
-constexpr std::int64_t kSchemaVersion = 3;
-constexpr std::int64_t kMigratableSchemaVersion = 2;
+constexpr std::int64_t kSchemaVersion = 4;
+constexpr std::int64_t kPreviousSchemaVersion = 3;
+constexpr std::int64_t kLegacyMigratableSchemaVersion = 2;
 
 [[nodiscard]] domain::MediaError persistenceError(const domain::MediaErrorCode code,
                                                   std::optional<domain::SourceId> sourceId,
@@ -162,6 +164,27 @@ template <typename TValue>
         return domain::Result<std::uint64_t>::failure(member.error());
     }
     return uint64Value(*member.value(), sourceId, field);
+}
+
+[[nodiscard]] domain::Result<float> floatMember(const Json& object,
+                                                const std::string_view field,
+                                                std::optional<domain::SourceId> sourceId) {
+    auto member = requiredMember(object, field, sourceId);
+    if (!member) {
+        return domain::Result<float>::failure(member.error());
+    }
+    if (!member.value()->is_number()) {
+        return invalidSchema<float>(sourceId,
+                                    "Field must be a finite number: " + std::string{field} + ".");
+    }
+    const double value = member.value()->get<double>();
+    if (!std::isfinite(value) ||
+        value < static_cast<double>((std::numeric_limits<float>::lowest)()) ||
+        value > static_cast<double>((std::numeric_limits<float>::max)())) {
+        return invalidSchema<float>(sourceId,
+                                    "Field must be a finite number: " + std::string{field} + ".");
+    }
+    return domain::Result<float>::success(static_cast<float>(value));
 }
 
 [[nodiscard]] domain::Result<std::uint32_t> uint32Member(const Json& object,
@@ -969,6 +992,12 @@ alignmentModeFromId(const std::string_view value) {
         return "reference-focus";
     case domain::ProjectViewLayout::kDifference:
         return "difference";
+    case domain::ProjectViewLayout::kAnalysisGrid:
+        return "analysis-grid";
+    case domain::ProjectViewLayout::kWipe:
+        return "wipe";
+    case domain::ProjectViewLayout::kSingle:
+        return "single";
     }
     return {};
 }
@@ -986,6 +1015,15 @@ viewLayoutFromId(const std::string_view value) {
     }
     if (value == "difference") {
         return domain::ProjectViewLayout::kDifference;
+    }
+    if (value == "analysis-grid") {
+        return domain::ProjectViewLayout::kAnalysisGrid;
+    }
+    if (value == "wipe") {
+        return domain::ProjectViewLayout::kWipe;
+    }
+    if (value == "single") {
+        return domain::ProjectViewLayout::kSingle;
     }
     return std::nullopt;
 }
@@ -1022,6 +1060,32 @@ differenceMetricFromId(const std::string_view value) {
     }
     if (value == "exact-planes") {
         return domain::ProjectDifferenceMetric::kExactPlanes;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string_view differenceFilterId(const domain::ProjectDifferenceFilter filter) {
+    switch (filter) {
+    case domain::ProjectDifferenceFilter::kNearest:
+        return "nearest";
+    case domain::ProjectDifferenceFilter::kBilinear:
+        return "bilinear";
+    case domain::ProjectDifferenceFilter::kBicubic:
+        return "bicubic";
+    }
+    return {};
+}
+
+[[nodiscard]] std::optional<domain::ProjectDifferenceFilter>
+differenceFilterFromId(const std::string_view value) {
+    if (value == "nearest") {
+        return domain::ProjectDifferenceFilter::kNearest;
+    }
+    if (value == "bilinear") {
+        return domain::ProjectDifferenceFilter::kBilinear;
+    }
+    if (value == "bicubic") {
+        return domain::ProjectDifferenceFilter::kBicubic;
     }
     return std::nullopt;
 }
@@ -1147,18 +1211,44 @@ differenceMetricFromId(const std::string_view value) {
 [[nodiscard]] domain::Result<Json> encodeView(const domain::ProjectViewState& view) {
     const std::string_view layout = viewLayoutId(view.layout);
     const std::string_view metric = differenceMetricId(view.differenceMetric);
-    if (layout.empty() || metric.empty()) {
+    const std::string_view filter = differenceFilterId(view.differenceFilter);
+    if (layout.empty() || metric.empty() || filter.empty()) {
         return invalidSchema<Json>(std::nullopt, "Project view enum is unknown.");
+    }
+    Json edge = nullptr;
+    if (view.differenceEdge.has_value()) {
+        edge = Json::array({(*view.differenceEdge)[0], (*view.differenceEdge)[1]});
+    }
+    Json roi = nullptr;
+    if (view.roi.has_value()) {
+        roi = Json{
+            {"left", view.roi->left},
+            {"top", view.roi->top},
+            {"right", view.roi->right},
+            {"bottom", view.roi->bottom},
+        };
     }
     return domain::Result<Json>::success(Json{
         {"layout", layout},
-        {"differenceEdge", Json::array({view.differenceEdge[0], view.differenceEdge[1]})},
+        {"differenceEdge", std::move(edge)},
         {"differenceMetric", metric},
+        {"differenceFilter", filter},
         {"gain", view.gain},
+        {"wipePosition", view.wipePosition},
+        {"thresholdEnabled", view.thresholdEnabled},
+        {"threshold", view.threshold},
+        {"viewport",
+         Json{
+             {"centerX", view.viewport.centerX},
+             {"centerY", view.viewport.centerY},
+             {"scale", view.viewport.scale},
+         }},
+        {"roi", std::move(roi)},
     });
 }
 
-[[nodiscard]] domain::Result<domain::ProjectViewState> decodeView(const Json& document) {
+[[nodiscard]] domain::Result<domain::ProjectViewState> decodeView(const Json& document,
+                                                                  const bool schemaThree) {
     auto layoutId = stringMember(document, "layout", std::nullopt);
     if (!layoutId) {
         return domain::Result<domain::ProjectViewState>::failure(layoutId.error());
@@ -1168,25 +1258,33 @@ differenceMetricFromId(const std::string_view value) {
         return invalidSchema<domain::ProjectViewState>(std::nullopt,
                                                        "Project view layout is unknown.");
     }
-    auto edgeDocument = arrayMember(document, "differenceEdge", std::nullopt);
-    if (!edgeDocument) {
-        return domain::Result<domain::ProjectViewState>::failure(edgeDocument.error());
+    auto edgeMember = requiredMember(document, "differenceEdge", std::nullopt);
+    if (!edgeMember) {
+        return domain::Result<domain::ProjectViewState>::failure(edgeMember.error());
     }
-    if (edgeDocument.value()->size() != 2U) {
-        return invalidSchema<domain::ProjectViewState>(
-            std::nullopt, "Project differenceEdge must contain exactly two source IDs.");
-    }
-    std::array<domain::SourceId, 2U> edge{};
-    for (std::size_t index = 0U; index < edge.size(); ++index) {
-        auto sourceId = uint64Value((*edgeDocument.value())[index], std::nullopt, "differenceEdge");
-        if (!sourceId) {
-            return domain::Result<domain::ProjectViewState>::failure(sourceId.error());
-        }
-        if (sourceId.value() > std::numeric_limits<domain::SourceId>::max()) {
+    std::optional<std::array<domain::SourceId, 2U>> edge;
+    if (!edgeMember.value()->is_null()) {
+        if (!edgeMember.value()->is_array() || edgeMember.value()->size() != 2U) {
             return invalidSchema<domain::ProjectViewState>(
-                std::nullopt, "Project differenceEdge source ID exceeds uint32 range.");
+                std::nullopt, "Project differenceEdge must be null or contain two source IDs.");
         }
-        edge[index] = static_cast<domain::SourceId>(sourceId.value());
+        std::array<domain::SourceId, 2U> decodedEdge{};
+        for (std::size_t index = 0U; index < decodedEdge.size(); ++index) {
+            auto sourceId =
+                uint64Value((*edgeMember.value())[index], std::nullopt, "differenceEdge");
+            if (!sourceId) {
+                return domain::Result<domain::ProjectViewState>::failure(sourceId.error());
+            }
+            if (sourceId.value() > std::numeric_limits<domain::SourceId>::max()) {
+                return invalidSchema<domain::ProjectViewState>(
+                    std::nullopt, "Project differenceEdge source ID exceeds uint32 range.");
+            }
+            decodedEdge[index] = static_cast<domain::SourceId>(sourceId.value());
+        }
+        edge = decodedEdge;
+    } else if (schemaThree) {
+        return invalidSchema<domain::ProjectViewState>(
+            std::nullopt, "Schema-3 project differenceEdge cannot be null.");
     }
     auto metricId = stringMember(document, "differenceMetric", std::nullopt);
     if (!metricId) {
@@ -1201,12 +1299,98 @@ differenceMetricFromId(const std::string_view value) {
     if (!gain) {
         return domain::Result<domain::ProjectViewState>::failure(gain.error());
     }
-    return domain::Result<domain::ProjectViewState>::success(domain::ProjectViewState{
+    domain::ProjectViewState view{
         .layout = *layout,
         .differenceEdge = edge,
         .differenceMetric = *metric,
         .gain = gain.value(),
-    });
+    };
+    if (schemaThree) {
+        return domain::Result<domain::ProjectViewState>::success(std::move(view));
+    }
+
+    auto filterId = stringMember(document, "differenceFilter", std::nullopt);
+    if (!filterId) {
+        return domain::Result<domain::ProjectViewState>::failure(filterId.error());
+    }
+    const auto filter = differenceFilterFromId(filterId.value());
+    if (!filter.has_value()) {
+        return invalidSchema<domain::ProjectViewState>(std::nullopt,
+                                                       "Project difference filter is unknown.");
+    }
+    auto wipePosition = floatMember(document, "wipePosition", std::nullopt);
+    auto thresholdEnabled = boolMember(document, "thresholdEnabled", std::nullopt);
+    auto threshold = floatMember(document, "threshold", std::nullopt);
+    auto viewportDocument = objectMember(document, "viewport", std::nullopt);
+    if (!wipePosition) {
+        return domain::Result<domain::ProjectViewState>::failure(wipePosition.error());
+    }
+    if (!thresholdEnabled) {
+        return domain::Result<domain::ProjectViewState>::failure(thresholdEnabled.error());
+    }
+    if (!threshold) {
+        return domain::Result<domain::ProjectViewState>::failure(threshold.error());
+    }
+    if (!viewportDocument) {
+        return domain::Result<domain::ProjectViewState>::failure(viewportDocument.error());
+    }
+    auto centerX = floatMember(*viewportDocument.value(), "centerX", std::nullopt);
+    auto centerY = floatMember(*viewportDocument.value(), "centerY", std::nullopt);
+    auto scale = floatMember(*viewportDocument.value(), "scale", std::nullopt);
+    if (!centerX) {
+        return domain::Result<domain::ProjectViewState>::failure(centerX.error());
+    }
+    if (!centerY) {
+        return domain::Result<domain::ProjectViewState>::failure(centerY.error());
+    }
+    if (!scale) {
+        return domain::Result<domain::ProjectViewState>::failure(scale.error());
+    }
+
+    auto roiMember = requiredMember(document, "roi", std::nullopt);
+    if (!roiMember) {
+        return domain::Result<domain::ProjectViewState>::failure(roiMember.error());
+    }
+    std::optional<domain::ProjectNormalizedRect> roi;
+    if (!roiMember.value()->is_null()) {
+        if (!roiMember.value()->is_object()) {
+            return invalidSchema<domain::ProjectViewState>(
+                std::nullopt, "Project ROI must be an object or null.");
+        }
+        auto left = floatMember(*roiMember.value(), "left", std::nullopt);
+        auto top = floatMember(*roiMember.value(), "top", std::nullopt);
+        auto right = floatMember(*roiMember.value(), "right", std::nullopt);
+        auto bottom = floatMember(*roiMember.value(), "bottom", std::nullopt);
+        if (!left) {
+            return domain::Result<domain::ProjectViewState>::failure(left.error());
+        }
+        if (!top) {
+            return domain::Result<domain::ProjectViewState>::failure(top.error());
+        }
+        if (!right) {
+            return domain::Result<domain::ProjectViewState>::failure(right.error());
+        }
+        if (!bottom) {
+            return domain::Result<domain::ProjectViewState>::failure(bottom.error());
+        }
+        roi = domain::ProjectNormalizedRect{
+            .left = left.value(),
+            .top = top.value(),
+            .right = right.value(),
+            .bottom = bottom.value(),
+        };
+    }
+    view.differenceFilter = *filter;
+    view.wipePosition = wipePosition.value();
+    view.thresholdEnabled = thresholdEnabled.value();
+    view.threshold = threshold.value();
+    view.viewport = domain::ProjectViewTransform{
+        .centerX = centerX.value(),
+        .centerY = centerY.value(),
+        .scale = scale.value(),
+    };
+    view.roi = roi;
+    return domain::Result<domain::ProjectViewState>::success(std::move(view));
 }
 
 [[nodiscard]] domain::Result<Json> encodeDocument(const domain::Project& project,
@@ -1289,12 +1473,13 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
                              std::nullopt,
                              "Legacy A/B schema-1 documents are not migrated."));
     }
-    if (schemaVersion.value() != kMigratableSchemaVersion &&
+    if (schemaVersion.value() != kLegacyMigratableSchemaVersion &&
+        schemaVersion.value() != kPreviousSchemaVersion &&
         schemaVersion.value() != kSchemaVersion) {
         return domain::Result<domain::Project>::failure(
             persistenceError(domain::MediaErrorCode::kUnsupportedProjectSchema,
                              std::nullopt,
-                             "Only project schema versions 2 and 3 are supported."));
+                             "Only project schema versions 2, 3, and 4 are supported."));
     }
 
     auto projectDirectory = projectDirectoryFor(projectPath);
@@ -1319,10 +1504,12 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
         return domain::Result<domain::Project>::failure(sourcesArray.error());
     }
     const auto& sourcesList = *sourcesArray.value();
-    if (sourcesList.size() < 2 || sourcesList.size() > 3) {
-        return invalidSchema<domain::Project>(std::nullopt,
-                                              "Sources array must contain 2-3 entries; got " +
-                                                  std::to_string(sourcesList.size()) + ".");
+    const std::size_t minimumSources = schemaVersion.value() == kSchemaVersion ? 1U : 2U;
+    if (sourcesList.size() < minimumSources || sourcesList.size() > 3U) {
+        return invalidSchema<domain::Project>(
+            std::nullopt,
+            "Sources array has an invalid count for its schema version; got " +
+                std::to_string(sourcesList.size()) + ".");
     }
 
     std::optional<domain::SourceId> referenceSourceId;
@@ -1433,8 +1620,14 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
     domain::ProjectAlignmentState alignmentState;
     domain::ProjectViewState viewState;
     const auto persistedSources = validation.set.sources();
-    viewState.differenceEdge = {persistedSources[0].id, persistedSources[1].id};
-    if (schemaVersion.value() == kSchemaVersion) {
+    if (persistedSources.size() == 1U) {
+        viewState.layout = domain::ProjectViewLayout::kSingle;
+    } else {
+        viewState.differenceEdge =
+            std::array<domain::SourceId, 2U>{persistedSources[0].id, persistedSources[1].id};
+    }
+    if (schemaVersion.value() == kPreviousSchemaVersion ||
+        schemaVersion.value() == kSchemaVersion) {
         auto alignmentDocument = objectMember(document, "alignment", std::nullopt);
         if (!alignmentDocument) {
             return domain::Result<domain::Project>::failure(alignmentDocument.error());
@@ -1449,7 +1642,8 @@ decodeDocument(const Json& document, const std::filesystem::path& projectPath) {
         if (!viewDocument) {
             return domain::Result<domain::Project>::failure(viewDocument.error());
         }
-        auto view = decodeView(*viewDocument.value());
+        auto view =
+            decodeView(*viewDocument.value(), schemaVersion.value() == kPreviousSchemaVersion);
         if (!view) {
             return domain::Result<domain::Project>::failure(view.error());
         }

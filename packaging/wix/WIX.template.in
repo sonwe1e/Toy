@@ -16,6 +16,7 @@
         Scope="$(var.CPACK_WIX_INSTALL_SCOPE)"
         InstallerVersion="500"
         Language="1033"
+        Codepage="65001"
         Compressed="yes"
         >
 
@@ -82,6 +83,142 @@
                     Value=""
                     Type="string"/>
             </Component>
+            <Component
+                Id="VCStationExplorerCommand"
+                Guid="D20DA233-4317-45D8-B878-00BF4486F1C4"
+                Bitness="always64">
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Value="VCStation Explorer comparison command"
+                    Type="string"
+                    KeyPath="yes"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}\InprocServer32"
+                    Value="[INSTALL_ROOT]VCStationShell.dll"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}\InprocServer32"
+                    Name="ThreadingModel"
+                    Value="Apartment"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mp4\shell\VCStation.Compare"
+                    Name="MUIVerb"
+                    Value="使用 VCStation 对比"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mp4\shell\VCStation.Compare"
+                    Name="ExplorerCommandHandler"
+                    Value="{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mp4\shell\VCStation.Compare"
+                    Name="MultiSelectModel"
+                    Value="Player"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mkv\shell\VCStation.Compare"
+                    Name="MUIVerb"
+                    Value="使用 VCStation 对比"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mkv\shell\VCStation.Compare"
+                    Name="ExplorerCommandHandler"
+                    Value="{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mkv\shell\VCStation.Compare"
+                    Name="MultiSelectModel"
+                    Value="Player"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mov\shell\VCStation.Compare"
+                    Name="MUIVerb"
+                    Value="使用 VCStation 对比"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mov\shell\VCStation.Compare"
+                    Name="ExplorerCommandHandler"
+                    Value="{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mov\shell\VCStation.Compare"
+                    Name="MultiSelectModel"
+                    Value="Player"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.avi\shell\VCStation.Compare"
+                    Name="MUIVerb"
+                    Value="使用 VCStation 对比"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.avi\shell\VCStation.Compare"
+                    Name="ExplorerCommandHandler"
+                    Value="{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.avi\shell\VCStation.Compare"
+                    Name="MultiSelectModel"
+                    Value="Player"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
+                    Name="MUIVerb"
+                    Value="使用 VCStation 对比"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
+                    Name="ExplorerCommandHandler"
+                    Value="{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Type="string"/>
+                <RegistryValue
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
+                    Name="MultiSelectModel"
+                    Value="Player"
+                    Type="string"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}"
+                    Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mp4\shell\VCStation.Compare"
+                    Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mkv\shell\VCStation.Compare"
+                    Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.mov\shell\VCStation.Compare"
+                    Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.avi\shell\VCStation.Compare"
+                    Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
+                    Action="removeOnUninstall"/>
+            </Component>
         </DirectoryRef>
 
         <StandardDirectory Id="ProgramMenuFolder">
@@ -112,6 +249,7 @@
 
         <FeatureRef Id="ProductFeature">
             <ComponentRef Id="VCStationProjectAssociation"/>
+            <ComponentRef Id="VCStationExplorerCommand"/>
             <ComponentRef Id="VCStationStartMenuShortcut"/>
         </FeatureRef>
 

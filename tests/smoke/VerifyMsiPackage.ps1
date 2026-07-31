@@ -157,7 +157,8 @@ try {
     $installRoot = Join-Path $env:ProgramFiles 'VCStation'
     $gui = Join-Path $installRoot 'VCStation.exe'
     $cli = Join-Path $installRoot 'VCStationCli.exe'
-    foreach ($path in @($gui, $cli)) {
+    $shell = Join-Path $installRoot 'VCStationShell.dll'
+    foreach ($path in @($gui, $cli, $shell)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Installed executable is missing: $path"
         }
@@ -179,6 +180,28 @@ try {
         -Name '(default)'
     if ($openCommand -notmatch 'VCStation\.exe.+%1') {
         throw "Unexpected .dvsproj open command: $openCommand"
+    }
+    $shellClsid = '{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}'
+    $shellServer = Get-ItemPropertyValue `
+        -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$shellClsid\InprocServer32" `
+        -Name '(default)'
+    if ([IO.Path]::GetFullPath($shellServer) -cne [IO.Path]::GetFullPath($shell)) {
+        throw "Unexpected VCStation Explorer command server: $shellServer"
+    }
+    foreach ($videoExtension in @('.mp4', '.mkv', '.mov', '.avi', '.m4v')) {
+        $verbKey = (
+            'Registry::HKEY_LOCAL_MACHINE\Software\Classes\SystemFileAssociations\' +
+            "$videoExtension\shell\VCStation.Compare"
+        )
+        $handler = Get-ItemPropertyValue `
+            -LiteralPath $verbKey `
+            -Name 'ExplorerCommandHandler'
+        $selectionModel = Get-ItemPropertyValue `
+            -LiteralPath $verbKey `
+            -Name 'MultiSelectModel'
+        if ($handler -cne $shellClsid -or $selectionModel -cne 'Player') {
+            throw "Unexpected Explorer command registration for $videoExtension."
+        }
     }
 
     & $cli --startup-check
@@ -242,6 +265,22 @@ if ($remainingProducts) {
 if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\.dvsproj') {
     throw 'The .dvsproj association remained after uninstall.'
 }
+$shellClsidPath = (
+    'Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\' +
+    '{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}'
+)
+if (Test-Path -LiteralPath $shellClsidPath) {
+    throw 'The VCStation Explorer command COM registration remained after uninstall.'
+}
+foreach ($videoExtension in @('.mp4', '.mkv', '.mov', '.avi', '.m4v')) {
+    $verbKey = (
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\SystemFileAssociations\' +
+        "$videoExtension\shell\VCStation.Compare"
+    )
+    if (Test-Path -LiteralPath $verbKey) {
+        throw "The Explorer command registration remained for $videoExtension."
+    }
+}
 foreach ($shortcutName in @('VCStation.lnk', 'DualVideoStudio.lnk')) {
     $shortcut = Find-CommonShortcut -Name $shortcutName
     if ($shortcut) {
@@ -251,5 +290,5 @@ foreach ($shortcutName in @('VCStation.lnk', 'DualVideoStudio.lnk')) {
 
 $mode = if ($PreviousMsiPath) { 'upgrade' } else { 'install' }
 Write-Host (
-    "VCStation MSI $mode, shortcut, association, probe, ARP, and uninstall checks passed."
+    "VCStation MSI $mode, Shell command, association, probe, ARP, and uninstall checks passed."
 )
