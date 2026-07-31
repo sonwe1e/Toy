@@ -111,7 +111,7 @@ public:
         return StartResult::Primary;
     }
 
-    void setRequestHandler(std::function<void(StartupRequest)> handler) {
+    void setRequestHandler(std::function<bool(StartupRequest)> handler) {
         handler_ = std::move(handler);
         if (!handler_) {
             return;
@@ -119,7 +119,7 @@ public:
         while (!pendingRequests_.empty()) {
             StartupRequest request = std::move(pendingRequests_.front());
             pendingRequests_.pop_front();
-            handler_(std::move(request));
+            static_cast<void>(handler_(std::move(request)));
         }
     }
 
@@ -155,13 +155,16 @@ private:
         iterator.value().remove(0, terminator + 1);
         const StartupRequestParseResult decoded = decodeStartupRequest(payload);
         if (decoded && (handler_ || pendingRequests_.size() < kMaximumPendingRequests)) {
+            bool accepted = true;
             if (handler_) {
-                handler_(std::move(*decoded.request));
+                accepted = handler_(std::move(*decoded.request));
             } else {
                 pendingRequests_.push_back(std::move(*decoded.request));
             }
-            static_cast<void>(socket.write(QByteArrayLiteral("OK\n")));
-            static_cast<void>(socket.flush());
+            if (accepted) {
+                static_cast<void>(socket.write(QByteArrayLiteral("OK\n")));
+                static_cast<void>(socket.flush());
+            }
         }
         socket.disconnectFromServer();
     }
@@ -171,7 +174,7 @@ private:
     QLockFile electionLock_;
     QLocalServer server_;
     QHash<QLocalSocket*, QByteArray> buffers_;
-    std::function<void(StartupRequest)> handler_;
+    std::function<bool(StartupRequest)> handler_;
     std::deque<StartupRequest> pendingRequests_;
 };
 
@@ -188,7 +191,7 @@ StartupRequestBroker::startOrForward(const StartupRequest& request) {
     return impl_->startOrForward(request);
 }
 
-void StartupRequestBroker::setRequestHandler(std::function<void(StartupRequest)> handler) {
+void StartupRequestBroker::setRequestHandler(std::function<bool(StartupRequest)> handler) {
     impl_->setRequestHandler(std::move(handler));
 }
 

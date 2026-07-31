@@ -56,6 +56,7 @@ public:
     [[nodiscard]] std::vector<CommandTerminal> takeCompletedPlaybackCommands();
 
     [[nodiscard]] PortSubmitResult openProject(const std::filesystem::path& projectPath);
+    [[nodiscard]] PortSubmitResult closeReview();
     [[nodiscard]] PortSubmitResult saveProject(const std::filesystem::path& projectPath,
                                                std::string displayName,
                                                domain::ProjectViewState viewState);

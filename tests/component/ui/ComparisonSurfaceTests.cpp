@@ -300,6 +300,68 @@ TEST(ComparisonSurfaceGeometryTests, ComposesOneSynchronizedViewportInsideTheRoi
     EXPECT_FLOAT_EQ(sample.bottom, 0.5F);
 }
 
+TEST(ComparisonSurfaceGeometryTests, SharesThreeSourcePanelGeometryWithLabels) {
+    const platform::SurfacePanelLayout threeUp =
+        platform::computeSurfacePanelLayout(platform::SurfaceViewMode::ThreeUp,
+                                            901.0F,
+                                            600.0F,
+                                            901U,
+                                            600U,
+                                            0U,
+                                            platform::SurfaceDifferenceEdge::Between0And1,
+                                            0.5F);
+    ASSERT_EQ(threeUp.sourceCount, 3U);
+    EXPECT_EQ(threeUp.sourceSlots, (std::array<std::uint8_t, 3U>{0U, 1U, 2U}));
+    EXPECT_FLOAT_EQ(threeUp.sourceRects[0U].width + threeUp.sourceRects[1U].width +
+                        threeUp.sourceRects[2U].width,
+                    901.0F);
+
+    const platform::SurfacePanelLayout focus =
+        platform::computeSurfacePanelLayout(platform::SurfaceViewMode::ReferenceFocus,
+                                            900.0F,
+                                            601.0F,
+                                            900U,
+                                            601U,
+                                            2U,
+                                            platform::SurfaceDifferenceEdge::Between0And1,
+                                            0.5F);
+    ASSERT_EQ(focus.sourceCount, 3U);
+    EXPECT_EQ(focus.sourceSlots, (std::array<std::uint8_t, 3U>{2U, 0U, 1U}));
+    EXPECT_FLOAT_EQ(focus.sourceRects[0U].width, 600.0F);
+    EXPECT_FLOAT_EQ(focus.sourceRects[1U].x, 600.0F);
+
+    const platform::SurfacePanelLayout grid =
+        platform::computeSurfacePanelLayout(platform::SurfaceViewMode::AnalysisGrid,
+                                            901.0F,
+                                            601.0F,
+                                            901U,
+                                            601U,
+                                            0U,
+                                            platform::SurfaceDifferenceEdge::Between0And2,
+                                            0.5F);
+    ASSERT_EQ(grid.sourceCount, 3U);
+    ASSERT_TRUE(grid.differenceRect.has_value());
+    EXPECT_FLOAT_EQ(grid.sourceRects[2U].y, grid.differenceRect->y);
+    EXPECT_FLOAT_EQ(grid.sourceRects[1U].x, grid.differenceRect->x);
+}
+
+TEST(ComparisonSurfaceGeometryTests, MapsWipeLabelsToSelectedPairAndSplit) {
+    const platform::SurfacePanelLayout wipe =
+        platform::computeSurfacePanelLayout(platform::SurfaceViewMode::Wipe,
+                                            800.0F,
+                                            450.0F,
+                                            800U,
+                                            450U,
+                                            0U,
+                                            platform::SurfaceDifferenceEdge::Between1And2,
+                                            0.25F);
+    ASSERT_EQ(wipe.sourceCount, 2U);
+    EXPECT_EQ(wipe.sourceSlots[0U], 1U);
+    EXPECT_EQ(wipe.sourceSlots[1U], 2U);
+    EXPECT_FLOAT_EQ(wipe.sourceRects[0U].width, 200.0F);
+    EXPECT_FLOAT_EQ(wipe.sourceRects[1U].x, 200.0F);
+}
+
 TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
     const domain::ColorMetadata bt601{
         .matrix = domain::ColorMatrix::kBt601,

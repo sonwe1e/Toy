@@ -156,8 +156,15 @@ dvs_add_test(
         -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyMsiPackage.ps1"
         -MsiPath "${PROJECT_SOURCE_DIR}/out/package/msi/VCStation-${PROJECT_VERSION}-windows-x64.msi"
         -ExpectedVersion "${PROJECT_VERSION}"
+        -ExpectedShellBinaryName "${DVS_SHELL_BINARY_NAME}"
         -ProbeFixture
         "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+)
+set_tests_properties(
+    package.msi-install-association
+    PROPERTIES
+        RUN_SERIAL TRUE
+        RESOURCE_LOCK vcstation-machine-install
 )
 
 if(DVS_PREVIOUS_RELEASE_MSI)
@@ -174,9 +181,16 @@ if(DVS_PREVIOUS_RELEASE_MSI)
             -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyMsiPackage.ps1"
             -MsiPath "${PROJECT_SOURCE_DIR}/out/package/msi/VCStation-${PROJECT_VERSION}-windows-x64.msi"
             -ExpectedVersion "${PROJECT_VERSION}"
+            -ExpectedShellBinaryName "${DVS_SHELL_BINARY_NAME}"
             -ProbeFixture
             "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
             -PreviousMsiPath "${DVS_PREVIOUS_RELEASE_MSI}"
+    )
+    set_tests_properties(
+        package.msi-upgrade-from-1.1.0
+        PROPERTIES
+            RUN_SERIAL TRUE
+            RESOURCE_LOCK vcstation-machine-install
     )
 endif()
 

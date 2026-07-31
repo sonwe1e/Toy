@@ -18,45 +18,62 @@ QtObject {
     readonly property bool canTogglePlayback: Boolean(controller && (controller.playing ? controller.canPause : controller.canPlay))
 
     signal wipePositionRequested(real position)
+    signal manualNavigationRequested
 
     function firstFrame() {
-        if (canFirst)
+        if (canFirst) {
+            manualNavigationRequested();
             controller.first();
+        }
     }
 
     function previousFrame() {
-        if (canPrevious)
+        if (canPrevious) {
+            manualNavigationRequested();
             controller.previous();
+        }
     }
 
     function nextFrame() {
-        if (canNext)
+        if (canNext) {
+            manualNavigationRequested();
             controller.next();
+        }
     }
 
     function lastFrame() {
-        if (canLast)
+        if (canLast) {
+            manualNavigationRequested();
             controller.last();
+        }
     }
 
     function stepBackwardFive() {
-        if (canPrevious)
+        if (canPrevious) {
+            manualNavigationRequested();
             controller.stepFrames(-5);
+        }
     }
 
     function stepForwardFive() {
-        if (canNext)
+        if (canNext) {
+            manualNavigationRequested();
             controller.stepFrames(5);
+        }
     }
 
     function stepBackwardSecond() {
-        if (canPrevious)
+        if (canPrevious) {
+            manualNavigationRequested();
             controller.stepFrames(-Math.max(1, oneSecondStepFrames));
+        }
     }
 
     function stepForwardSecond() {
-        if (canNext)
+        if (canNext) {
+            manualNavigationRequested();
             controller.stepFrames(Math.max(1, oneSecondStepFrames));
+        }
     }
 
     function togglePlayback() {

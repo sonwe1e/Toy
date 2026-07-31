@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QQuickItem>
+#include <QVariantList>
 
 #include <memory>
 
@@ -34,6 +35,8 @@ class ComparisonSurface : public QQuickItem {
     Q_PROPERTY(
         qreal wipePosition READ wipePosition WRITE setWipePosition NOTIFY wipePositionChanged)
     Q_PROPERTY(qreal wipeSplitLogicalX READ wipeSplitLogicalX NOTIFY presentationGeometryChanged)
+    Q_PROPERTY(
+        QVariantList sourcePanelRects READ sourcePanelRects NOTIFY presentationGeometryChanged)
     Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
                    exactPlaneAvailableChanged)
     Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
@@ -124,6 +127,7 @@ public:
     [[nodiscard]] qreal wipePosition() const noexcept;
     void setWipePosition(qreal value);
     [[nodiscard]] qreal wipeSplitLogicalX() const noexcept;
+    [[nodiscard]] QVariantList sourcePanelRects() const;
     [[nodiscard]] bool exactPlaneAvailable() const noexcept;
     void setExactPlaneAvailable(bool value);
     [[nodiscard]] bool thresholdEnabled() const noexcept;

@@ -347,6 +347,41 @@ TEST(WorkspaceCoordinatorTests, LoadsAndRestoresOffsetsAnchorsAndLastFrameInOrde
     EXPECT_TRUE(workspace->takeCompletedPlaybackCommands().empty());
 }
 
+TEST(WorkspaceCoordinatorTests, ClosesReadyReviewAndClearsWorkspaceProjection) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSet());
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    ASSERT_EQ(workspace->submitPlayback(PlaybackCommand{SeekFrameCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = domain::SessionId{1U},
+                          .sessionEpoch = domain::SessionEpoch{2U},
+                          .commandId = domain::CommandId{42U},
+                      },
+                  .frameId = domain::FrameId{1},
+              }}),
+              PortSubmitResult::Accepted);
+    playback->succeedLastCommand();
+    EXPECT_TRUE(workspace->snapshot()->dirty);
+
+    ASSERT_EQ(workspace->closeReview(), PortSubmitResult::Accepted);
+    ASSERT_TRUE(std::holds_alternative<CloseSessionCommand>(playback->commands.back()));
+    playback->current = std::make_shared<SessionSnapshot>();
+    playback->current->sessionState = domain::SessionState::kEmpty;
+    playback->succeedLastCommand();
+    const auto closed = workspace->snapshot();
+    ASSERT_NE(closed, nullptr);
+    EXPECT_FALSE(closed->busy);
+    EXPECT_FALSE(closed->dirty);
+    EXPECT_FALSE(closed->hasProject);
+    EXPECT_TRUE(closed->projectPath.empty());
+    EXPECT_TRUE(closed->displayName.empty());
+    EXPECT_FALSE(closed->restoredViewState.has_value());
+}
+
 TEST(WorkspaceCoordinatorTests, SavesASingleSourceProjectWithSingleViewAndNoDifferenceEdge) {
     auto repository = std::make_shared<FakeProjectRepository>();
     auto playback = std::make_shared<FakePlayback>();

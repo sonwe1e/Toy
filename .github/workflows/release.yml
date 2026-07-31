@@ -24,6 +24,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Validate tag and project version
@@ -41,6 +42,7 @@ jobs:
           if ($actualSha -cne '${{ github.sha }}') {
             throw "Expected commit ${{ github.sha }}, checked out $actualSha."
           }
+          .\tools\verify-release-commit.ps1
 
   quality:
     name: Quality suites
@@ -151,7 +153,17 @@ jobs:
             $certificatePath,
             [Convert]::FromBase64String($env:DVS_SIGNING_PFX_BASE64)
           )
-          "DVS_SIGNING_PFX=$certificatePath" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          try {
+            $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
+            $thumbprint = .\tools\import-release-certificate.ps1 `
+              -PfxPath $certificatePath `
+              -Password $password
+            "DVS_SIGNING_CERTIFICATE_THUMBPRINT=$thumbprint" |
+              Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+          finally {
+            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Resolve toolchain and previous release
         shell: pwsh
@@ -204,26 +216,24 @@ jobs:
           cmake --preset release "-DDVS_PREVIOUS_RELEASE_MSI=$env:DVS_PREVIOUS_RELEASE_MSI"
           cmake --build --preset release
           ctest --preset release --output-on-failure
+          $metadata = Get-Content '.\out\build\release\release-metadata.json' -Raw |
+            ConvertFrom-Json
+          "DVS_SHELL_BINARY_NAME=$($metadata.shellBinaryName)" |
+            Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Sign application binaries
         shell: pwsh
-        env:
-          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
         run: |
-          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
           .\tools\sign-release.ps1 `
             -Path @(
               '.\out\build\release\bin\VCStation.exe',
               '.\out\build\release\bin\VCStationCli.exe',
-              '.\out\build\release\bin\VCStationShell-1.2.dll'
+              ".\out\build\release\bin\$env:DVS_SHELL_BINARY_NAME"
             ) `
-            -PfxPath $env:DVS_SIGNING_PFX `
-            -PfxPassword $password
+            -CertificateThumbprint $env:DVS_SIGNING_CERTIFICATE_THUMBPRINT
 
       - name: Package and validate release identity
         shell: pwsh
-        env:
-          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
         run: |
           cpack --preset release-zip
           cpack --preset release-msi
@@ -231,11 +241,9 @@ jobs:
           $zip = Resolve-Path ".\out\package\zip\VCStation-$version-windows-x64.zip"
           $msi = Resolve-Path ".\out\package\msi\VCStation-$version-windows-x64.msi"
           wix msi validate $msi.Path
-          $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
           .\tools\sign-release.ps1 `
             -Path $msi.Path `
-            -PfxPath $env:DVS_SIGNING_PFX `
-            -PfxPassword $password
+            -CertificateThumbprint $env:DVS_SIGNING_CERTIFICATE_THUMBPRINT
           .\tools\verify-release-version.ps1 `
             -Tag $env:GITHUB_REF_NAME `
             -Executable '.\out\build\release\bin\VCStation.exe' `
@@ -263,8 +271,11 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if ($env:DVS_SIGNING_PFX -and (Test-Path -LiteralPath $env:DVS_SIGNING_PFX)) {
-            Remove-Item -LiteralPath $env:DVS_SIGNING_PFX -Force
+          if ($env:DVS_SIGNING_CERTIFICATE_THUMBPRINT) {
+            $certificate = "Cert:\CurrentUser\My\$env:DVS_SIGNING_CERTIFICATE_THUMBPRINT"
+            if (Test-Path -LiteralPath $certificate) {
+              Remove-Item -LiteralPath $certificate -Force
+            }
           }
 
       - name: Publish GitHub release

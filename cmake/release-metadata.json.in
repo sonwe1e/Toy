@@ -1,0 +1,4 @@
+{
+  "version": "@PROJECT_VERSION@",
+  "shellBinaryName": "@DVS_SHELL_BINARY_NAME@"
+}

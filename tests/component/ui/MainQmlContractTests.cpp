@@ -7,6 +7,8 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QObject>
@@ -18,6 +20,7 @@
 #include <QQuickWindow>
 #include <QResource>
 #include <QStringList>
+#include <QThread>
 #include <QUrl>
 #include <QVariant>
 #include <QtQml/qqml.h>
@@ -158,6 +161,29 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(qobject_cast<QQuickWindow*>(root.get()), nullptr);
     QCoreApplication::processEvents();
     ASSERT_EQ(controller.sources()->rowCount(), 2);
+
+    root->setProperty("activeStartupRequest", QVariantMap{{QStringLiteral("kind"), 2}});
+    const QVariant requestUrls = QVariantList{QUrl::fromLocalFile(QStringLiteral("C:/a.mp4"))};
+    for (int requestIndex = 0; requestIndex < 8; ++requestIndex) {
+        QVariant accepted;
+        ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
+                                              "enqueueStartupRequest",
+                                              Q_RETURN_ARG(QVariant, accepted),
+                                              Q_ARG(QVariant, QVariant{2}),
+                                              Q_ARG(QVariant, requestUrls)));
+        EXPECT_TRUE(accepted.toBool());
+    }
+    QVariant overflowAccepted;
+    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
+                                          "enqueueStartupRequest",
+                                          Q_RETURN_ARG(QVariant, overflowAccepted),
+                                          Q_ARG(QVariant, QVariant{2}),
+                                          Q_ARG(QVariant, requestUrls)));
+    EXPECT_FALSE(overflowAccepted.toBool());
+    EXPECT_EQ(root->property("startupRequestQueue").toList().size(), 8);
+    root->setProperty("startupRequestQueue", QVariantList{});
+    root->setProperty("activeStartupRequest", QVariant{});
+
     EXPECT_TRUE(root->property("manualAnchorActive").toBool());
     EXPECT_FALSE(root->property("manualOffsetActive").toBool());
     EXPECT_TRUE(root->property("anyManualAlignmentActive").toBool());
@@ -196,6 +222,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
     auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
     QObject* const badCaseDialog = root->findChild<QObject*>(QStringLiteral("badCaseFolderDialog"));
+    QObject* const analysisGridMenuItem =
+        root->findChild<QObject*>(QStringLiteral("analysisGridMenuItem"));
     ASSERT_NE(inspector, nullptr);
     ASSERT_NE(scroller, nullptr);
     ASSERT_NE(transport, nullptr);
@@ -209,6 +237,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(firstButton, nullptr);
     ASSERT_NE(lastButton, nullptr);
     ASSERT_NE(badCaseDialog, nullptr);
+    ASSERT_NE(analysisGridMenuItem, nullptr);
+    EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());
     EXPECT_FALSE(inspector->property("visible").toBool());
     EXPECT_EQ(root->property("minimumWidth").toDouble(), 960.0);
     EXPECT_TRUE(scroller->clip());
@@ -218,6 +248,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_GT(lastButton->width(), 0.0);
     EXPECT_TRUE(analysisChrome->property("visible").toBool());
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 2);
+    EXPECT_EQ(viewModeCombo->property("count").toInt(), 3);
 
     window->resize(960, 640);
     window->show();
@@ -267,6 +298,19 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         .outcome = application::CommandOutcome::Succeeded,
     });
     controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(immersiveHud->property("visible").toBool());
+    QElapsedTimer hudWait;
+    hudWait.start();
+    while (hudWait.elapsed() < 900) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(5U);
+    }
+    EXPECT_FALSE(immersiveHud->property("visible").toBool());
+    snapshot->displayedFrame = domain::FrameId{2};
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_FALSE(immersiveHud->property("visible").toBool());
     sendKey(*window, Qt::Key_Space);
     ASSERT_FALSE(submitted.empty());
     EXPECT_NE(std::get_if<application::PlayCommand>(&submitted.back()), nullptr);
@@ -276,11 +320,39 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_TRUE(root->property("chromeVisible").toBool());
     EXPECT_TRUE(transport->isVisible());
 
+    snapshot->sources.push_back(application::SessionSourceView{
+        .sourceId = 2U,
+        .role = domain::ComparisonRole::kPrediction,
+        .displayName = "C",
+    });
+    snapshot->presentedSources.push_back(application::PresentedSourceState{
+        .sourceId = 2U,
+        .sourceFrameId = domain::FrameId{2},
+        .matchKind = application::FrameMatchKind::ExactIndex,
+    });
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::ThreeUp);
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 3);
+    EXPECT_EQ(viewModeCombo->property("count").toInt(), 6);
+    EXPECT_TRUE(analysisGridMenuItem->property("enabled").toBool());
+
+    snapshot->sources.resize(2U);
+    snapshot->presentedSources.resize(2U);
+    controller.refreshProjection();
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
+    QCoreApplication::processEvents();
+    EXPECT_EQ(preferences.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
+    EXPECT_EQ(viewModeCombo->property("count").toInt(), 3);
+    EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());
+
     snapshot->sources.resize(1U);
     snapshot->presentedSources.resize(1U);
     controller.refreshProjection();
     QCoreApplication::processEvents();
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 1);
+    EXPECT_EQ(viewModeCombo->property("count").toInt(), 1);
+    EXPECT_FALSE(viewModeCombo->isEnabled());
 }
 
 } // namespace

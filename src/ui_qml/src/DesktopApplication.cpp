@@ -183,6 +183,25 @@ public:
             window_, "reviewDroppedUrls", Q_ARG(QVariant, QVariant::fromValue(values)));
     }
 
+    [[nodiscard]] bool enqueueStartupRequest(const int kind, const QList<QUrl>& files) {
+        if (window_ == nullptr || kind < 0) {
+            return false;
+        }
+        QVariantList values;
+        values.reserve(files.size());
+        for (const QUrl& file : files) {
+            values.push_back(file);
+        }
+        QVariant accepted;
+        const bool invoked =
+            QMetaObject::invokeMethod(window_,
+                                      "enqueueStartupRequest",
+                                      Q_RETURN_ARG(QVariant, accepted),
+                                      Q_ARG(QVariant, QVariant::fromValue(kind)),
+                                      Q_ARG(QVariant, QVariant::fromValue(values)));
+        return invoked && accepted.toBool();
+    }
+
     void activateWindow() noexcept {
         if (window_ == nullptr) {
             return;
@@ -357,6 +376,10 @@ double DesktopApplication::activeScreenRefreshRate() const noexcept {
 
 bool DesktopApplication::reviewLocalFiles(const QList<QUrl>& files) {
     return impl_->reviewLocalFiles(files);
+}
+
+bool DesktopApplication::enqueueStartupRequest(const int kind, const QList<QUrl>& files) {
+    return impl_->enqueueStartupRequest(kind, files);
 }
 
 void DesktopApplication::activateWindow() noexcept {

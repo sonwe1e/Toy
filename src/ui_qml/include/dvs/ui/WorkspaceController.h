@@ -54,6 +54,7 @@ public:
     [[nodiscard]] qulonglong restoredViewSerial() const noexcept;
 
     Q_INVOKABLE bool openProject(const QUrl& projectFile);
+    Q_INVOKABLE bool closeReview();
     Q_INVOKABLE bool save();
     Q_INVOKABLE bool saveAs(const QUrl& projectFile);
     Q_INVOKABLE bool relinkSource(int sourceId, const QUrl& sourceFile);

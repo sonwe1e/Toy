@@ -21,7 +21,7 @@ BEGIN
             VALUE "FileDescription", "VCStation Explorer comparison command"
             VALUE "FileVersion", "@PROJECT_VERSION@"
             VALUE "InternalName", "VCStationShell"
-            VALUE "OriginalFilename", "VCStationShell-1.2.dll"
+            VALUE "OriginalFilename", "@DVS_SHELL_BINARY_NAME@"
             VALUE "ProductName", "VCStation (VideoCompareStation)"
             VALUE "ProductVersion", "@PROJECT_VERSION@"
         END

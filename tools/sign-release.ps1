@@ -1,18 +1,12 @@
-[CmdletBinding(DefaultParameterSetName = 'Store')]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
     [string[]] $Path,
 
-    [Parameter(Mandatory = $true, ParameterSetName = 'Store')]
+    [Parameter(Mandatory = $true)]
     [ValidatePattern('^[0-9A-Fa-f]{40}$')]
     [string] $CertificateThumbprint,
-
-    [Parameter(Mandatory = $true, ParameterSetName = 'Pfx')]
-    [string] $PfxPath,
-
-    [Parameter(Mandatory = $true, ParameterSetName = 'Pfx')]
-    [Security.SecureString] $PfxPassword,
 
     [ValidatePattern('^https://')]
     [string] $TimestampUrl = 'https://timestamp.digicert.com'
@@ -45,45 +39,24 @@ $resolvedPaths = foreach ($item in $Path) {
     (Resolve-Path -LiteralPath $item).Path
 }
 
-$passwordText = $null
-try {
-    foreach ($item in $resolvedPaths) {
-        $arguments = @(
-            'sign',
-            '/fd', 'SHA256',
-            '/tr', $TimestampUrl,
-            '/td', 'SHA256'
-        )
-        if ($PSCmdlet.ParameterSetName -eq 'Store') {
-            $arguments += @('/sha1', $CertificateThumbprint)
-        }
-        else {
-            if (-not (Test-Path -LiteralPath $PfxPath -PathType Leaf)) {
-                throw "PFX file is missing: $PfxPath"
-            }
-            $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($PfxPassword)
-            try {
-                $passwordText = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
-            }
-            finally {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
-            }
-            $arguments += @('/f', (Resolve-Path -LiteralPath $PfxPath).Path, '/p', $passwordText)
-        }
-        $arguments += $item
+foreach ($item in $resolvedPaths) {
+    $arguments = @(
+        'sign',
+        '/fd', 'SHA256',
+        '/tr', $TimestampUrl,
+        '/td', 'SHA256',
+        '/sha1', $CertificateThumbprint,
+        $item
+    )
 
-        & $signTool.Source @arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "Authenticode signing failed for $item with exit code $LASTEXITCODE."
-        }
-        & $signTool.Source verify /pa /all $item
-        if ($LASTEXITCODE -ne 0) {
-            throw "Authenticode verification failed for $item with exit code $LASTEXITCODE."
-        }
+    & $signTool.Source @arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Authenticode signing failed for $item with exit code $LASTEXITCODE."
     }
-}
-finally {
-    $passwordText = $null
+    & $signTool.Source verify /pa /all $item
+    if ($LASTEXITCODE -ne 0) {
+        throw "Authenticode verification failed for $item with exit code $LASTEXITCODE."
+    }
 }
 
 Write-Host "Signed and verified $($resolvedPaths.Count) release artifact(s)."

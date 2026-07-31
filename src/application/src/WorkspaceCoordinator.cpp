@@ -177,6 +177,31 @@ public:
         return result;
     }
 
+    [[nodiscard]] PortSubmitResult closeReview() {
+        pump();
+        if (stopped_) {
+            return PortSubmitResult::Closed;
+        }
+        if (phase_ != Phase::Idle) {
+            return PortSubmitResult::Busy;
+        }
+        const std::shared_ptr<const SessionSnapshot> playback = dependencies_.playbackSnapshot();
+        if (!playback || playback->sessionState == domain::SessionState::kEmpty) {
+            resetClosedReview();
+            return PortSubmitResult::Accepted;
+        }
+
+        phase_ = Phase::ClosingReview;
+        state_.busy = true;
+        state_.lastError.reset();
+        publishSnapshot();
+        submitInternal(PlaybackCommand{CloseSessionCommand{
+            .context = nextCommandContext(),
+        }});
+        return pendingPlaybackContext_.has_value() ? PortSubmitResult::Accepted
+                                                   : PortSubmitResult::Busy;
+    }
+
     [[nodiscard]] PortSubmitResult saveProject(const std::filesystem::path& projectPath,
                                                std::string displayName,
                                                const domain::ProjectViewState viewState) {
@@ -338,6 +363,7 @@ private:
         OpeningRelink,
         OpeningRelinkRollback,
         ClosingFailedRelink,
+        ClosingReview,
         ApplyingOffsets,
         ApplyingSequenceAlignment,
         ApplyingAnchors,
@@ -579,6 +605,10 @@ private:
     }
 
     void completeInternalPlaybackStep() {
+        if (phase_ == Phase::ClosingReview) {
+            resetClosedReview();
+            return;
+        }
         if (phase_ == Phase::ClosingFailedRelink) {
             finishFailedRelink();
             return;
@@ -827,6 +857,24 @@ private:
                 : std::nullopt;
     }
 
+    void resetClosedReview() {
+        phase_ = Phase::Idle;
+        currentProject_.reset();
+        currentProjectPath_.clear();
+        pendingProject_.reset();
+        pendingProjectPath_.clear();
+        pendingDiagnostics_.clear();
+        pendingDerivedAlignment_.reset();
+        pendingAlignmentCacheError_.reset();
+        observedReviewCommands_.clear();
+        state_.busy = false;
+        state_.dirty = false;
+        state_.sourceDiagnostics.clear();
+        state_.lastError.reset();
+        updateProjectProjection();
+        publishSnapshot();
+    }
+
     void setError(domain::MediaError error) {
         state_.lastError = std::move(error);
         publishSnapshot();
@@ -932,6 +980,10 @@ std::vector<CommandTerminal> WorkspaceCoordinator::takeCompletedPlaybackCommands
 
 PortSubmitResult WorkspaceCoordinator::openProject(const std::filesystem::path& projectPath) {
     return impl_->openProject(projectPath);
+}
+
+PortSubmitResult WorkspaceCoordinator::closeReview() {
+    return impl_->closeReview();
 }
 
 PortSubmitResult WorkspaceCoordinator::saveProject(const std::filesystem::path& projectPath,

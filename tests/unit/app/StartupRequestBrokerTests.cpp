@@ -45,8 +45,10 @@ TEST(StartupRequestBrokerTests, ForwardsUnicodeComparisonToExistingPrimary) {
                                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
     StartupRequestBroker primary{endpoint};
     std::optional<StartupRequest> received;
-    primary.setRequestHandler(
-        [&received](StartupRequest request) { received = std::move(request); });
+    primary.setRequestHandler([&received](StartupRequest request) {
+        received = std::move(request);
+        return true;
+    });
 
     ASSERT_EQ(primary.startOrForward(StartupRequest{}), StartupRequestBroker::StartResult::Primary);
 
@@ -97,12 +99,37 @@ TEST(StartupRequestBrokerTests, QueuesForwardedRequestUntilPrimaryRegistersHandl
     EXPECT_EQ(forwarded.get(), StartupRequestBroker::StartResult::Forwarded);
 
     std::vector<StartupRequest> received;
-    primary.setRequestHandler(
-        [&received](StartupRequest queued) { received.push_back(std::move(queued)); });
+    primary.setRequestHandler([&received](StartupRequest queued) {
+        received.push_back(std::move(queued));
+        return true;
+    });
     ASSERT_EQ(received.size(), 1U);
     EXPECT_EQ(received.front(), request);
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     EXPECT_EQ(received.size(), 1U);
+}
+
+TEST(StartupRequestBrokerTests, RejectsForwardedRequestWhenInteractionQueueIsFull) {
+    ensureCoreApplication();
+    const QString endpoint = QStringLiteral("VCStation.StartupRequest.Test.%1")
+                                 .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    StartupRequestBroker primary{endpoint};
+    primary.setRequestHandler([](StartupRequest) { return false; });
+    ASSERT_EQ(primary.startOrForward(StartupRequest{}), StartupRequestBroker::StartResult::Primary);
+
+    const StartupRequest request{
+        .kind = StartupRequest::Kind::PlaySingle,
+        .sources = {std::filesystem::path{LR"(C:\media\queued.mp4)"}},
+    };
+    std::promise<StartupRequestBroker::StartResult> forwardedPromise;
+    std::future<StartupRequestBroker::StartResult> forwarded = forwardedPromise.get_future();
+    std::jthread secondary{[endpoint, request, promise = std::move(forwardedPromise)]() mutable {
+        StartupRequestBroker broker{endpoint};
+        promise.set_value(broker.startOrForward(request));
+    }};
+    ASSERT_TRUE(
+        waitUntil([&forwarded] { return forwarded.wait_for(0ms) == std::future_status::ready; }));
+    EXPECT_EQ(forwarded.get(), StartupRequestBroker::StartResult::Failed);
 }
 
 } // namespace

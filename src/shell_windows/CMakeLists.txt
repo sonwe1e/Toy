@@ -24,5 +24,5 @@ set_target_properties(
     PROPERTIES
         FOLDER "Application"
         PREFIX ""
-        OUTPUT_NAME "VCStationShell-${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
+        OUTPUT_NAME "${DVS_SHELL_BINARY_BASENAME}"
 )

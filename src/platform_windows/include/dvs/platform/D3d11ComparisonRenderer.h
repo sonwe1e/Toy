@@ -166,6 +166,13 @@ struct SurfaceSplitLayout final {
     SurfaceRect right;
 };
 
+struct SurfacePanelLayout final {
+    std::array<SurfaceRect, 3U> sourceRects{};
+    std::array<std::uint8_t, 3U> sourceSlots{0U, 1U, 2U};
+    std::size_t sourceCount = 0U;
+    std::optional<SurfaceRect> differenceRect;
+};
+
 struct Nv12ColorTransform final {
     // Row-major float3x4 mapping normalized {Y, U, V, 1} samples to RGB.
     std::array<float, 12U> yuvToRgb{};
@@ -177,6 +184,15 @@ struct Nv12ColorTransform final {
                                                      float logicalHeight,
                                                      std::uint32_t pixelWidth,
                                                      std::uint32_t pixelHeight) noexcept;
+
+[[nodiscard]] SurfacePanelLayout computeSurfacePanelLayout(SurfaceViewMode viewMode,
+                                                           float logicalWidth,
+                                                           float logicalHeight,
+                                                           std::uint32_t pixelWidth,
+                                                           std::uint32_t pixelHeight,
+                                                           std::uint8_t referenceSlot,
+                                                           SurfaceDifferenceEdge differenceEdge,
+                                                           float wipePosition) noexcept;
 
 [[nodiscard]] SurfaceRect aspectFitRect(const SurfaceRect& bounds,
                                         std::uint32_t sourceWidth,

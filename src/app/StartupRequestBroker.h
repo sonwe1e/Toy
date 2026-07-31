@@ -26,7 +26,7 @@ public:
     StartupRequestBroker& operator=(const StartupRequestBroker&) = delete;
 
     [[nodiscard]] StartResult startOrForward(const StartupRequest& request);
-    void setRequestHandler(std::function<void(StartupRequest)> handler);
+    void setRequestHandler(std::function<bool(StartupRequest)> handler);
 
 private:
     class Impl;

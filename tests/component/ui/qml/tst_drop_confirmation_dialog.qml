@@ -98,5 +98,23 @@ Item {
             compare(rejectedSpy.count, 1);
             compare(dialog.pendingVideos, originalVideos);
         }
+
+        function test_preserves_initial_reference_identity_while_reordering() {
+            dialog.pendingVideos = ["file:///C:/a.mp4", "file:///C:/b.mp4", "file:///C:/c.mp4"];
+            dialog.initialReferenceIndex = 1;
+            dialog.open();
+            tryCompare(dialog, "visible", true);
+            compare(dialog.referenceIndex, 1);
+
+            dialog.requestMove(1, 2);
+            compare(dialog.referenceIndex, 2);
+            dialog.close();
+
+            dialog.initialReferenceIndex = -1;
+            dialog.open();
+            tryCompare(dialog, "visible", true);
+            compare(dialog.referenceIndex, -1);
+            dialog.close();
+        }
     }
 }

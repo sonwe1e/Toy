@@ -255,6 +255,10 @@ public:
                workspace_.openProject(*path) == application::PortSubmitResult::Accepted;
     }
 
+    [[nodiscard]] bool closeReview() {
+        return workspace_.closeReview() == application::PortSubmitResult::Accepted;
+    }
+
     [[nodiscard]] bool save() {
         return snapshot_ && snapshot_->hasProject && !snapshot_->projectPath.empty() &&
                saveTo(snapshot_->projectPath);
@@ -434,6 +438,10 @@ qulonglong WorkspaceController::restoredViewSerial() const noexcept {
 
 bool WorkspaceController::openProject(const QUrl& projectFile) {
     return impl_->openProject(projectFile);
+}
+
+bool WorkspaceController::closeReview() {
+    return impl_->closeReview();
 }
 
 bool WorkspaceController::save() {

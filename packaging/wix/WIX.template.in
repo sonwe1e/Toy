@@ -96,7 +96,7 @@
                 <RegistryValue
                     Root="HKLM"
                     Key="Software\Classes\CLSID\{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}\InprocServer32"
-                    Value="[INSTALL_ROOT]VCStationShell-1.2.dll"
+                    Value="[INSTALL_ROOT]@DVS_SHELL_BINARY_NAME@"
                     Type="string"/>
                 <RegistryValue
                     Root="HKLM"
@@ -225,7 +225,8 @@
             <Directory Id="VCStationProgramMenuFolder" Name="VCStation">
                 <Component
                     Id="VCStationStartMenuShortcut"
-                    Guid="6DD95669-3B96-4888-B35D-0C3F7F777AD5">
+                    Guid="6DD95669-3B96-4888-B35D-0C3F7F777AD5"
+                    Bitness="always64">
                     <Shortcut
                         Id="VCStationStartMenuEntry"
                         Name="VCStation"
@@ -237,8 +238,8 @@
                         Directory="VCStationProgramMenuFolder"
                         On="uninstall"/>
                     <RegistryValue
-                        Root="HKCU"
-                        Key="Software\VCStation"
+                        Root="HKLM"
+                        Key="Software\VCStation\Installer"
                         Name="StartMenuShortcut"
                         Value="1"
                         Type="integer"

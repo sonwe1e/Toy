@@ -279,12 +279,12 @@ TEST(ExplorerCommandSmokeTests, InvokesRealComServerWithUnicodeCompareArguments)
     const std::filesystem::path first = directory / L"甲 视频.mp4";
     const std::filesystem::path second = directory / L"乙 视频.MKV";
     const std::filesystem::path captured = directory / L"captured-arguments.bin";
-    const std::filesystem::path copiedDll = directory / L"VCStationShell-1.2.dll";
+    const std::filesystem::path shellDll = environmentPath(L"DVS_SHELL_TEST_DLL");
+    const std::filesystem::path copiedDll = directory / shellDll.filename();
     const std::filesystem::path copiedProbe = directory / L"VCStation.exe";
     writeFixture(first);
     writeFixture(second);
-    ASSERT_TRUE(
-        CopyFileW(environmentPath(L"DVS_SHELL_TEST_DLL").c_str(), copiedDll.c_str(), FALSE));
+    ASSERT_TRUE(CopyFileW(shellDll.c_str(), copiedDll.c_str(), FALSE));
     ASSERT_TRUE(CopyFileW(
         environmentPath(L"DVS_SHELL_TEST_PROBE_EXE").c_str(), copiedProbe.c_str(), FALSE));
     ASSERT_TRUE(SetEnvironmentVariableW(L"DVS_SHELL_TEST_CAPTURE_FILE", captured.c_str()));

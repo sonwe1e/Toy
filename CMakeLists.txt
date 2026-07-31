@@ -47,6 +47,18 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
+set(DVS_SHELL_BINARY_BASENAME
+    "VCStationShell-${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
+    CACHE INTERNAL "Versioned VCStation Explorer shell binary base name")
+set(DVS_SHELL_BINARY_NAME
+    "${DVS_SHELL_BINARY_BASENAME}.dll"
+    CACHE INTERNAL "Versioned VCStation Explorer shell binary file name")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/release-metadata.json.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/release-metadata.json"
+    @ONLY
+)
+
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

@@ -531,6 +531,108 @@ computeReferenceFocusLayout(const float logicalWidth,
     };
 }
 
+SurfacePanelLayout computeSurfacePanelLayout(const SurfaceViewMode viewMode,
+                                             const float logicalWidth,
+                                             const float logicalHeight,
+                                             const std::uint32_t pixelWidth,
+                                             const std::uint32_t pixelHeight,
+                                             const std::uint8_t referenceSlot,
+                                             const SurfaceDifferenceEdge differenceEdge,
+                                             const float wipePosition) noexcept {
+    SurfacePanelLayout result;
+    if (!isValid(viewMode) || !std::isfinite(logicalWidth) || !std::isfinite(logicalHeight) ||
+        logicalWidth <= 0.0F || logicalHeight <= 0.0F || pixelWidth == 0U || pixelHeight == 0U ||
+        referenceSlot > 2U || !isValid(differenceEdge) || !std::isfinite(wipePosition) ||
+        wipePosition < 0.0F || wipePosition > 1.0F) {
+        return result;
+    }
+    const SurfaceRect full{
+        .x = 0.0F,
+        .y = 0.0F,
+        .width = logicalWidth,
+        .height = logicalHeight,
+    };
+    if (viewMode == SurfaceViewMode::Single) {
+        result.sourceRects[0U] = full;
+        result.sourceCount = 1U;
+        return result;
+    }
+    if (viewMode == SurfaceViewMode::Difference) {
+        result.differenceRect = full;
+        return result;
+    }
+    if (viewMode == SurfaceViewMode::Wipe) {
+        const float split = logicalWidth * wipePosition;
+        result.sourceRects[0U] =
+            SurfaceRect{.x = 0.0F, .y = 0.0F, .width = split, .height = logicalHeight};
+        result.sourceRects[1U] = SurfaceRect{
+            .x = split,
+            .y = 0.0F,
+            .width = logicalWidth - split,
+            .height = logicalHeight,
+        };
+        if (differenceEdge == SurfaceDifferenceEdge::Between0And2) {
+            result.sourceSlots = {0U, 2U, 1U};
+        } else if (differenceEdge == SurfaceDifferenceEdge::Between1And2) {
+            result.sourceSlots = {1U, 2U, 0U};
+        }
+        result.sourceCount = 2U;
+        return result;
+    }
+    if (viewMode == SurfaceViewMode::AnalysisGrid) {
+        const std::uint32_t leftPixels = pixelWidth / 2U;
+        const std::uint32_t topPixels = pixelHeight / 2U;
+        const float leftWidth =
+            logicalWidth * static_cast<float>(leftPixels) / static_cast<float>(pixelWidth);
+        const float topHeight =
+            logicalHeight * static_cast<float>(topPixels) / static_cast<float>(pixelHeight);
+        const float rightWidth = logicalWidth - leftWidth;
+        const float bottomHeight = logicalHeight - topHeight;
+        result.sourceRects = {
+            SurfaceRect{.x = 0.0F, .y = 0.0F, .width = leftWidth, .height = topHeight},
+            SurfaceRect{.x = leftWidth, .y = 0.0F, .width = rightWidth, .height = topHeight},
+            SurfaceRect{.x = 0.0F, .y = topHeight, .width = leftWidth, .height = bottomHeight},
+        };
+        result.sourceCount = 3U;
+        result.differenceRect = SurfaceRect{
+            .x = leftWidth,
+            .y = topHeight,
+            .width = rightWidth,
+            .height = bottomHeight,
+        };
+        return result;
+    }
+    if (viewMode == SurfaceViewMode::ThreeUp) {
+        const SurfaceColumnLayout columns =
+            computeSurfaceColumns(logicalWidth, logicalHeight, pixelWidth, pixelHeight, 3U);
+        result.sourceRects = columns.columns;
+        result.sourceCount = columns.count;
+        return result;
+    }
+    if (viewMode == SurfaceViewMode::ReferenceFocus) {
+        const SurfaceFocusLayout focus =
+            computeReferenceFocusLayout(logicalWidth, logicalHeight, pixelWidth, pixelHeight);
+        if (!focus.main.isValid() || !focus.topRight.isValid() || !focus.bottomRight.isValid()) {
+            return result;
+        }
+        result.sourceRects = {focus.main, focus.topRight, focus.bottomRight};
+        result.sourceSlots[0U] = referenceSlot;
+        std::size_t destination = 1U;
+        for (std::uint8_t slot = 0U; slot < 3U; ++slot) {
+            if (slot != referenceSlot) {
+                result.sourceSlots[destination++] = slot;
+            }
+        }
+        result.sourceCount = 3U;
+        return result;
+    }
+    const SurfaceColumnLayout columns =
+        computeSurfaceColumns(logicalWidth, logicalHeight, pixelWidth, pixelHeight, 2U);
+    result.sourceRects = columns.columns;
+    result.sourceCount = columns.count;
+    return result;
+}
+
 namespace {
 
 [[nodiscard]] SurfaceRect aspectFitRectFloat(const SurfaceRect& bounds,
@@ -1210,74 +1312,17 @@ private:
             // Slot views (USERPLAN 6.3): two-up (two columns), three-up (three columns), or
             // reference focus (slot 0 large on the left, slots 1 and 2 stacked on the right).
             // Slots without a frame stay black via the background clear.
-            std::array<SurfaceRect, 3U> regions{};
-            std::array<std::size_t, 3U> regionSlots{0U, 1U, 2U};
-            std::size_t regionCount = 0U;
-            std::optional<SurfaceRect> gridDifferenceBounds;
-            if (state.viewMode == SurfaceViewMode::Single) {
-                regions[0U] = SurfaceRect{
-                    .x = 0.0F,
-                    .y = 0.0F,
-                    .width = state.logicalWidth,
-                    .height = state.logicalHeight,
-                };
-                regionCount = 1U;
-            } else if (state.viewMode == SurfaceViewMode::AnalysisGrid) {
-                const std::uint32_t leftPixels = state.pixelWidth / 2U;
-                const std::uint32_t topPixels = state.pixelHeight / 2U;
-                const float leftWidth = state.logicalWidth * static_cast<float>(leftPixels) /
-                                        static_cast<float>(state.pixelWidth);
-                const float topHeight = state.logicalHeight * static_cast<float>(topPixels) /
-                                        static_cast<float>(state.pixelHeight);
-                const float rightWidth = state.logicalWidth - leftWidth;
-                const float bottomHeight = state.logicalHeight - topHeight;
-                regions = {
-                    SurfaceRect{.x = 0.0F, .y = 0.0F, .width = leftWidth, .height = topHeight},
-                    SurfaceRect{
-                        .x = leftWidth, .y = 0.0F, .width = rightWidth, .height = topHeight},
-                    SurfaceRect{
-                        .x = 0.0F, .y = topHeight, .width = leftWidth, .height = bottomHeight},
-                };
-                gridDifferenceBounds = SurfaceRect{
-                    .x = leftWidth,
-                    .y = topHeight,
-                    .width = rightWidth,
-                    .height = bottomHeight,
-                };
-                regionCount = 3U;
-            } else if (state.viewMode == SurfaceViewMode::ThreeUp) {
-                const SurfaceColumnLayout columns = computeSurfaceColumns(state.logicalWidth,
-                                                                          state.logicalHeight,
-                                                                          state.pixelWidth,
-                                                                          state.pixelHeight,
-                                                                          3U);
-                regions = columns.columns;
-                regionCount = columns.count;
-            } else if (state.viewMode == SurfaceViewMode::ReferenceFocus) {
-                const SurfaceFocusLayout focus = computeReferenceFocusLayout(
-                    state.logicalWidth, state.logicalHeight, state.pixelWidth, state.pixelHeight);
-                if (focus.main.isValid() && focus.topRight.isValid() &&
-                    focus.bottomRight.isValid()) {
-                    regions = {focus.main, focus.topRight, focus.bottomRight};
-                    regionSlots[0U] = state.referenceSlot;
-                    std::size_t destination = 1U;
-                    for (std::size_t slot = 0U; slot < regionSlots.size(); ++slot) {
-                        if (slot != state.referenceSlot) {
-                            regionSlots[destination] = slot;
-                            ++destination;
-                        }
-                    }
-                    regionCount = 3U;
-                }
-            } else {
-                const SurfaceColumnLayout columns = computeSurfaceColumns(state.logicalWidth,
-                                                                          state.logicalHeight,
-                                                                          state.pixelWidth,
-                                                                          state.pixelHeight,
-                                                                          2U);
-                regions = columns.columns;
-                regionCount = columns.count;
-            }
+            const SurfacePanelLayout layout = computeSurfacePanelLayout(state.viewMode,
+                                                                        state.logicalWidth,
+                                                                        state.logicalHeight,
+                                                                        state.pixelWidth,
+                                                                        state.pixelHeight,
+                                                                        state.referenceSlot,
+                                                                        state.differenceEdge,
+                                                                        state.wipePosition);
+            const auto& regions = layout.sourceRects;
+            const auto& regionSlots = layout.sourceSlots;
+            const std::size_t regionCount = layout.sourceCount;
 
             const std::array<const GpuFrameResource*, 3U> slotFrames{
                 frameA.get(), frameB.get(), frameC.get()};
@@ -1292,7 +1337,7 @@ private:
                     return false;
                 }
             }
-            if (gridDifferenceBounds.has_value() && !appendDifference(*gridDifferenceBounds)) {
+            if (layout.differenceRect.has_value() && !appendDifference(*layout.differenceRect)) {
                 return false;
             }
         }

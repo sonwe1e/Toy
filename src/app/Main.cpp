@@ -128,14 +128,12 @@ void writeStandardError(std::string_view message) noexcept {
 }
 
 [[nodiscard]] bool applyStartupRequest(const dvs::app::StartupRequest& request,
-                                       dvs::ui::DesktopApplication& desktop,
-                                       dvs::app::ReviewRuntime& runtime) {
+                                       dvs::ui::DesktopApplication& desktop) {
     desktop.activateWindow();
     switch (request.kind) {
     case dvs::app::StartupRequest::Kind::Empty:
         return true;
     case dvs::app::StartupRequest::Kind::OpenProject:
-        return runtime.workspace()->openProject(localFileUrl(request.sources.front()));
     case dvs::app::StartupRequest::Kind::PlaySingle:
     case dvs::app::StartupRequest::Kind::Compare: {
         QList<QUrl> sources;
@@ -143,7 +141,7 @@ void writeStandardError(std::string_view message) noexcept {
         for (const auto& source : request.sources) {
             sources.push_back(localFileUrl(source));
         }
-        return desktop.reviewLocalFiles(sources);
+        return desktop.enqueueStartupRequest(static_cast<int>(request.kind), sources);
     }
     }
     return false;
@@ -206,7 +204,7 @@ runDesktop(int& argc,
         }
         return dvs::app::reportFatalStartup("DVS_UI_LOAD_FAILED", smokeMode);
     }
-    if (!smokeMode && !applyStartupRequest(startupRequest, desktop, *runtime)) {
+    if (!smokeMode && !applyStartupRequest(startupRequest, desktop)) {
         runtime->prepareForSceneGraphRelease();
         desktop.releaseSceneGraph();
         static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
@@ -214,10 +212,9 @@ runDesktop(int& argc,
                                             false);
     }
     if (startupBroker) {
-        startupBroker->setRequestHandler(
-            [&desktop, runtimePointer = runtime.get()](dvs::app::StartupRequest request) {
-                static_cast<void>(applyStartupRequest(request, desktop, *runtimePointer));
-            });
+        startupBroker->setRequestHandler([&desktop](dvs::app::StartupRequest request) {
+            return applyStartupRequest(request, desktop);
+        });
     }
     if (smokeMode && initialProject.has_value() &&
         !runtime->workspace()->openProject(localFileUrl(*initialProject))) {

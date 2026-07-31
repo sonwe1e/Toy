@@ -9,6 +9,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $ProbeFixture,
 
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^VCStationShell-[0-9]+\.[0-9]+\.dll$')]
+    [string] $ExpectedShellBinaryName,
+
     [string] $PreviousMsiPath
 )
 
@@ -177,7 +181,7 @@ try {
     $installRoot = Join-Path $env:ProgramFiles 'VCStation'
     $gui = Join-Path $installRoot 'VCStation.exe'
     $cli = Join-Path $installRoot 'VCStationCli.exe'
-    $shell = Join-Path $installRoot 'VCStationShell-1.2.dll'
+    $shell = Join-Path $installRoot $ExpectedShellBinaryName
     foreach ($path in @($gui, $cli, $shell)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
             throw "Installed executable is missing: $path"

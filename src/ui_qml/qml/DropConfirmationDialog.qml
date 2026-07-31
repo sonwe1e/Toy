@@ -8,6 +8,7 @@ Dialog {
 
     required property var pendingVideos
     required property var fileNameFunction
+    property int initialReferenceIndex: 0
     readonly property int referenceIndex: referenceCombo.currentIndex === pendingVideos.length ? -1 : referenceCombo.currentIndex
 
     signal moveRequested(int fromIndex, int toIndex)
@@ -23,7 +24,18 @@ Dialog {
     width: Math.min(600, parent.width - 48)
     title: qsTr("Confirm source order and Reference")
     closePolicy: Popup.CloseOnEscape
-    onOpened: referenceCombo.currentIndex = 0
+    onOpened: referenceCombo.currentIndex = initialReferenceIndex < 0 ? pendingVideos.length : Math.max(0, Math.min(initialReferenceIndex, pendingVideos.length - 1))
+
+    function requestMove(fromIndex, toIndex) {
+        const selected = referenceCombo.currentIndex;
+        if (selected === fromIndex)
+            referenceCombo.currentIndex = toIndex;
+        else if (fromIndex < toIndex && selected > fromIndex && selected <= toIndex)
+            referenceCombo.currentIndex = selected - 1;
+        else if (toIndex < fromIndex && selected >= toIndex && selected < fromIndex)
+            referenceCombo.currentIndex = selected + 1;
+        moveRequested(fromIndex, toIndex);
+    }
 
     Overlay.modal: Rectangle {
         color: "#99060a10"
@@ -108,7 +120,7 @@ Dialog {
                     text: "↑"
                     enabled: droppedRow.index > 0
                     Accessible.name: qsTr("Move source earlier")
-                    onClicked: control.moveRequested(droppedRow.index, droppedRow.index - 1)
+                    onClicked: control.requestMove(droppedRow.index, droppedRow.index - 1)
                 }
                 Button {
                     implicitWidth: 52
@@ -116,7 +128,7 @@ Dialog {
                     text: "↓"
                     enabled: droppedRow.index + 1 < control.pendingVideos.length
                     Accessible.name: qsTr("Move source later")
-                    onClicked: control.moveRequested(droppedRow.index, droppedRow.index + 1)
+                    onClicked: control.requestMove(droppedRow.index, droppedRow.index + 1)
                 }
             }
         }

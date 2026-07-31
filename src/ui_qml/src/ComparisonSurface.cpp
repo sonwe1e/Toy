@@ -10,6 +10,7 @@
 #include <QMatrix4x4>
 #include <QQuickWindow>
 #include <QSGRenderNode>
+#include <QVariantMap>
 
 #include <algorithm>
 #include <array>
@@ -317,6 +318,7 @@ void ComparisonSurface::setViewMode(const ViewMode value) {
     }
     viewMode_ = value;
     emit viewModeChanged();
+    emit presentationGeometryChanged();
     update();
 }
 
@@ -361,6 +363,7 @@ void ComparisonSurface::setDifferenceEdge(const DifferenceEdge value) {
     }
     differenceEdge_ = value;
     emit differenceEdgeChanged();
+    emit presentationGeometryChanged();
     update();
 }
 
@@ -397,6 +400,37 @@ void ComparisonSurface::setWipePosition(const qreal value) {
 
 qreal ComparisonSurface::wipeSplitLogicalX() const noexcept {
     return width() * wipePosition_;
+}
+
+QVariantList ComparisonSurface::sourcePanelRects() const {
+    const qreal devicePixelRatio =
+        window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
+    const auto pixelWidth =
+        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(width() * devicePixelRatio)));
+    const auto pixelHeight =
+        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(height() * devicePixelRatio)));
+    const platform::SurfacePanelLayout layout =
+        platform::computeSurfacePanelLayout(nativeViewMode(viewMode_),
+                                            static_cast<float>(width()),
+                                            static_cast<float>(height()),
+                                            pixelWidth,
+                                            pixelHeight,
+                                            static_cast<std::uint8_t>(referenceSlot_),
+                                            nativeDifferenceEdge(differenceEdge_),
+                                            static_cast<float>(wipePosition_));
+    QVariantList result;
+    result.reserve(static_cast<qsizetype>(layout.sourceCount));
+    for (std::size_t index = 0U; index < layout.sourceCount; ++index) {
+        const platform::SurfaceRect& rect = layout.sourceRects[index];
+        QVariantMap item;
+        item.insert(QStringLiteral("slot"), static_cast<int>(layout.sourceSlots[index]));
+        item.insert(QStringLiteral("x"), rect.x);
+        item.insert(QStringLiteral("y"), rect.y);
+        item.insert(QStringLiteral("width"), rect.width);
+        item.insert(QStringLiteral("height"), rect.height);
+        result.push_back(std::move(item));
+    }
+    return result;
 }
 
 bool ComparisonSurface::exactPlaneAvailable() const noexcept {
@@ -634,6 +668,7 @@ void ComparisonSurface::setReferenceSlot(const int value) {
     }
     referenceSlot_ = value;
     emit referenceSlotChanged();
+    emit presentationGeometryChanged();
     update();
 }
 

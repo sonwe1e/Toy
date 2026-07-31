@@ -3,6 +3,14 @@
         <file alias="Main.qml">qml/Main.qml</file>
         <file alias="DropConfirmationDialog.qml">qml/DropConfirmationDialog.qml</file>
         <file alias="ReviewActions.qml">qml/ReviewActions.qml</file>
+        <file alias="SourceBar.qml">qml/SourceBar.qml</file>
+        <file alias="ComparisonToolbar.qml">qml/ComparisonToolbar.qml</file>
+        <file alias="AlignmentInspector.qml">qml/AlignmentInspector.qml</file>
+        <file alias="TimelineBar.qml">qml/TimelineBar.qml</file>
+        <file alias="ComparisonViewport.qml">qml/ComparisonViewport.qml</file>
+        <file alias="WorkspaceDialogs.qml">qml/WorkspaceDialogs.qml</file>
+        <file alias="ReviewActionButton.qml">qml/ReviewActionButton.qml</file>
+        <file alias="ReviewOffsetSpinBox.qml">qml/ReviewOffsetSpinBox.qml</file>
         <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>
         <file alias="TransportBar.qml">qml/TransportBar.qml</file>
         <file alias="WipeHandle.qml">qml/WipeHandle.qml</file>
