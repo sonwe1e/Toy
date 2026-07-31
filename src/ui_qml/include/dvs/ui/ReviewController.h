@@ -10,17 +10,20 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <functional>
 #include <memory>
 #include <vector>
 
 class QUrl;
+class QQuickItem;
 
 namespace dvs::ui {
 
-// GUI-thread projection of the immutable application snapshot. Media work and playback timing
-// remain behind the supplied application functions; the 16 ms timer only drains and projects.
+// GUI-thread projection of the immutable application snapshot. Production wakes this projection
+// from coordinator publication events; a short fallback timer exists only for isolated adapters
+// that do not provide a wake bridge.
 class ReviewController final : public QObject {
     Q_OBJECT
 
@@ -30,10 +33,12 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QAbstractItemModel* sources READ sources CONSTANT)
     Q_PROPERTY(ReviewDisplayState displayState READ displayState NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
+    Q_PROPERTY(bool framePending READ framePending NOTIFY stateChanged)
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool graphicsReady READ graphicsReady NOTIFY stateChanged)
     Q_PROPERTY(qint64 currentFrame READ currentFrame NOTIFY frameStateChanged)
     Q_PROPERTY(qulonglong totalFrames READ totalFrames NOTIFY stateChanged)
+    Q_PROPERTY(int oneSecondStepFrames READ oneSecondStepFrames NOTIFY stateChanged)
     Q_PROPERTY(QString sourceAErrorKey READ sourceAErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBErrorKey READ sourceBErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCErrorKey READ sourceCErrorKey NOTIFY stateChanged)
@@ -81,6 +86,7 @@ public:
         std::function<application::PortSubmitResult(application::PlaybackCommand)> submit;
         std::function<std::shared_ptr<const application::SessionSnapshot>()> snapshot;
         std::function<std::vector<application::CommandTerminal>()> takeCompletedCommands;
+        bool eventDriven = false;
     };
 
     explicit ReviewController(Dependencies dependencies, QObject* parent = nullptr);
@@ -97,11 +103,13 @@ public:
     [[nodiscard]] QAbstractItemModel* sources() const noexcept;
     [[nodiscard]] ReviewDisplayState displayState() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
+    [[nodiscard]] bool framePending() const noexcept;
     [[nodiscard]] bool playing() const noexcept;
     [[nodiscard]] bool graphicsReady() const noexcept;
     // Zero-based canonical frame ID. -1 means that no frame has been presented.
     [[nodiscard]] qint64 currentFrame() const noexcept;
     [[nodiscard]] qulonglong totalFrames() const noexcept;
+    [[nodiscard]] int oneSecondStepFrames() const noexcept;
     [[nodiscard]] QString sourceAErrorKey() const;
     [[nodiscard]] QString sourceBErrorKey() const;
     [[nodiscard]] QString sourceCErrorKey() const;
@@ -142,6 +150,7 @@ public:
                                        const QUrl& second,
                                        const QUrl& third,
                                        int referenceSourceIndex);
+    Q_INVOKABLE QVariantMap handleDroppedUrls(const QVariantList& urls) const;
     Q_INVOKABLE bool first();
     Q_INVOKABLE bool previous();
     Q_INVOKABLE bool next();
@@ -162,6 +171,8 @@ public:
     Q_INVOKABLE bool play();
     Q_INVOKABLE bool pause();
     Q_INVOKABLE bool togglePlayback();
+    Q_INVOKABLE bool exportBadCase(QQuickItem* comparisonSurface, const QUrl& destinationFolder);
+    Q_INVOKABLE void refreshProjection() noexcept;
 
     // Stops timer/backend access and makes every command fail closed. Calls from another thread
     // are queued to the controller's GUI thread; the runtime calls this before closing ingress.
@@ -170,6 +181,8 @@ public:
 Q_SIGNALS:
     void stateChanged();
     void frameStateChanged();
+    void badCaseExported(const QString& folder);
+    void badCaseExportFailed(const QString& detail);
 
 private:
     class Impl;

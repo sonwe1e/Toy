@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(DualVideoStudio VERSION 1.0.0 LANGUAGES CXX)
+project(VCStation VERSION 1.1.0 LANGUAGES CXX)
 
 if(NOT WIN32)
-    message(FATAL_ERROR "DualVideoStudio supports Windows only.")
+    message(FATAL_ERROR "VCStation supports Windows only.")
 endif()
 
 if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
@@ -15,11 +15,11 @@ if(CMAKE_CONFIGURATION_TYPES)
 endif()
 
 if(NOT MSVC)
-    message(FATAL_ERROR "DualVideoStudio requires the MSVC 2022 compiler.")
+    message(FATAL_ERROR "VCStation requires the MSVC 2022 compiler.")
 endif()
 
 if(NOT MSVC_TOOLSET_VERSION STREQUAL "143")
-    message(FATAL_ERROR "DualVideoStudio requires the Visual Studio 2022 v143 toolset.")
+    message(FATAL_ERROR "VCStation requires the Visual Studio 2022 v143 toolset.")
 endif()
 
 get_filename_component(_dvs_msvc_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -28,13 +28,13 @@ cmake_path(NORMAL_PATH _dvs_expected_archiver)
 cmake_path(NORMAL_PATH CMAKE_AR OUTPUT_VARIABLE _dvs_configured_archiver)
 if(NOT _dvs_configured_archiver STREQUAL _dvs_expected_archiver)
     message(FATAL_ERROR
-        "DualVideoStudio requires the MSVC archiver '${_dvs_expected_archiver}', but CMAKE_AR is "
+        "VCStation requires the MSVC archiver '${_dvs_expected_archiver}', but CMAKE_AR is "
         "'${CMAKE_AR}'. Run CMake from a Visual Studio developer shell with "
         "'cmake --fresh --preset dev'.")
 endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR "DualVideoStudio requires a 64-bit compiler environment.")
+    message(FATAL_ERROR "VCStation requires a 64-bit compiler environment.")
 endif()
 
 if(NOT VCPKG_TARGET_TRIPLET STREQUAL "x64-windows")
@@ -53,6 +53,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 option(DVS_ENABLE_ASAN "Enable MSVC AddressSanitizer for project targets" OFF)
 option(DVS_ENABLE_COVERAGE "Enable native MSVC coverage instrumentation" OFF)
+set(
+    DVS_PREVIOUS_RELEASE_MSI
+    ""
+    CACHE FILEPATH
+    "Optional previous MSI used by the real packaged upgrade test"
+)
 
 if(DVS_ENABLE_ASAN AND DVS_ENABLE_COVERAGE)
     message(FATAL_ERROR "AddressSanitizer and coverage instrumentation are separate presets.")

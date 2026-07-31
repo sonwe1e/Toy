@@ -16,7 +16,7 @@ and shutdown well below the seven-second limit.
 The historical A/B design is archived in
 [design/architecture-overview.md](design/architecture-overview.md).
 
-DualVideoStudio is a VFI-dedicated comparator. Its job is not "play two videos" but
+VCStation (VideoCompareStation) is a VFI-dedicated comparator. Its job is not "play two videos" but
 "present one canonical frame position across 2–3 sources, atomically, with explicit
 alignment state and pairwise difference maps".
 

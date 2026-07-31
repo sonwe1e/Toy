@@ -160,6 +160,55 @@ protected:
     }
 };
 
+TEST_F(ReviewControllerTests, ReviewsDroppedFilesInCppAndNormalizesUnicodePaths) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("source_\u7532.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("source_\u4e59.custom"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    const QVariantMap result = controller.handleDroppedUrls(
+        {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)});
+
+    ASSERT_TRUE(result.value(QStringLiteral("accepted")).toBool());
+    EXPECT_EQ(result.value(QStringLiteral("kind")).toString(), QStringLiteral("videos"));
+    const QVariantList urls = result.value(QStringLiteral("urls")).toList();
+    ASSERT_EQ(urls.size(), 2);
+    EXPECT_EQ(urls.front().toUrl().toLocalFile(), QFileInfo{sourceAPath}.canonicalFilePath());
+    EXPECT_EQ(urls.back().toUrl().toLocalFile(), QFileInfo{sourceBPath}.canonicalFilePath());
+}
+
+TEST_F(ReviewControllerTests, RejectsDuplicateMixedAndMissingDroppedFiles) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourcePath = createFile(directory, QStringLiteral("source.mp4"));
+    const QString projectPath = createFile(directory, QStringLiteral("review.dvsproj"));
+    ASSERT_FALSE(sourcePath.isEmpty());
+    ASSERT_FALSE(projectPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    const QUrl sourceUrl = QUrl::fromLocalFile(sourcePath);
+
+    const QVariantMap duplicate = controller.handleDroppedUrls({sourceUrl, sourceUrl});
+    EXPECT_FALSE(duplicate.value(QStringLiteral("accepted")).toBool());
+    EXPECT_EQ(duplicate.value(QStringLiteral("errorKey")).toString(),
+              QStringLiteral("drop-duplicate"));
+
+    const QVariantMap mixed =
+        controller.handleDroppedUrls({sourceUrl, QUrl::fromLocalFile(projectPath)});
+    EXPECT_FALSE(mixed.value(QStringLiteral("accepted")).toBool());
+    EXPECT_EQ(mixed.value(QStringLiteral("errorKey")).toString(), QStringLiteral("drop-mixed"));
+
+    const QVariantMap missing = controller.handleDroppedUrls(
+        {QUrl::fromLocalFile(directory.filePath(QStringLiteral("missing.mp4")))});
+    EXPECT_FALSE(missing.value(QStringLiteral("accepted")).toBool());
+    EXPECT_EQ(missing.value(QStringLiteral("errorKey")).toString(), QStringLiteral("drop-missing"));
+}
+
 TEST_F(ReviewControllerTests, CanonicalizesUnicodeLocalFilesAndDispatchesScopedOpenCommand) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
@@ -273,22 +322,23 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, BusyGatesCommandsUntilOnlyTheFullPendingContextCompletes) {
+TEST_F(ReviewControllerTests, NavigationStaysAvailableAndLatestContextClearsFramePending) {
     auto backend = std::make_shared<FakeBackend>();
     backend->currentSnapshot = readySnapshot(3, 10U);
     ReviewController controller{dependenciesFor(backend)};
     ASSERT_TRUE(controller.next());
-    ASSERT_TRUE(controller.busy());
+    ASSERT_FALSE(controller.busy());
+    ASSERT_TRUE(controller.framePending());
     ASSERT_EQ(backend->submitted.size(), 1U);
-    const application::CommandContext pending =
-        application::commandContext(backend->submitted.front());
 
-    EXPECT_FALSE(controller.first());
-    EXPECT_FALSE(controller.previous());
-    EXPECT_FALSE(controller.next());
-    EXPECT_FALSE(controller.last());
+    EXPECT_TRUE(controller.first());
+    EXPECT_TRUE(controller.previous());
+    EXPECT_TRUE(controller.next());
+    EXPECT_TRUE(controller.last());
     EXPECT_FALSE(controller.openComparison(QUrl{}, QUrl{}));
-    EXPECT_EQ(backend->submitted.size(), 1U);
+    ASSERT_EQ(backend->submitted.size(), 5U);
+    const application::CommandContext pending =
+        application::commandContext(backend->submitted.back());
 
     backend->terminals.push_back(application::CommandTerminal{
         .context =
@@ -300,7 +350,7 @@ TEST_F(ReviewControllerTests, BusyGatesCommandsUntilOnlyTheFullPendingContextCom
         .outcome = application::CommandOutcome::Succeeded,
     });
     ASSERT_TRUE(waitUntil([&backend] { return backend->terminals.empty(); }));
-    EXPECT_TRUE(controller.busy());
+    EXPECT_TRUE(controller.framePending());
 
     backend->terminals.push_back(application::CommandTerminal{
         .context =
@@ -312,7 +362,7 @@ TEST_F(ReviewControllerTests, BusyGatesCommandsUntilOnlyTheFullPendingContextCom
         .outcome = application::CommandOutcome::Succeeded,
     });
     ASSERT_TRUE(waitUntil([&backend] { return backend->terminals.empty(); }));
-    EXPECT_TRUE(controller.busy());
+    EXPECT_TRUE(controller.framePending());
 
     backend->terminals.push_back(application::CommandTerminal{
         .context =
@@ -324,13 +374,13 @@ TEST_F(ReviewControllerTests, BusyGatesCommandsUntilOnlyTheFullPendingContextCom
         .outcome = application::CommandOutcome::Succeeded,
     });
     ASSERT_TRUE(waitUntil([&backend] { return backend->terminals.empty(); }));
-    EXPECT_TRUE(controller.busy());
+    EXPECT_TRUE(controller.framePending());
 
     backend->terminals.push_back(application::CommandTerminal{
         .context = pending,
         .outcome = application::CommandOutcome::Succeeded,
     });
-    EXPECT_TRUE(waitUntil([&controller] { return !controller.busy(); }));
+    EXPECT_TRUE(waitUntil([&controller] { return !controller.framePending(); }));
     controller.stop();
 }
 
@@ -786,7 +836,8 @@ TEST_F(ReviewControllerTests, DispatchesAutomaticAlignmentWithoutBlockingNavigat
               nullptr);
     EXPECT_FALSE(controller.busy());
     EXPECT_TRUE(controller.next());
-    EXPECT_TRUE(controller.busy());
+    EXPECT_FALSE(controller.busy());
+    EXPECT_TRUE(controller.framePending());
     controller.stop();
 }
 
@@ -801,7 +852,8 @@ TEST_F(ReviewControllerTests, DispatchesSequenceAnalysisWithoutBlockingNavigatio
               nullptr);
     EXPECT_FALSE(controller.busy());
     EXPECT_TRUE(controller.previous());
-    EXPECT_TRUE(controller.busy());
+    EXPECT_FALSE(controller.busy());
+    EXPECT_TRUE(controller.framePending());
     controller.stop();
 }
 
@@ -923,7 +975,7 @@ TEST_F(ReviewControllerTests, StopAndExpiredBackendFailClosedWithoutFurtherAcces
     backend->currentSnapshot = readySnapshot(4, 10U);
     ReviewController controller{dependenciesFor(backend)};
     ASSERT_TRUE(controller.next());
-    ASSERT_TRUE(controller.busy());
+    ASSERT_TRUE(controller.framePending());
 
     std::thread::id notificationThread;
     QObject::connect(&controller, &ReviewController::stateChanged, &controller, [&] {
@@ -949,6 +1001,7 @@ TEST_F(ReviewControllerTests, StopAndExpiredBackendFailClosedWithoutFurtherAcces
     EXPECT_FALSE(controller.play());
     EXPECT_FALSE(controller.pause());
     EXPECT_FALSE(controller.togglePlayback());
+    EXPECT_FALSE(controller.exportBadCase(nullptr, QUrl{}));
     EXPECT_FALSE(controller.openComparison(QUrl{}, QUrl{}));
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
     EXPECT_EQ(backend->submitCalls + backend->snapshotCalls + backend->drainCalls, accesses);

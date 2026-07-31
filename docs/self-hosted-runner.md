@@ -1,6 +1,6 @@
 # Windows self-hosted runner
 
-DualVideoStudio 的原生 CI 需要一台处于登录状态的 Windows x64 工作站。常规
+VCStation 的原生 CI 需要一台处于登录状态的 Windows x64 工作站。常规
 Debug/Release、format/lint 使用 `dvs-toolchain-4.4` 标签，D3D11VA 与五分钟性能门禁
 使用 `dvs-gpu` 标签；同一台工作站可以同时拥有这两个标签。
 
@@ -16,8 +16,24 @@ Debug/Release、format/lint 使用 `dvs-toolchain-4.4` 标签，D3D11VA 与五�
   `WixToolset.UI.wixext` 4.0.4。
 
 普通 build/test runner 不依赖 .NET SDK 或 WiX；只有生成 MSI 时才需要这两项。本机
-原先缺少的 CI 基础设施只有 GitHub Actions runner 本体、runner 注册和六个长时素材的
+原先缺少的 CI 基础设施只有 GitHub Actions runner 本体、runner 注册和九个长时素材的
 稳定目录。
+
+若重新配置机器，MSI 工具链使用以下固定版本：
+
+```powershell
+winget install --id Microsoft.DotNet.SDK.8 --exact --silent `
+  --accept-package-agreements --accept-source-agreements
+dotnet tool install wix --tool-path G:\GitHubActions\tools\wix --version 4.0.4
+G:\GitHubActions\tools\wix\wix.exe extension add `
+  --global WixToolset.UI.wixext/4.0.4
+```
+
+把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。Release job 还要求
+Windows SDK 的 `signtool.exe`，以及仓库 Secrets
+`DVS_SIGNING_PFX_BASE64`、`DVS_SIGNING_PFX_PASSWORD`。MSI 是 per-machine，
+因此执行 `packaged-smoke` 的交互式 runner 进程必须以管理员身份启动；测试会拒绝
+覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
 
 ## 固定下载
 
@@ -62,6 +78,15 @@ DVS_PERFORMANCE_FIXTURE_ROOT=G:\GitHubActions\Toy-data\performance
 gate-1080p60-a.mp4
 gate-1080p60-b.mp4
 gate-1080p60-c.mp4
+gate-1080p120-a.mp4
+gate-1080p120-b.mp4
+gate-1080p120-c.mp4
+```
+
+4K30 Main10 当前不阻断 v1.1.0 发布，但测试入口仍然保留。后续恢复该门禁时，素材
+目录还需要包含：
+
+```text
 gate-4k30-main10-a.mp4
 gate-4k30-main10-b.mp4
 gate-4k30-main10-c.mp4
@@ -72,6 +97,18 @@ gate-4k30-main10-c.mp4
 不要把该 runner 安装成 Windows 服务。D3D11VA、Qt 渲染和可见窗口性能门禁需要当前
 用户的交互桌面；服务运行在 Session 0，不能作为这组门禁的可信证据。用户登录后从
 runner 目录启动 `run.cmd`，或创建“用户登录时”启动的计划任务。
+
+交互桌面还必须实际挂载由 PCI 显卡驱动的 120 Hz 或更高刷新率显示输出。只挂载
+GameViewer、Oray 等虚拟/间接显示适配器时，即使 D3D11VA 解码成功，Qt 的呈现节奏也
+不能作为 60/120 FPS 发布证据。工作流会先执行以下 fail-closed 预检：
+
+```powershell
+.\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
+```
+
+预检必须输出 `DVS_HARDWARE_RUNNER_READY`。如果提示没有物理 PCI 显示适配器附着到
+桌面，应先在本机物理显示输出上登录，或把物理输出加入当前扩展桌面，再启动 runner；
+不得通过删除预检、降低刷新率或继续使用纯虚拟桌面来绕过门禁。
 
 此仓库是 public。self-hosted job 已限制为仓库内分支的 PR，fork PR 不会被发送到
 工作站；硬件性能 workflow 仅允许维护者手动 dispatch。不要移除这些限制，也不要在
@@ -84,5 +121,8 @@ status: online
 labels: self-hosted, Windows, X64, dvs-toolchain-4.4, dvs-gpu
 ```
 
-常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。其 1080p60 与 4K30
-Main10 用例各运行 300 秒，日志作为 workflow artifact 保留 14 天。
+常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。v1.1.0 的阻断门槛
+包括 1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。4K30 Main10
+用例仍可通过 `ctest --preset performance-d3d11 -R
+"^performance\.4k30-main10$" --output-on-failure` 单独执行，但其结果暂不阻断
+v1.1.0。所有工作流日志作为 artifact 保留 14 天。

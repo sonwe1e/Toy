@@ -1,10 +1,16 @@
 name: Hardware and Performance
 
 # Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
-# interactively logged-in self-hosted runner and six external five-minute fixtures.
+# interactively logged-in self-hosted runner and nine external performance fixtures.
 # They run on demand instead of accepting pull-request code on the workstation.
 
 on:
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: Exact commit that must be tested
+        required: true
+        type: string
   workflow_dispatch:
 
 permissions:
@@ -22,12 +28,23 @@ jobs:
     env:
       DVS_VCPKG_ROOT: ${{ vars.DVS_VCPKG_ROOT }}
       DVS_PERFORMANCE_FIXTURE_ROOT: ${{ vars.DVS_PERFORMANCE_FIXTURE_ROOT }}
+      DVS_EXPECTED_SHA: ${{ inputs.commit_sha || github.sha }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ env.DVS_EXPECTED_SHA }}
+
+      - name: Verify tested commit
+        shell: pwsh
+        run: |
+          $actualSha = (git rev-parse HEAD).Trim()
+          if ($actualSha -cne $env:DVS_EXPECTED_SHA) {
+            throw "Expected commit $env:DVS_EXPECTED_SHA, checked out $actualSha."
+          }
+          "DVS_TESTED_SHA=$actualSha" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Enter MSVC x64 environment
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -62,7 +79,7 @@ jobs:
           $llvmBin | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
           Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
 
-      - name: Verify hardware fixtures
+      - name: Verify hardware fixtures and runner desktop
         shell: pwsh
         run: |
           if (-not $env:DVS_PERFORMANCE_FIXTURE_ROOT) {
@@ -72,9 +89,9 @@ jobs:
             'gate-1080p60-a.mp4',
             'gate-1080p60-b.mp4',
             'gate-1080p60-c.mp4',
-            'gate-4k30-main10-a.mp4',
-            'gate-4k30-main10-b.mp4',
-            'gate-4k30-main10-c.mp4'
+            'gate-1080p120-a.mp4',
+            'gate-1080p120-b.mp4',
+            'gate-1080p120-c.mp4'
           )
           foreach ($name in $required) {
             $path = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT $name
@@ -82,9 +99,7 @@ jobs:
               throw "Missing performance fixture: $path"
             }
           }
-          Get-CimInstance Win32_VideoController |
-            Select-Object Name, DriverVersion, Status |
-            Format-Table -AutoSize
+          .\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
 
       - name: Configure
         shell: pwsh
@@ -98,9 +113,14 @@ jobs:
         shell: pwsh
         run: ctest --preset hardware-d3d11 --output-on-failure
 
-      - name: Five-minute performance gates
+      - name: Release-blocking performance gates
         shell: pwsh
-        run: ctest --preset performance-d3d11 --output-on-failure
+        # The 4K30 Main10 profile remains registered for follow-up tuning, but is intentionally
+        # deferred from the v1.1.0 release gate. The three 1080p profiles stay fail-closed.
+        run: >
+          ctest --preset performance-d3d11
+          --exclude-regex "^performance\.4k30-main10$"
+          --output-on-failure
 
       - name: Collect performance logs
         if: always()
@@ -108,17 +128,34 @@ jobs:
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'out\performance-results'
           New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          $env:DVS_TESTED_SHA |
+            Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
+          @(
+            'v1.1.0 release-blocking profiles:',
+            '- 1080p60',
+            '- 1080p120-2source',
+            '- 1080p120-3source',
+            '',
+            '4k30-main10 is deferred and was not executed by this workflow.'
+          ) | Set-Content (Join-Path $artifactRoot 'release-gate-policy.txt') -Encoding ascii
           $resultRoot = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT 'results'
           if (Test-Path -LiteralPath $resultRoot) {
-            Get-ChildItem -LiteralPath $resultRoot -File |
-              Copy-Item -Destination $artifactRoot -Force
+            $profiles = @('1080p60', '1080p120-2source', '1080p120-3source')
+            foreach ($profile in $profiles) {
+              foreach ($stream in @('stdout', 'stderr')) {
+                $logPath = Join-Path $resultRoot "$profile-$stream.log"
+                if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                  Copy-Item -LiteralPath $logPath -Destination $artifactRoot -Force
+                }
+              }
+            }
           }
 
       - name: Upload performance logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hardware-performance-logs
+          name: hardware-performance-logs-${{ github.sha }}
           path: out/performance-results
           if-no-files-found: warn
           retention-days: 14

@@ -186,6 +186,7 @@ TEST(RenderAckRelayTests, DrainsAcknowledgementAndPostsOnlyFromRelayWorker) {
     ASSERT_EQ(relay.tryPublishAcknowledgement(acknowledgement),
               platform::PresentationAckPushResult::Accepted);
     ASSERT_TRUE(events->waitForCriticalCount(1U, 1s));
+    ASSERT_TRUE(waitUntil([&relay] { return relay.statistics().criticalPostsAccepted == 1U; }, 1s));
 
     const std::vector<application::ApplicationEvent> posted = events->criticalEvents();
     ASSERT_EQ(posted.size(), 1U);

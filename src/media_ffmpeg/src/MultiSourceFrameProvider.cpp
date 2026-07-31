@@ -21,7 +21,6 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
-#include <future>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -40,7 +39,7 @@ inline constexpr std::size_t kExactRequestSlots = 1U;
 inline constexpr std::size_t kSequentialRequestSlots = 2U;
 inline constexpr std::size_t kPrefetchRequestSlots = 8U;
 inline constexpr std::size_t kSetTableCapacity = 4U;
-inline constexpr std::size_t kMaximumSourceCacheBytes = 48U * 1024U * 1024U;
+inline constexpr std::size_t kMaximumSourceCacheBytes = 12U * 1024U * 1024U;
 inline constexpr std::size_t kMaximumFrameSetCacheBytes = 96U * 1024U * 1024U;
 
 enum class ProviderOperationKind {
@@ -237,6 +236,46 @@ decodePriority(const application::FrameRequestPriority priority) noexcept {
     }
     std::terminate();
 }
+
+struct SlotDecodeCompletion final {
+    domain::SourceId sourceId;
+    domain::FrameId sourceFrameId;
+    application::FrameMatchKind matchKind;
+    float alignmentConfidence;
+    domain::Result<internal::DecodedFrame> result;
+};
+
+class FrameDecodeCompletionMailbox final {
+public:
+    void publish(SlotDecodeCompletion completion) noexcept {
+        {
+            std::scoped_lock lock{mutex_};
+            try {
+                completions_.push_back(std::move(completion));
+            } catch (...) {
+                publishFailed_ = true;
+            }
+        }
+        condition_.notify_one();
+    }
+
+    [[nodiscard]] std::optional<SlotDecodeCompletion> take() noexcept {
+        std::unique_lock lock{mutex_};
+        condition_.wait(lock, [this] { return publishFailed_ || !completions_.empty(); });
+        if (completions_.empty()) {
+            return std::nullopt;
+        }
+        SlotDecodeCompletion completion = std::move(completions_.front());
+        completions_.pop_front();
+        return completion;
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::deque<SlotDecodeCompletion> completions_;
+    bool publishFailed_ = false;
+};
 
 } // namespace
 
@@ -857,8 +896,11 @@ private:
             }
             setBytes += frameBytes;
         }
+        // Keep most of the shared budget available for the published set, the scene graph's
+        // retiring generation, and the next set being decoded. A cached 3-source 4K P010 set is
+        // large enough to make that transient overlap fail even though steady-state usage fits.
         const std::size_t cacheCapacity =
-            std::min(kMaximumFrameSetCacheBytes, frameBudget_.capacityBytes() / 2U);
+            std::min(kMaximumFrameSetCacheBytes, frameBudget_.capacityBytes() / 4U);
         if (setBytes > cacheCapacity) {
             return;
         }
@@ -971,16 +1013,8 @@ private:
             // USERPLAN 3.5: decode every source's frame in parallel (one decode actor per
             // source) and assemble the FrameSet only after all slots have reported, so the
             // per-set latency approaches max(slot decode time) instead of the sum over sources.
-            // Each slot owns its decoder; the shared frame budget and the operation's
-            // cancellation flag are thread-safe, and exceptions propagate through future::get
-            // into the surrounding handler.
-            struct SlotDecode final {
-                domain::SourceId sourceId;
-                domain::FrameId sourceFrameId;
-                application::FrameMatchKind matchKind;
-                float alignmentConfidence;
-                std::future<domain::Result<internal::DecodedFrame>> result;
-            };
+            // Each slot owns its decoder and publishes one identity-bearing completion into a
+            // bounded per-request mailbox. The provider never owns or waits on decode futures.
             std::vector<domain::SourceId> sourceOrder;
             sourceOrder.reserve(activeSession_->sources.size());
             std::transform(activeSession_->sources.begin(),
@@ -1003,8 +1037,8 @@ private:
                                          "A source worker reported an unknown or duplicate slot."));
                 return false;
             };
-            std::vector<SlotDecode> decoding;
-            decoding.reserve(decodeActors_.size());
+            const auto completionMailbox = std::make_shared<FrameDecodeCompletionMailbox>();
+            std::size_t pendingDecodeCount = 0U;
 
             const auto alignmentFor =
                 [&request](
@@ -1093,8 +1127,18 @@ private:
 
                 const bool sequential = continueSequentially;
                 const domain::FrameId frameId{mappedFrame};
-                internal::SourceDecodeSubmission submitted =
-                    decodeActors_[slot]->submit(internal::SourceDecodeRequest{
+                const application::FrameMatchKind matchKind =
+                    alignment == nullptr
+                        ? application::FrameMatchKind::ExactIndex
+                        : (offset == 0 &&
+                                   alignment->matchKind == application::FrameMatchKind::GlobalOffset
+                               ? application::FrameMatchKind::ExactIndex
+                               : alignment->matchKind);
+                const float alignmentConfidence =
+                    alignment == nullptr ? 1.0F : alignment->confidence;
+                const std::weak_ptr<FrameDecodeCompletionMailbox> weakMailbox{completionMailbox};
+                const application::PortSubmitResult submitted = decodeActors_[slot]->submit(
+                    internal::SourceDecodeRequest{
                         .frameId = frameId,
                         .priority = decodePriority(request.priority),
                         .continueSequentially = sequential,
@@ -1104,9 +1148,20 @@ private:
                                 : std::uint8_t{0U},
                         .cancellationRequested = &operation->cancellationRequested,
                         .context = request.context,
+                    },
+                    [weakMailbox, sourceId, frameId, matchKind, alignmentConfidence](
+                        domain::Result<internal::DecodedFrame> decoded) mutable {
+                        if (const auto mailbox = weakMailbox.lock()) {
+                            mailbox->publish(SlotDecodeCompletion{
+                                .sourceId = sourceId,
+                                .sourceFrameId = frameId,
+                                .matchKind = matchKind,
+                                .alignmentConfidence = alignmentConfidence,
+                                .result = std::move(decoded),
+                            });
+                        }
                     });
-                if (submitted.status != application::PortSubmitResult::Accepted ||
-                    !submitted.completion.valid()) {
+                if (submitted != application::PortSubmitResult::Accepted) {
                     postFailed(operation,
                                providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                              sourceId,
@@ -1115,37 +1170,39 @@ private:
                                              true));
                     return;
                 }
-                decoding.push_back(SlotDecode{
-                    .sourceId = sourceId,
-                    .sourceFrameId = frameId,
-                    .matchKind = alignment == nullptr
-                                     ? application::FrameMatchKind::ExactIndex
-                                     : (offset == 0 && alignment->matchKind ==
-                                                           application::FrameMatchKind::GlobalOffset
-                                            ? application::FrameMatchKind::ExactIndex
-                                            : alignment->matchKind),
-                    .alignmentConfidence = alignment == nullptr ? 1.0F : alignment->confidence,
-                    .result = std::move(submitted.completion),
-                });
+                ++pendingDecodeCount;
             }
 
-            for (SlotDecode& slotDecode : decoding) {
-                domain::Result<internal::DecodedFrame> decoded = slotDecode.result.get();
-                if (!decoded) {
+            for (std::size_t completed = 0U; completed < pendingDecodeCount; ++completed) {
+                std::optional<SlotDecodeCompletion> slotDecode = completionMailbox->take();
+                if (!slotDecode.has_value()) {
+                    postFailed(operation,
+                               providerError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                             std::nullopt,
+                                             "The source completion mailbox could not retain a "
+                                             "decoded frame result.",
+                                             true));
+                    return;
+                }
+                if (operation->isCanceled()) {
+                    postCanceled(operation);
+                    return;
+                }
+                if (!slotDecode->result) {
                     // Missing is exclusively a mapping-layer result. Any decoder failure,
                     // including budget pressure, fails the whole atomic request and leaves the
                     // previously presented FrameSet untouched.
-                    postFailed(operation, decoded.error());
+                    postFailed(operation, slotDecode->result.error());
                     return;
                 }
 
                 if (!completeSlot(application::MappedSourceFrame{
-                        .sourceId = slotDecode.sourceId,
-                        .sourceFrameId = slotDecode.sourceFrameId,
-                        .frame = std::move(decoded.value().handle),
-                        .presentationTime = decoded.value().presentationTime,
-                        .matchKind = slotDecode.matchKind,
-                        .alignmentConfidence = slotDecode.alignmentConfidence,
+                        .sourceId = slotDecode->sourceId,
+                        .sourceFrameId = slotDecode->sourceFrameId,
+                        .frame = std::move(slotDecode->result.value().handle),
+                        .presentationTime = slotDecode->result.value().presentationTime,
+                        .matchKind = slotDecode->matchKind,
+                        .alignmentConfidence = slotDecode->alignmentConfidence,
                     })) {
                     return;
                 }

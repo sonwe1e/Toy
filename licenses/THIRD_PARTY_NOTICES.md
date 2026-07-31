@@ -1,24 +1,15 @@
 # Third-Party Notices
 
-DualVideoStudio distributes third-party runtime components under their respective
+VCStation distributes third-party runtime components under their respective
 licenses. The package includes the exact license or copyright texts in this directory;
 those texts govern the corresponding components.
-
-## FFmpeg command-line runtime
-
-- Component: `ffmpeg.exe` and `ffprobe.exe`
-- Version: Gyan FFmpeg 8.1.2 essentials build for Windows x64
-- License profile: GPL-3.0-or-later
-- Binary release: <https://github.com/GyanD/codexffmpeg/releases/tag/8.1.2>
-- Upstream source: <https://github.com/FFmpeg/FFmpeg/commit/38b88335f9>
-- License text: `FFmpeg-GPL-3.0.txt`
-- Build configuration and bundled-library list: `FFmpeg-runtime-build-info.txt`
-- Reproducible provenance: `ffmpeg-runtime-provenance.json`
 
 ## Dynamically linked FFmpeg libraries
 
 The application links the vcpkg FFmpeg 8.1.2 libraries built without optional GPL codec
-features. Their copyright and license text is installed as `vcpkg/ffmpeg.txt`.
+features. Their copyright and license text is installed as `vcpkg/ffmpeg.txt`. The end-user
+package deliberately contains neither `ffmpeg.exe` nor `ffprobe.exe`; media probing and decoding
+use the linked libraries directly.
 
 ## Qt
 

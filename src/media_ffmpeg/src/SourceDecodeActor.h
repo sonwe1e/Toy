@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -44,6 +45,8 @@ struct SourceDecodeSubmission final {
     std::future<domain::Result<DecodedFrame>> completion;
 };
 
+using SourceDecodeCompletion = std::function<void(domain::Result<DecodedFrame>)>;
+
 // One long-lived worker owns one SoftwareDecoder for the complete open session. Its bounded
 // priority mailboxes eliminate per-frame thread creation and keep decoder state single-threaded.
 class SourceDecodeActor final {
@@ -64,6 +67,8 @@ public:
 
     [[nodiscard]] domain::Status open(const std::atomic<bool>& cancellationRequested);
     [[nodiscard]] SourceDecodeSubmission submit(SourceDecodeRequest request);
+    [[nodiscard]] application::PortSubmitResult submit(SourceDecodeRequest request,
+                                                       SourceDecodeCompletion completion);
     void close() noexcept;
     void requestInterrupt() noexcept;
     void shutdown() noexcept;
@@ -82,7 +87,7 @@ private:
 
     struct DecodeJob final {
         SourceDecodeRequest request;
-        std::promise<domain::Result<DecodedFrame>> completion;
+        SourceDecodeCompletion completion;
     };
 
     struct ControlJob final {
@@ -97,10 +102,17 @@ private:
     void run() noexcept;
     void cancelQueuedLocked();
     void completeCanceled(DecodeJob job) noexcept;
+    static void complete(DecodeJob job, domain::Result<DecodedFrame> result) noexcept;
 
     domain::SourceId sourceId_;
     std::int64_t sourceFrameCount_ = 0;
     std::unique_ptr<SoftwareDecoder> decoder_;
+    // Bounded frames use an independent exact decoder so random navigation cannot disturb
+    // playback state. It uses software below 50 FPS and D3D11VA for 50/60/120 FPS sources, where
+    // one long GOP can contain hundreds of frames. Exact prefetch stays on the same decoder.
+    std::unique_ptr<SoftwareDecoder> exactDecoder_;
+    bool decoderNeedsReopen_ = false;
+    bool exactDecoderNeedsReopen_ = false;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<ControlJob> controlQueue_;

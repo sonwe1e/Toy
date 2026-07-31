@@ -8,14 +8,19 @@
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 #include "dvs/ui/SourceListModel.h"
+#include "dvs/ui/WorkspaceController.h"
 
 #include "ReviewRuntime.h"
 #include "StartupFailureReporter.h"
 
 #include <QElapsedTimer>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTimer>
 #include <QUrl>
 
+#include <Windows.h>
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -23,10 +28,10 @@
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -81,6 +86,25 @@ struct PerformanceMetrics final {
     qint64 shutdownMilliseconds = -1;
 };
 
+void writeStandardError(std::string_view message) noexcept {
+    const HANDLE standardError = GetStdHandle(STD_ERROR_HANDLE);
+    if (standardError == nullptr || standardError == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    while (!message.empty()) {
+        const std::size_t chunkSize =
+            std::min<std::size_t>(message.size(), (std::numeric_limits<DWORD>::max)());
+        DWORD written = 0U;
+        if (WriteFile(
+                standardError, message.data(), static_cast<DWORD>(chunkSize), &written, nullptr) ==
+                FALSE ||
+            written == 0U) {
+            return;
+        }
+        message.remove_prefix(written);
+    }
+}
+
 [[nodiscard]] std::optional<std::chrono::seconds> parseDuration(const std::string_view text) {
     std::int64_t seconds = 0;
     const auto [position, error] = std::from_chars(text.data(), text.data() + text.size(), seconds);
@@ -100,11 +124,13 @@ struct PerformanceMetrics final {
     return QUrl::fromLocalFile(QString::fromStdWString(path.wstring()));
 }
 
-[[nodiscard]] int runDesktop(int& argc,
-                             char** argv,
-                             const bool smokeMode,
-                             const std::optional<SmokeSources>& smokeSources = std::nullopt,
-                             const bool shutdownDuringOpen = false) {
+[[nodiscard]] int
+runDesktop(int& argc,
+           char** argv,
+           const bool smokeMode,
+           const std::optional<SmokeSources>& smokeSources = std::nullopt,
+           const bool shutdownDuringOpen = false,
+           const std::optional<std::filesystem::path>& initialProject = std::nullopt) {
     dvs::ui::configureGraphicsBackend();
     dvs::ui::DesktopApplication desktop{
         argc,
@@ -135,6 +161,14 @@ struct PerformanceMetrics final {
             std::_Exit(EXIT_FAILURE);
         }
         return dvs::app::reportFatalStartup("DVS_UI_LOAD_FAILED", smokeMode);
+    }
+    if (initialProject.has_value() &&
+        !runtime->workspace()->openProject(localFileUrl(*initialProject))) {
+        runtime->prepareForSceneGraphRelease();
+        desktop.releaseSceneGraph();
+        static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
+        return dvs::app::reportFatalStartup("The requested VCStation project could not be opened.",
+                                            smokeMode);
     }
 
     QTimer smokePoll;
@@ -464,6 +498,7 @@ struct PerformanceMetrics final {
         dvs::ui::DesktopApplicationOptions{
             .smokeMode = false,
             .preferSoftwareDevice = false,
+            .preferHighRefreshScreen = true,
         },
     };
     std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
@@ -475,10 +510,9 @@ struct PerformanceMetrics final {
                       [&runtime](dvs::ui::ComparisonSurface& surface) {
                           return runtime->attachSurface(surface);
                       })) {
-        std::cerr << "DVS_PERFORMANCE_UI_LOAD_FAILED\n";
+        writeStandardError("DVS_PERFORMANCE_UI_LOAD_FAILED\n");
         return EXIT_FAILURE;
     }
-
     enum class Stage {
         WaitingForGraphics,
         WaitingForFirstFrame,
@@ -513,6 +547,7 @@ struct PerformanceMetrics final {
     bool completed = false;
     bool failed = false;
     std::string failureReason;
+    const std::size_t expectedSourceCount = sources.third.has_value() ? 3U : 2U;
 
     const auto fail = [&](std::string reason) {
         if (!failed) {
@@ -524,7 +559,8 @@ struct PerformanceMetrics final {
     const auto samplePresentedSources = [&] {
         auto* const model = runtime->controller()->sources();
         const qint64 canonical = runtime->controller()->currentFrame();
-        if (model == nullptr || canonical < 0 || model->rowCount() != 3) {
+        if (model == nullptr || canonical < 0 ||
+            model->rowCount() != static_cast<int>(expectedSourceCount)) {
             ++metrics.sourceSplitObservations;
             return;
         }
@@ -589,20 +625,25 @@ struct PerformanceMetrics final {
         metrics.peakFrameBytes = std::max(metrics.peakFrameBytes, runtime->reservedFrameBytes());
 
         switch (stage) {
-        case Stage::WaitingForGraphics:
+        case Stage::WaitingForGraphics: {
             if (!controller.graphicsReady()) {
                 return;
             }
-            if (!desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                         localFileUrl(sources.second),
-                                                         localFileUrl(*sources.third)) ||
-                !desktop.clickControlForAutomation("openPairButton")) {
+            const bool sourcesSelected =
+                sources.third.has_value()
+                    ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                              localFileUrl(sources.second),
+                                                              localFileUrl(*sources.third))
+                    : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
+                                                              localFileUrl(sources.second));
+            if (!sourcesSelected || !desktop.clickControlForAutomation("openPairButton")) {
                 fail("open-rejected");
                 return;
             }
             openTimer.start();
             stage = Stage::WaitingForFirstFrame;
             return;
+        }
         case Stage::WaitingForFirstFrame:
             if (controller.busy() || controller.currentFrame() != 0) {
                 return;
@@ -780,7 +821,7 @@ struct PerformanceMetrics final {
     const double dropRatio = totalCounted == 0U ? 1.0
                                                 : static_cast<double>(metrics.droppedFrames) /
                                                       static_cast<double>(totalCounted);
-    const bool allHardware = backends.size() == 3U &&
+    const bool allHardware = backends.size() == expectedSourceCount &&
                              std::all_of(backends.begin(), backends.end(), [](const auto& status) {
                                  return status.backend == dvs::media::DecoderBackend::D3d11Va &&
                                         status.deviceGeneration.value() != 0U;
@@ -845,99 +886,118 @@ struct PerformanceMetrics final {
         result = EXIT_FAILURE;
     }
 
-    std::ostringstream report;
-    report << "{\"duration_seconds\":" << duration.count()
-           << ",\"presented_frames\":" << metrics.presentedFrames
-           << ",\"dropped_frames\":" << metrics.droppedFrames << ",\"drop_ratio\":" << dropRatio
-           << ",\"source_split_observations\":" << metrics.sourceSplitObservations
-           << ",\"open_first_frame_ms\":" << metrics.openFirstFrameMilliseconds
-           << ",\"playback_response_ms\":" << metrics.playbackResponseMilliseconds
-           << ",\"cold_seek_p50_ms\":" << metrics.seekP50Milliseconds
-           << ",\"seek_p95_ms\":" << metrics.seekP95Milliseconds
-           << ",\"warm_step_p50_ms\":" << metrics.warmStepP50Milliseconds
-           << ",\"warm_step_p95_ms\":" << metrics.warmStepP95Milliseconds
-           << ",\"analysis_ms\":" << metrics.analysisMilliseconds
-           << ",\"analysis_decoded_frames\":" << metrics.analysisDecodedFrames
-           << ",\"analysis_frames_per_second\":" << analysisFramesPerSecond
-           << ",\"shutdown_ms\":" << metrics.shutdownMilliseconds
-           << ",\"peak_frame_bytes\":" << metrics.peakFrameBytes
-           << ",\"peak_working_set_bytes\":" << metrics.peakWorkingSetBytes
-           << ",\"baseline_threads\":" << metrics.baselineThreads
-           << ",\"peak_threads\":" << metrics.peakThreads
-           << ",\"final_threads\":" << metrics.finalThreads
-           << ",\"submitted_sets\":" << playbackTransfer.submittedSets
-           << ",\"replaced_sets\":" << playbackTransfer.replacedSets
-           << ",\"published_sets\":" << playbackTransfer.publishedSets
-           << ",\"failed_sets\":" << transfer.failedSets
-           << ",\"cancelled_sets\":" << transfer.cancelledSets << ",\"transfer_average_us\":"
-           << (playbackTransfer.completedTransfers == 0U
-                   ? 0U
-                   : playbackTransfer.totalTransferMicroseconds /
-                         playbackTransfer.completedTransfers)
-           << ",\"transfer_maximum_us\":" << playbackTransfer.maximumTransferMicroseconds
-           << ",\"zero_copy_sets\":" << playbackTransfer.zeroCopySets
-           << ",\"render_frame_notifications\":" << relay.frameNotifications
-           << ",\"render_ack_notifications\":" << relay.ackNotifications
-           << ",\"render_ack_backpressure\":" << relay.ackBackpressureNotifications
-           << ",\"render_acknowledgements\":" << relay.acknowledgementsPopped
-           << ",\"render_canonical_gaps\":" << relay.canonicalFrameGaps
-           << ",\"render_canonical_regressions\":" << relay.canonicalFrameRegressions
-           << ",\"render_update_requests\":" << relay.updateRequests
-           << ",\"render_item_updates\":" << relay.itemUpdates
-           << ",\"render_frame_to_start_average_us\":"
-           << (relay.frameToRenderSamples == 0U
-                   ? 0U
-                   : relay.totalFrameToRenderMicroseconds / relay.frameToRenderSamples)
-           << ",\"render_start_to_ack_average_us\":"
-           << (relay.renderToAckSamples == 0U
-                   ? 0U
-                   : relay.totalRenderToAckMicroseconds / relay.renderToAckSamples)
-           << ",\"render_frame_to_ack_average_us\":"
-           << (relay.frameToAckSamples == 0U
-                   ? 0U
-                   : relay.totalFrameToAckMicroseconds / relay.frameToAckSamples)
-           << ",\"render_frame_to_ack_maximum_us\":" << relay.maximumFrameToAckMicroseconds
-           << ",\"device_loss_reports\":" << transfer.deviceLossReports
-           << ",\"decoder_calls\":" << completedDecodes << ",\"decoder_cache_hits\":" << cacheHits
-           << ",\"decoder_cache_hit_ratio\":" << cacheHitRatio
-           << ",\"decoder_exact_seeks\":" << exactSeeks << ",\"decoder_average_us\":"
-           << (completedDecodes == 0U ? 0U : totalDecodeMicroseconds / completedDecodes)
-           << ",\"decoder_maximum_us\":" << maximumDecodeMicroseconds
-           << ",\"probe_index_count\":" << probe.completedProbes << ",\"probe_index_average_us\":"
-           << (probe.completedProbes == 0U
-                   ? 0U
-                   : probe.totalProbeIndexMicroseconds / probe.completedProbes)
-           << ",\"probe_index_maximum_us\":" << probe.maximumProbeIndexMicroseconds
-           << ",\"frameset_assembly_count\":" << provider.assembledFrameSets
-           << ",\"frameset_assembly_average_us\":"
-           << (provider.assembledFrameSets == 0U
-                   ? 0U
-                   : provider.totalAssemblyMicroseconds / provider.assembledFrameSets)
-           << ",\"frameset_assembly_maximum_us\":" << provider.maximumAssemblyMicroseconds
-           << ",\"frameset_cache_hits\":" << provider.frameSetCacheHits
-           << ",\"per_source_decode\":[";
+    QJsonObject report;
+    const auto addNumber = [&report](const QString& key, const auto value) {
+        report.insert(key, static_cast<double>(value));
+    };
+    addNumber(QStringLiteral("duration_seconds"), duration.count());
+    addNumber(QStringLiteral("screen_refresh_hz"), desktop.activeScreenRefreshRate());
+    addNumber(QStringLiteral("presented_frames"), metrics.presentedFrames);
+    addNumber(QStringLiteral("dropped_frames"), metrics.droppedFrames);
+    addNumber(QStringLiteral("drop_ratio"), dropRatio);
+    addNumber(QStringLiteral("source_split_observations"), metrics.sourceSplitObservations);
+    addNumber(QStringLiteral("open_first_frame_ms"), metrics.openFirstFrameMilliseconds);
+    addNumber(QStringLiteral("playback_response_ms"), metrics.playbackResponseMilliseconds);
+    addNumber(QStringLiteral("cold_seek_p50_ms"), metrics.seekP50Milliseconds);
+    addNumber(QStringLiteral("seek_p95_ms"), metrics.seekP95Milliseconds);
+    QJsonArray seekSamples;
+    for (const qint64 sample : seekMilliseconds) {
+        seekSamples.append(static_cast<double>(sample));
+    }
+    report.insert(QStringLiteral("seek_samples_ms"), seekSamples);
+    addNumber(QStringLiteral("warm_step_p50_ms"), metrics.warmStepP50Milliseconds);
+    addNumber(QStringLiteral("warm_step_p95_ms"), metrics.warmStepP95Milliseconds);
+    addNumber(QStringLiteral("analysis_ms"), metrics.analysisMilliseconds);
+    addNumber(QStringLiteral("analysis_decoded_frames"), metrics.analysisDecodedFrames);
+    addNumber(QStringLiteral("analysis_frames_per_second"), analysisFramesPerSecond);
+    addNumber(QStringLiteral("shutdown_ms"), metrics.shutdownMilliseconds);
+    addNumber(QStringLiteral("peak_frame_bytes"), metrics.peakFrameBytes);
+    addNumber(QStringLiteral("peak_working_set_bytes"), metrics.peakWorkingSetBytes);
+    addNumber(QStringLiteral("baseline_threads"), metrics.baselineThreads);
+    addNumber(QStringLiteral("peak_threads"), metrics.peakThreads);
+    addNumber(QStringLiteral("final_threads"), metrics.finalThreads);
+    addNumber(QStringLiteral("submitted_sets"), playbackTransfer.submittedSets);
+    addNumber(QStringLiteral("replaced_sets"), playbackTransfer.replacedSets);
+    addNumber(QStringLiteral("published_sets"), playbackTransfer.publishedSets);
+    addNumber(QStringLiteral("failed_sets"), transfer.failedSets);
+    addNumber(QStringLiteral("cancelled_sets"), transfer.cancelledSets);
+    addNumber(QStringLiteral("transfer_average_us"),
+              playbackTransfer.completedTransfers == 0U
+                  ? 0U
+                  : playbackTransfer.totalTransferMicroseconds /
+                        playbackTransfer.completedTransfers);
+    addNumber(QStringLiteral("transfer_maximum_us"), playbackTransfer.maximumTransferMicroseconds);
+    addNumber(QStringLiteral("zero_copy_sets"), playbackTransfer.zeroCopySets);
+    addNumber(QStringLiteral("render_frame_notifications"), relay.frameNotifications);
+    addNumber(QStringLiteral("render_ack_notifications"), relay.ackNotifications);
+    addNumber(QStringLiteral("render_ack_backpressure"), relay.ackBackpressureNotifications);
+    addNumber(QStringLiteral("render_acknowledgements"), relay.acknowledgementsPopped);
+    addNumber(QStringLiteral("render_canonical_gaps"), relay.canonicalFrameGaps);
+    addNumber(QStringLiteral("render_canonical_regressions"), relay.canonicalFrameRegressions);
+    addNumber(QStringLiteral("render_update_requests"), relay.updateRequests);
+    addNumber(QStringLiteral("render_item_updates"), relay.itemUpdates);
+    addNumber(QStringLiteral("render_frame_to_start_average_us"),
+              relay.frameToRenderSamples == 0U
+                  ? 0U
+                  : relay.totalFrameToRenderMicroseconds / relay.frameToRenderSamples);
+    addNumber(QStringLiteral("render_start_to_ack_average_us"),
+              relay.renderToAckSamples == 0U
+                  ? 0U
+                  : relay.totalRenderToAckMicroseconds / relay.renderToAckSamples);
+    addNumber(QStringLiteral("render_frame_to_ack_average_us"),
+              relay.frameToAckSamples == 0U
+                  ? 0U
+                  : relay.totalFrameToAckMicroseconds / relay.frameToAckSamples);
+    addNumber(QStringLiteral("render_frame_to_ack_maximum_us"),
+              relay.maximumFrameToAckMicroseconds);
+    addNumber(QStringLiteral("device_loss_reports"), transfer.deviceLossReports);
+    addNumber(QStringLiteral("decoder_calls"), completedDecodes);
+    addNumber(QStringLiteral("decoder_cache_hits"), cacheHits);
+    addNumber(QStringLiteral("decoder_cache_hit_ratio"), cacheHitRatio);
+    addNumber(QStringLiteral("decoder_exact_seeks"), exactSeeks);
+    addNumber(QStringLiteral("decoder_average_us"),
+              completedDecodes == 0U ? 0U : totalDecodeMicroseconds / completedDecodes);
+    addNumber(QStringLiteral("decoder_maximum_us"), maximumDecodeMicroseconds);
+    addNumber(QStringLiteral("probe_index_count"), probe.completedProbes);
+    addNumber(QStringLiteral("probe_index_average_us"),
+              probe.completedProbes == 0U
+                  ? 0U
+                  : probe.totalProbeIndexMicroseconds / probe.completedProbes);
+    addNumber(QStringLiteral("probe_index_maximum_us"), probe.maximumProbeIndexMicroseconds);
+    addNumber(QStringLiteral("frameset_assembly_count"), provider.assembledFrameSets);
+    addNumber(QStringLiteral("frameset_assembly_average_us"),
+              provider.assembledFrameSets == 0U
+                  ? 0U
+                  : provider.totalAssemblyMicroseconds / provider.assembledFrameSets);
+    addNumber(QStringLiteral("frameset_assembly_maximum_us"), provider.maximumAssemblyMicroseconds);
+    addNumber(QStringLiteral("frameset_cache_hits"), provider.frameSetCacheHits);
+
+    QJsonArray sourceDecode;
     for (std::size_t index = 0U; index < playbackBackends.size(); ++index) {
         const auto& backend = playbackBackends[index];
-        if (index != 0U) {
-            report << ',';
-        }
-        report << "{\"source_id\":" << backend.sourceId
-               << ",\"calls\":" << backend.completedDecodeCount << ",\"average_us\":"
-               << (backend.completedDecodeCount == 0U
-                       ? 0U
-                       : backend.totalDecodeMicroseconds / backend.completedDecodeCount)
-               << ",\"maximum_us\":" << backend.maximumDecodeMicroseconds << '}';
+        sourceDecode.append(QJsonObject{
+            {QStringLiteral("source_id"), static_cast<double>(backend.sourceId)},
+            {QStringLiteral("calls"), static_cast<double>(backend.completedDecodeCount)},
+            {QStringLiteral("average_us"),
+             static_cast<double>(backend.completedDecodeCount == 0U
+                                     ? 0U
+                                     : backend.totalDecodeMicroseconds /
+                                           backend.completedDecodeCount)},
+            {QStringLiteral("maximum_us"), static_cast<double>(backend.maximumDecodeMicroseconds)},
+        });
     }
-    report << ']' << ",\"all_d3d11va\":" << (allHardware ? "true" : "false")
-           << ",\"shutdown_completed\":" << (shutdownCompleted ? "true" : "false")
-           << ",\"passed\":" << (result == EXIT_SUCCESS ? "true" : "false");
+    report.insert(QStringLiteral("per_source_decode"), sourceDecode);
+    addNumber(QStringLiteral("expected_source_count"), expectedSourceCount);
+    report.insert(QStringLiteral("all_d3d11va"), allHardware);
+    report.insert(QStringLiteral("shutdown_completed"), shutdownCompleted);
+    report.insert(QStringLiteral("passed"), result == EXIT_SUCCESS);
     if (failed) {
-        report << ",\"failure\":\"" << failureReason << '"';
+        report.insert(QStringLiteral("failure"), QString::fromStdString(failureReason));
     }
-    report << "}\n";
-    std::cerr << "DVS_PERFORMANCE_RESULT " << report.str() << std::flush;
+    const auto encodedReport = QJsonDocument{report}.toJson(QJsonDocument::Compact);
+    writeStandardError("DVS_PERFORMANCE_RESULT " + encodedReport.toStdString() + '\n');
     if (!shutdownCompleted) {
-        std::cerr << "DVS_RUNTIME_SHUTDOWN_TIMEOUT\n";
+        writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
     }
     return result;
 }
@@ -949,6 +1009,10 @@ int main(int argc, char* argv[]) {
     try {
         if (argc == 1) {
             return runDesktop(argc, argv, false);
+        }
+        if (argc == 2 && std::string_view{argv[1]} == "--ui-stderr-smoke") {
+            writeStandardError("DVS_GUI_STDERR_OK\n");
+            return EXIT_SUCCESS;
         }
         if (argc == 2 && std::string_view{argv[1]} == "--ui-smoke") {
             return runDesktop(argc, argv, true);
@@ -972,19 +1036,22 @@ int main(int argc, char* argv[]) {
                                   .third = std::filesystem::path{argv[4]},
                               });
         }
-        if (argc == 7 && std::string_view{argv[1]} == "--ui-performance" &&
-            std::string_view{argv[5]} == "--seconds") {
-            const auto duration = parseDuration(argv[6]);
+        if ((argc == 6 || argc == 7) && std::string_view{argv[1]} == "--ui-performance" &&
+            std::string_view{argv[argc - 2]} == "--seconds") {
+            const auto duration = parseDuration(argv[argc - 1]);
             if (!duration) {
                 return dvs::app::reportFatalStartup(
                     "Performance duration must be between 5 and 3600 seconds.", true);
             }
+            const std::optional<std::filesystem::path> third =
+                argc == 7 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[4]}}
+                          : std::nullopt;
             return runPerformance(argc,
                                   argv,
                                   SmokeSources{
                                       .first = std::filesystem::path{argv[2]},
                                       .second = std::filesystem::path{argv[3]},
-                                      .third = std::filesystem::path{argv[4]},
+                                      .third = third,
                                   },
                                   *duration);
         }
@@ -1001,8 +1068,14 @@ int main(int argc, char* argv[]) {
         if (argc == 2 && std::string_view{argv[1]} == "--ui-fatal-startup-smoke") {
             return dvs::app::reportFatalStartup("DVS_UI_FATAL_STARTUP_SMOKE", true);
         }
+        if (argc == 2) {
+            const std::filesystem::path projectPath{argv[1]};
+            if (projectPath.extension() == ".dvsproj") {
+                return runDesktop(argc, argv, false, std::nullopt, false, projectPath);
+            }
+        }
         return dvs::app::reportFatalStartup(
-            "Unsupported GUI argument. Use DualVideoStudioCli.exe for diagnostics.", smokeArgument);
+            "Unsupported GUI argument. Use VCStationCli.exe for diagnostics.", smokeArgument);
     } catch (const std::exception& exception) {
         return dvs::app::reportFatalStartup(exception.what(), smokeArgument);
     } catch (...) {

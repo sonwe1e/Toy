@@ -51,12 +51,11 @@ context(const AnalysisRequest& request) noexcept {
                : application::AlignmentAnalysisKind::Sequence;
 }
 
-[[nodiscard]] domain::MediaError serviceError(std::string detail,
-                                              const domain::SourceId sourceId = 0) {
+[[nodiscard]] domain::MediaError
+serviceError(std::string detail, const std::optional<domain::SourceId> sourceId = std::nullopt) {
     return domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
                                   domain::MediaOperation::kMediaDecode,
-                                  sourceId == 0 ? std::nullopt
-                                                : std::optional<domain::SourceId>{sourceId},
+                                  sourceId,
                                   true,
                                   std::move(detail));
 }

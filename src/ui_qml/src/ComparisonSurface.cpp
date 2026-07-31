@@ -47,6 +47,7 @@ struct PresentationOptions final {
     platform::SurfaceDifferenceEdge differenceEdge = platform::SurfaceDifferenceEdge::Between0And1;
     platform::SurfaceDifferenceFilter differenceFilter =
         platform::SurfaceDifferenceFilter::Bilinear;
+    float wipePosition = 0.5F;
     bool exactPlaneAvailable = false;
     bool thresholdEnabled = false;
     float threshold = 0.0F;
@@ -68,6 +69,8 @@ nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
         return platform::SurfaceViewMode::ReferenceFocus;
     case ComparisonSurface::AnalysisGrid:
         return platform::SurfaceViewMode::AnalysisGrid;
+    case ComparisonSurface::Wipe:
+        return platform::SurfaceViewMode::Wipe;
     case ComparisonSurface::SideBySide:
         break;
     }
@@ -154,6 +157,7 @@ nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept
         .differenceGain = nativeDifferenceGain(surface.differenceGain()),
         .differenceEdge = nativeDifferenceEdge(surface.differenceEdge()),
         .differenceFilter = nativeDifferenceFilter(surface.differenceFilter()),
+        .wipePosition = static_cast<float>(surface.wipePosition()),
         .exactPlaneAvailable = surface.exactPlaneAvailable(),
         .thresholdEnabled = surface.thresholdEnabled(),
         .threshold = static_cast<float>(surface.threshold()),
@@ -255,6 +259,7 @@ public:
             .differenceGain = presentationOptions_.differenceGain,
             .differenceEdge = presentationOptions_.differenceEdge,
             .differenceFilter = presentationOptions_.differenceFilter,
+            .wipePosition = presentationOptions_.wipePosition,
             .exactPlaneAvailable = presentationOptions_.exactPlaneAvailable,
             .thresholdEnabled = presentationOptions_.thresholdEnabled,
             .threshold = presentationOptions_.threshold,
@@ -304,7 +309,7 @@ ComparisonSurface::ViewMode ComparisonSurface::viewMode() const noexcept {
 
 void ComparisonSurface::setViewMode(const ViewMode value) {
     if ((value != SideBySide && value != ThreeUp && value != ReferenceFocus &&
-         value != Difference && value != AnalysisGrid) ||
+         value != Difference && value != AnalysisGrid && value != Wipe) ||
         viewMode_ == value) {
         return;
     }
@@ -367,6 +372,23 @@ void ComparisonSurface::setDifferenceFilter(const DifferenceFilter value) {
     }
     differenceFilter_ = value;
     emit differenceFilterChanged();
+    update();
+}
+
+qreal ComparisonSurface::wipePosition() const noexcept {
+    return wipePosition_;
+}
+
+void ComparisonSurface::setWipePosition(const qreal value) {
+    if (!std::isfinite(value)) {
+        return;
+    }
+    const qreal clamped = std::clamp(value, 0.05, 0.95);
+    if (qFuzzyCompare(wipePosition_, clamped)) {
+        return;
+    }
+    wipePosition_ = clamped;
+    emit wipePositionChanged();
     update();
 }
 

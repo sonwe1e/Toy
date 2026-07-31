@@ -5,11 +5,11 @@ set(CMAKE_INSTALL_UCRT_LIBRARIES TRUE)
 include(InstallRequiredSystemLibraries)
 
 install(
-    TARGETS DualVideoStudio DualVideoStudioCli
+    TARGETS VCStation VCStationCli
     RUNTIME_DEPENDENCIES
         DIRECTORIES
-            "$<TARGET_FILE_DIR:DualVideoStudio>"
-            "$<TARGET_FILE_DIR:DualVideoStudioCli>"
+            "$<TARGET_FILE_DIR:VCStation>"
+            "$<TARGET_FILE_DIR:VCStationCli>"
         PRE_EXCLUDE_REGEXES
             "^api-ms-win-.*"
             "^ext-ms-.*"
@@ -19,7 +19,7 @@ install(
 )
 
 qt6_generate_deploy_script(
-    TARGET DualVideoStudio
+    TARGET VCStation
     NAME dvs_qt_runtime
     OUTPUT_SCRIPT dvs_qt_deploy_script
     CONTENT "
@@ -27,7 +27,7 @@ set(QT_DEPLOY_BIN_DIR \".\")
 set(QT_DEPLOY_PLUGINS_DIR \".\")
 set(QT_DEPLOY_QML_DIR \"qml\")
 qt6_deploy_runtime_dependencies(
-    EXECUTABLE \"$<TARGET_FILE:DualVideoStudio>\"
+    EXECUTABLE \"$<TARGET_FILE:VCStation>\"
     GENERATE_QT_CONF
     NO_TRANSLATIONS
     DEPLOY_TOOL_OPTIONS
@@ -35,40 +35,6 @@ qt6_deploy_runtime_dependencies(
 )"
 )
 install(SCRIPT "${dvs_qt_deploy_script}" COMPONENT Runtime)
-
-set(
-    DVS_FFMPEG_RUNTIME_DIR
-    "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/ffmpeg-8.1.2-essentials_build"
-)
-if(EXISTS "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffmpeg.exe" AND
-   EXISTS "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffprobe.exe" AND
-   EXISTS "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/.runtime-provenance.json")
-    install(
-        PROGRAMS
-            "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffmpeg.exe"
-            "${DVS_FFMPEG_RUNTIME_DIR}/bin/ffprobe.exe"
-        DESTINATION .
-        COMPONENT Runtime
-    )
-    install(
-        FILES "${PROJECT_SOURCE_DIR}/out/tools/ffmpeg/.runtime-provenance.json"
-        DESTINATION licenses
-        RENAME ffmpeg-runtime-provenance.json
-        COMPONENT Runtime
-    )
-    install(
-        FILES "${DVS_FFMPEG_RUNTIME_DIR}/LICENSE"
-        DESTINATION licenses
-        RENAME FFmpeg-GPL-3.0.txt
-        COMPONENT Runtime
-    )
-    install(
-        FILES "${DVS_FFMPEG_RUNTIME_DIR}/README.txt"
-        DESTINATION licenses
-        RENAME FFmpeg-runtime-build-info.txt
-        COMPONENT Runtime
-    )
-endif()
 
 set(DVS_VCPKG_SHARE_DIR "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share")
 foreach(

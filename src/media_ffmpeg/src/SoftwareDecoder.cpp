@@ -32,6 +32,8 @@ extern "C" {
 namespace dvs::media::internal {
 namespace {
 
+constexpr std::int64_t kExactFullDecodeTailFrames = 16;
+
 struct InterruptState final {
     const std::atomic<bool>* requested = nullptr;
     const std::atomic<bool>* externalRequested = nullptr;
@@ -134,7 +136,8 @@ public:
          domain::MediaDescriptor descriptorValue,
          platform::FrameBudget& frameBudget,
          const std::atomic<bool>* const externalInterrupt,
-         std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue)
+         std::shared_ptr<platform::GraphicsDeviceBroker> deviceBrokerValue,
+         const std::uint32_t softwareThreadCountValue)
         : sourceId(sourceIdValue), descriptor(std::move(descriptorValue)), frameBudget(frameBudget),
           deviceBroker(std::move(deviceBrokerValue)),
           factory(frameBudget,
@@ -144,7 +147,7 @@ public:
                       .sampleAspectDenominator = descriptor.sampleAspectRatio.denominator,
                   }),
           interruptState{.requested = &interrupted, .externalRequested = externalInterrupt},
-          bufferPool(3U) {}
+          bufferPool(3U), softwareThreadCount(softwareThreadCountValue) {}
 
     [[nodiscard]] static AVPixelFormat
     selectHardwareFormat(AVCodecContext* const context,
@@ -193,18 +196,21 @@ public:
     bool hardwareRequested = false;
     media::DecoderBackend backend = media::DecoderBackend::Software;
     std::string fallbackReason;
+    std::uint32_t softwareThreadCount = 0U;
 };
 
 SoftwareDecoder::SoftwareDecoder(const domain::SourceId sourceId,
                                  domain::MediaDescriptor descriptor,
                                  platform::FrameBudget& frameBudget,
                                  const std::atomic<bool>* const externalInterrupt,
-                                 std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker)
+                                 std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
+                                 const std::uint32_t softwareThreadCount)
     : impl_(std::make_unique<Impl>(sourceId,
                                    std::move(descriptor),
                                    frameBudget,
                                    externalInterrupt,
-                                   std::move(deviceBroker))) {}
+                                   std::move(deviceBroker),
+                                   softwareThreadCount)) {}
 
 SoftwareDecoder::~SoftwareDecoder() = default;
 
@@ -331,6 +337,9 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
     impl_->hardwareRequested = false;
     impl_->hardwareDevice.reset();
     impl_->hardwareLease.reset();
+    if (impl_->softwareThreadCount > 0U) {
+        openedCodec->thread_count = static_cast<int>(impl_->softwareThreadCount);
+    }
 
     if (!impl_->deviceBroker) {
         impl_->fallbackReason = "No shared Qt D3D11 device was configured.";
@@ -394,6 +403,9 @@ domain::Status SoftwareDecoder::open(const std::atomic<bool>& cancellationReques
                 domain::MediaErrorCode::kMediaDecodeFailed,
                 sourceId,
                 "FFmpeg could not recreate the software decoder after D3D11VA failed."));
+        }
+        if (impl_->softwareThreadCount > 0U) {
+            openedCodec->thread_count = static_cast<int>(impl_->softwareThreadCount);
         }
         codecOpenResult = avcodec_open2(openedCodec.get(), decoder, nullptr);
     }
@@ -509,7 +521,14 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
     }
     const std::int64_t targetTimestamp =
         (*impl_->presentationTimestamps)[static_cast<std::size_t>(frameId.value())];
+    std::optional<std::int64_t> fullDecodeTimestamp;
     if (!continueSequentially) {
+        impl_->codec->skip_frame = AVDISCARD_DEFAULT;
+        if (frameId.value() > kExactFullDecodeTailFrames) {
+            const auto fullDecodeFrame =
+                static_cast<std::size_t>(frameId.value() - kExactFullDecodeTailFrames);
+            fullDecodeTimestamp = (*impl_->presentationTimestamps)[fullDecodeFrame];
+        }
         const int seekResult = av_seek_frame(
             impl_->format.get(), impl_->streamIndex, targetTimestamp, AVSEEK_FLAG_BACKWARD);
         if (seekResult < 0) {
@@ -547,9 +566,15 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                         "FFmpeg could not allocate decode buffers."));
     }
 
+    const auto interruptionRequested = [&] {
+        const bool external =
+            impl_->interruptState.externalRequested != nullptr &&
+            impl_->interruptState.externalRequested->load(std::memory_order_acquire);
+        return cancellationRequested.load(std::memory_order_acquire) ||
+               impl_->interrupted.load(std::memory_order_acquire) || external;
+    };
     for (;;) {
-        if (cancellationRequested.load(std::memory_order_acquire) ||
-            impl_->interrupted.load(std::memory_order_acquire)) {
+        if (interruptionRequested()) {
             return domain::Result<DecodedFrame>::failure(
                 decodeError(domain::MediaErrorCode::kMediaDecodeFailed,
                             sourceId,
@@ -885,6 +910,11 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
         }
 
         if (impl_->packetPending) {
+            impl_->codec->skip_frame = fullDecodeTimestamp.has_value() &&
+                                               impl_->packet->pts != AV_NOPTS_VALUE &&
+                                               impl_->packet->pts < *fullDecodeTimestamp
+                                           ? AVDISCARD_NONREF
+                                           : AVDISCARD_DEFAULT;
             const int sendResult = avcodec_send_packet(impl_->codec.get(), impl_->packet.get());
             if (sendResult == 0) {
                 av_packet_unref(impl_->packet.get());

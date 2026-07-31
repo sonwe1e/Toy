@@ -13,6 +13,7 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQmlError>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QResource>
 #include <QStringList>
@@ -153,8 +154,31 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(offsetRepeater, nullptr);
     EXPECT_EQ(offsetRepeater->property("count").toInt(), 2);
     EXPECT_EQ(alignmentModeStatus->property("text").toString(), QStringLiteral("Manual alignment"));
-    EXPECT_EQ(offsetStatus->property("text").toString(), QStringLiteral("Frame offsets"));
-    EXPECT_EQ(anchorButton->property("text").toString(), QStringLiteral("Manual anchors active"));
+    EXPECT_EQ(offsetStatus->property("text").toString(), QStringLiteral("Frame alignment offset"));
+    EXPECT_EQ(anchorButton->property("text").toString(), QStringLiteral("Manual anchors active…"));
+
+    auto* const window = qobject_cast<QQuickWindow*>(root.get());
+    ASSERT_NE(window, nullptr);
+    QObject* const inspector =
+        root->findChild<QObject*>(QStringLiteral("advancedAlignmentInspector"));
+    auto* const scroller = root->findChild<QQuickItem*>(QStringLiteral("comparisonScroller"));
+    auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
+    auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
+    auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
+    QObject* const badCaseDialog = root->findChild<QObject*>(QStringLiteral("badCaseFolderDialog"));
+    ASSERT_NE(inspector, nullptr);
+    ASSERT_NE(scroller, nullptr);
+    ASSERT_NE(transport, nullptr);
+    ASSERT_NE(firstButton, nullptr);
+    ASSERT_NE(lastButton, nullptr);
+    ASSERT_NE(badCaseDialog, nullptr);
+    EXPECT_FALSE(inspector->property("visible").toBool());
+    EXPECT_EQ(root->property("minimumWidth").toDouble(), 960.0);
+    EXPECT_TRUE(scroller->clip());
+    EXPECT_TRUE(scroller->property("interactive").toBool());
+    EXPECT_GT(transport->width(), 0.0);
+    EXPECT_GT(firstButton->width(), 0.0);
+    EXPECT_GT(lastButton->width(), 0.0);
 }
 
 } // namespace

@@ -1,13 +1,16 @@
+configure_file(VCStation.rc.in "${CMAKE_CURRENT_BINARY_DIR}/VCStation.rc" @ONLY)
+
 add_executable(
-    DualVideoStudio
+    VCStation
     WIN32
     Main.cpp
     ReviewRuntime.cpp
     ReviewRuntime.h
     StartupFailureReporter.cpp
     StartupFailureReporter.h
+    "${CMAKE_CURRENT_BINARY_DIR}/VCStation.rc"
 )
-add_executable(DualVideoStudioCli CliMain.cpp)
+add_executable(VCStationCli CliMain.cpp)
 
 set(
     dvs_app_dependencies
@@ -17,23 +20,23 @@ set(
     dvs_ui_qml
 )
 
-foreach(target DualVideoStudio DualVideoStudioCli)
+foreach(target VCStation VCStationCli)
     target_link_libraries(${target} PRIVATE ${dvs_app_dependencies})
     dvs_apply_project_warnings(${target})
     dvs_register_architecture_target(${target})
     set_target_properties(${target} PROPERTIES FOLDER "Application")
 endforeach()
 
-target_link_libraries(DualVideoStudio PRIVATE user32)
+target_link_libraries(VCStation PRIVATE user32)
 
 add_custom_command(
-    TARGET DualVideoStudio
+    TARGET VCStation
     POST_BUILD
     COMMAND
         "$<TARGET_FILE:Qt6::windeployqt>"
         --no-translations
         --qmldir "${PROJECT_SOURCE_DIR}/src/ui_qml/qml"
-        "$<TARGET_FILE:DualVideoStudio>"
+        "$<TARGET_FILE:VCStation>"
     VERBATIM
-    COMMENT "Deploying Qt runtime for DualVideoStudio"
+    COMMENT "Deploying Qt runtime for VCStation"
 )

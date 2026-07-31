@@ -30,6 +30,7 @@ public:
         ReferenceFocus,
         Difference,
         AnalysisGrid,
+        Wipe,
     };
     Q_ENUM(ViewMode)
 

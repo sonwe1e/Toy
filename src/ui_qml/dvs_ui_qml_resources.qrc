@@ -3,4 +3,7 @@
         <file alias="Main.qml">qml/Main.qml</file>
         <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>
     </qresource>
+    <qresource prefix="/branding">
+        <file alias="vcstation-icon.png">../../assets/branding/vcstation-icon.png</file>
+    </qresource>
 </RCC>

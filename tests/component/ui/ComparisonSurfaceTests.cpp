@@ -409,6 +409,26 @@ TEST(ComparisonSurfacePropertyTests, ExposesTypedDifferenceDefaultsAndNotifiesOn
     EXPECT_EQ(referenceSlotChanges, 1);
 }
 
+TEST(ComparisonSurfacePropertyTests, ClampsWipePositionAndNotifiesOnlyOnChange) {
+    ComparisonSurface surface;
+    int changes = 0;
+    QObject::connect(&surface, &ComparisonSurface::wipePositionChanged, [&] { ++changes; });
+
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.5);
+    surface.setViewMode(ComparisonSurface::Wipe);
+    surface.setWipePosition(0.25);
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.25);
+    EXPECT_EQ(changes, 1);
+
+    surface.setWipePosition(0.25);
+    EXPECT_EQ(changes, 1);
+    surface.setWipePosition(-1.0);
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.05);
+    surface.setWipePosition(2.0);
+    EXPECT_DOUBLE_EQ(surface.wipePosition(), 0.95);
+    EXPECT_EQ(changes, 3);
+}
+
 TEST(ComparisonSurfacePropertyTests, ValidatesThresholdAndSynchronizedViewportMutations) {
     ComparisonSurface surface;
     int thresholdChanges = 0;
@@ -1351,6 +1371,36 @@ TEST(ComparisonSurfaceWarpTests, RendersThreeSourcesAndSelectedPairwiseDifferenc
         largeDifference.pixelColor(largeDifference.width() / 2, largeDifference.height() / 2)
             .red());
     EXPECT_FALSE(harness.acknowledgementMailbox->tryPop().has_value());
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, WipeUsesTheSelectedPairAndDraggableSplitPosition) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Wipe);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And2);
+    harness.surface.setWipePosition(0.25);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSet(*budget, domain::FrameId{41}, {32U, 96U, 224U});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(41U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    const int middleY = image.height() / 2;
+    const QColor left = image.pixelColor(image.width() / 8, middleY);
+    const QColor right = image.pixelColor(image.width() * 5 / 8, middleY);
+    EXPECT_LT(left.red(), right.red());
+    EXPECT_LT(left.green(), right.green());
+    EXPECT_LT(left.blue(), right.blue());
+    EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));

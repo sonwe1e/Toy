@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "component": "ffmpeg-runtime",
   "status": "pinned",
-  "purpose": "Pinned GPL-enabled FFmpeg and ffprobe runtime for Windows x64 packaging.",
+  "purpose": "Pinned GPL-enabled FFmpeg runtime for Windows x64 packaging.",
   "target": {
     "platform": "windows",
     "architecture": "x64",

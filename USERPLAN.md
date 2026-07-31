@@ -1,1529 +1,499 @@
-# 执行状态（2026-07-30）
+# 1.1.0 发布执行状态（2026-07-30）
 
-本文件主体保留了最初对提交 `9fe65be7` 的审计和实施依据；其“尚未完成”描述属于当时
-快照。当前已按推荐顺序完成阶段 1～6 的本地实现与验证，GitHub checks 按用户要求作为
-最后任务单独收口。
+本节是当前发布工作的权威状态；后文保留产品审查、历史判断和待办依据。若后文与本节冲突，以本节为准。
 
-当前验证基线：
+| 发布项 | 当前状态 | 已有证据 / 下一步 |
+| --- | --- | --- |
+| 1.1.0 版本、RC、ZIP、MSI 一致性 | 已完成并本地验证 | EXE、ZIP、MSI 均为 1.1.0 |
+| 两路 120 FPS backend 数量判断 | 已完成并有回归覆盖 | 报告包含 `expected_source_count=2/3` |
+| Source A（SourceId 0）错误归属 | 已完成并有专门回归测试 | `AttributesInvalidSourceASequenceOffsetToSourceZero` |
+| Debug / Release | PR 已通过；当前修复本地通过 | PR #3 的 `af05550` 两个预设通过；当前提交前 Debug / Release 均为 372/372 |
+| format-check / lint | PR 已通过；当前修复本地通过 | 当前格式、QML 与逐翻译单元 clang-tidy 通过 |
+| 真实 2/3 路视频 GUI smoke | 已通过 | 使用 NoRefEval validation 中的 120 FPS H.264 素材 |
+| D3D11VA / zero-copy | 本地通过 | 2/2 通过 |
+| shutdown soak | 本地通过 | 20 轮通过 |
+| ZIP / MSI 生成与版本属性 | 本地通过 | `verify-release-version.ps1 -Tag v1.1.0` 通过 |
+| self-hosted runner | 已在线，硬件桌面就绪 | `Sonwe-RTX4090`，Session 1；NVIDIA 物理输出 120 Hz 预检通过 |
+| 1080p120 runner 素材 | 已补齐 | 2/3 路均使用 75 秒、1920×1080、120 FPS H.264 |
+| GitHub PR 与 CI | 执行中 | PR #3 已建立；`af05550` 的 Build/Test 与 Quality 全绿，当前修复待推送复跑 |
+| 4K P010 共享帧预算 | 当前修复短测通过 | 最终 Release 三路 4K 15 秒零掉帧，seek P95 461 ms，峰值 223,948,800 bytes；五分钟门禁待 runner |
+| 1080p60 / 1080p120 硬件门禁 | 当前修复短测通过 | 最终 Release 三路 1080p120 在 144 Hz 物理屏上零掉帧，seek P95 369 ms；全 profile 五分钟门禁待 runner |
+| 1.0.0 → 1.1.0 MSI 升级 | 待执行 | 需要提升权限的 runner packaged-smoke |
+| Authenticode 签名 | 阻塞 | 仓库尚无签名 secrets，本机证书库也无可用代码签名私钥 |
+| GitHub Release v1.1.0 | 待执行 | CI、硬件、升级和签名全部通过后创建并发布 |
 
-* Debug 360/360、Release 360/360 常规测试通过；
-* format-check、qmllint、clang-tidy 通过；
-* 2/2 D3D11VA/decoder-surface hardware CTest 通过；
-* 三路 1080p60 与三路 4K30 Main10 均完成 300 秒真实可见窗口门禁；
-* 两组门禁均无 source split、无线程增长、无预算泄漏，seek P95 和关闭时限达标；
-* hardware/performance CTest 与统一 PowerShell runner 入口已经落地；
-* ZIP/MSI 已重新生成，包内 CLI/GUI smoke、MSI administrative extraction 和无警告
-  WiX 数据库验证均通过；
-* Windows self-hosted runner 已完成注册、双标签和外部性能素材配置；最新提交的 GitHub
-  checks 作为本计划的最终发布门禁。
-
----
-
-# 原始审计结论
-
-以最新分支头提交 `9fe65be7` 为准，项目已经完成了一次质量较高的架构迁移：它不再是把三个旧播放器简单拼在一起，而是形成了一个 **Windows 原生、2～3 路、帧精确、原子发布、支持显式时间对齐和 GPU 差分的 VFI 比较器**。当前 PR 仍为 Draft，共包含 12 个提交和 415 个变更文件。
-
-相比上一笔提交，最新代码已经实质性解决了几个核心问题：
-
-* canonical source 不再默认等于第一路，而是显式传给媒体适配器；
-* 解码失败不再伪装成 `Missing frame`；
-* 每路视频使用持久化 `SourceDecodeActor`，不再逐帧创建线程；
-* 对齐分析使用独立服务、独立解码 provider 和独立内存预算；
-* 完整 O(N) 对齐表不再进入 16 ms Snapshot 路径；
-* 差分边缺帧时改为黑色不可用状态，不再显示单路原图。
-
-因此，当前项目**不需要再次推倒重写**。接下来的正确路线应当是：
-
-> 先封板 UI 与 CI 正确性，再完成媒体运行时缓存、真实预取、对齐鲁棒性和项目状态持久化，最后再进入 D3D11VA、P010 与三路 1080p60 性能阶段。
-
-当前成熟度可以概括为：
-
-| 方面     | 判断                   |
-| ------ | -------------------- |
-| 核心架构   | 阶段 0～6 已完成             |
-| 多路帧原子性 | 已通过持续硬件门禁             |
-| 逐帧审查体验 | 动态 2～3 路、项目闭环已完成       |
-| 对齐算法   | 时间引导、分段置信度、anchors 已完成 |
-| 解码调度   | Actor、缓存、预取闭环已完成       |
-| GPU 分析 | 高级分析和 exact-plane diff 已完成 |
-| 项目持久化  | schema v3 与 GUI 闭环已完成     |
-| 媒体兼容性  | 8/10-bit SDR 与 D3D11VA 已完成 |
-| CI/发布  | 本地门禁完成，self-hosted checks 为最终门禁 |
+发布原则保持 fail-closed：不得用 WARP、普通单元测试或虚拟显示上的推测结果替代真实硬件门禁；不得把未签名产物描述为已签名发布。
 
 ---
 
-# 一、当前整体架构
+# 核心结论
 
-## 1. 模块边界
+**目前已经达到我们最初设定的核心使用预期，可以进入真实日常试用；但还没有达到“无需额外验证即可合并并正式发布”的标准。**
 
-当前根工程采用一个受约束的模块化单体：
+更准确地说：
+
+| 判断维度                    | 结论             |
+| ----------------------- | -------------- |
+| 短视频逐帧审查体验               | 达到预期           |
+| 拖入、Wipe、分割线和 Loading 优化 | 达到预期           |
+| 高级功能可理解性                | 基本达到预期         |
+| 60/120 FPS 技术适配         | 代码达到预期，硬件结果待验证 |
+| MSI 新装与旧版升级设计           | 基本达到预期         |
+| 正式发布流水线设计               | 达到预期           |
+| GitHub CI 与真实发布证据       | 尚未完成           |
+| 当前是否直接发布                | 不建议            |
+
+综合评分可以理解为：
 
 ```text
-DualVideoStudio / DualVideoStudioCli
-        │
-        ├── ui_qml
-        ├── media_ffmpeg
-        ├── persistence_json
-        └── platform_windows
-                 │
-            application
-                 │
-               domain
-```
-
-根 CMake 只构建：
-
-* `domain`
-* `application`
-* `platform_windows`
-* `media_ffmpeg`
-* `persistence_json`
-* `ui_qml`
-* `app`
-
-旧的 `DualVideoTool` 和 `video-compare` 已经放入 `legacy/`，不再参与主构建。
-
-这一点做得很好：项目没有继续维护三套播放器时钟、三套 UI 和三套解码状态机。
-
-架构约束也不是只写在文档里。`Architecture.cmake` 会在配置阶段检查：
-
-* `domain` 不能依赖任何项目模块；
-* `application` 只能依赖 `domain`；
-* core 禁止引入 Qt、FFmpeg、JSON、D3D11 等框架类型；
-* adapter 不能形成反向依赖；
-* generator expression 不能隐藏项目内部依赖。
-
-这是当前工程长期可维护性的主要保障。
-
-### 仍需注意的结构风险
-
-`platform_windows` 当前同时承载：
-
-* D3D11 device；
-* GPU frame；
-* frame budget；
-* mailbox；
-* deadline scheduler；
-* 文件路径和原子文件发布；
-* source identity；
-* GPU transfer；
-* render channel。
-
-它已经成为多个 adapter 的公共基础设施包。短期不用拆，但必须防止它逐渐变成新的“大泥球”。Phase 6 后建议拆成：
-
-```text
-platform_windows_core
-├── WindowsPaths
-├── SourceIdentity
-├── AtomicFilePublisher
-└── SteadyDeadlineScheduler
-
-graphics_d3d11
-├── GraphicsDeviceBroker
-├── FrameMailbox
-├── GpuTransferActor
-├── FrameResource
-└── D3d11ComparisonRenderer
+产品功能完成度：约 93%
+日常使用准备度：约 90%
+工程实现完成度：约 88%
+正式发布准备度：约 80%
 ```
 
 ---
 
-## 2. 控制面与数据面已经分离
+# 一、上一轮发现的阻断项已经修复
 
-当前存在两条不同的数据路径。
+这次最新修改已经处理了此前最关键的四个问题。
 
-### 低频控制路径
+## 1. 版本升级链路已经修正
 
-```text
-QML
-  ↓
-ReviewController
-  ↓
-PlaybackCoordinator
-  ↓
-Commands / ApplicationEvents / SessionSnapshot
-```
+工程版本已经从 `1.0.0` 提升为 `1.1.0`，避免与已经发布的 DualVideoStudio 1.0.0 发生同版本 MSI 升级冲突。
 
-它负责：
-
-* 打开源；
-* probe；
-* seek；
-* play/pause；
-* 对齐命令；
-* 错误；
-* 请求身份；
-* generation；
-* UI 状态。
-
-### 高频帧路径
+Windows 资源版本也不再手工硬编码，而是通过 `VCStation.rc.in` 从 CMake 的 `PROJECT_VERSION` 自动生成：
 
 ```text
-SourceDecodeActor × 2/3
-  ↓
-FrameSetAssembler
-  ↓
-FrameSet
-  ↓
-D3d11RenderChannel
-  ↓
-GpuTransferActor
-  ↓
-FrameMailbox
-  ↓
-D3d11ComparisonRenderer
-  ↓
-PresentationAck
+CMake 1.1.0
+→ EXE FileVersion 1.1.0
+→ ProductVersion 1.1.0
+→ MSI 1.1.0
 ```
 
-帧资源不会成为 QML property。QML 只能看到已经完成 presentation acknowledgement 的帧编号和 source frame identity。
+这一项已经达到预期。
 
-这符合视频比较器最重要的约束：
+## 2. 两路 1080p120 门禁已经修正
 
-> Reference、Prediction 1、Prediction 2 不能独立推进；只能整组推进。
-
-`FrameSet` 允许某一路显式 `Missing`，但要求每个已加载 source 都有一个 slot。Missing 必须携带 `AlignmentGap`、`BeforeSourceStart` 或 `AfterSourceEnd`，普通 decoder failure 不能伪装成 Missing。
-
----
-
-## 3. 解码链已经完成 Actor 化
-
-每一个 source 都有一个长期存活的 `SourceDecodeActor`：
-
-```text
-SourceDecodeActor
-├── control queue
-├── exact queue       capacity 1
-├── sequential queue  capacity 2
-├── prefetch queue    capacity 8
-├── analysis queue    capacity 1
-└── SoftwareDecoder   独占
-```
-
-其优先级为：
-
-```text
-Control > Exact > Sequential > Prefetch > Analysis
-```
-
-Exact 请求会清理旧 Prefetch；旧 playback generation 的排队请求也会被取消。
-
-所有实际 decode 都运行在 actor 的稳定 worker thread 上，不再使用逐帧 `std::async` 创建新线程。
-
-上层将所有 actor 的 future 汇合，再通过 `FrameSetAssembler` 恢复 session source order，只有每个 slot 都有终态后才创建 `FrameSet`。
-
-这条路线是正确的。
-
----
-
-## 4. 对齐分析已经从播放后端独立出来
-
-`AlignmentAnalysisService`：
-
-* 有独立低优先级 worker；
-* 有独立 queue；
-* 使用独立 `MultiSourceFrameProvider`；
-* 使用独立 32 MiB analysis frame budget；
-* 支持 Started、Progress、Completed、Canceled、Failed；
-* 可以在播放和逐帧审查期间后台运行。
-
-协调器不会立即应用后台分析结果。它等待当前没有 seek、播放帧或 graphics pending，再将结果原子应用并重新呈现当前帧。
-
-这避免了分析结果在播放中途突然改变三路映射。
-
----
-
-# 二、当前做得最好的技术决策
-
-## 1. canonical source 显式化
-
-`FrameProviderOpenRequest` 已加入 `canonicalSourceId`，并明确禁止 adapter 从 `sources.front()` 推断。
-
-这意味着 Reference 可以是 A、B 或 C，prediction-only 时才使用第一路作为 canonical。该设计已经消除了上一版最危险的时间线错误。
-
-## 2. 对齐状态是可审计的
-
-每一路帧都携带：
-
-* `ExactIndex`
-* `GlobalOffset`
-* `AutoAligned`
-* `ManualAnchor`
-* `Missing`
-* confidence
-
-因此播放器可以明确告诉使用者当前显示的是严格同帧、自动对齐帧还是手工锚点帧，而不是静默移动预测结果。
-
-## 3. Snapshot 已经完成轻量化
-
-完整 `SequenceAlignmentResult.entries` 不再复制进 Snapshot。Snapshot 只保留：
-
-* bounded anomalies；
-* bounded low-confidence runs；
-* overall cost/confidence；
-* alignment revision；
-* analysis progress。
-
-完整 O(N) map 只保留在 coordinator 内部。这个修改有效避免了每帧显示时复制 50,000～100,000 个 mapping entry。
-
-## 4. 差分缺帧不再产生误导
-
-最新版 renderer 在差分边缺少任一路时直接绘制黑色，而不是退化成单路画面；QML 同时构造了明确的 “Frame N cannot be compared because Source X is missing” 信息。
-
-这对盲测和 VFI bad-case 检查非常重要。
-
----
-
-# 三、目前最需要立即修复的问题
-
-## P0-1：QML 存在同名属性重复声明
-
-`Main.qml` 的根 `Window` 中两次声明了：
-
-```qml
-readonly property bool manualAlignmentActive
-```
-
-第一处代表 controller 中的手动锚点状态，第二处代表三个 offset SpinBox 是否非零。
-
-这不仅是 QML 名称冲突，还说明产品概念被混在一起了：
-
-* 手动全局 offset；
-* 手动 alignment anchor。
-
-### 修改方案
-
-拆成三个属性：
-
-```qml
-readonly property bool manualAnchorActive:
-    Boolean(controller && controller.manualAnchorActive)
-
-readonly property bool manualOffsetActive:
-    sourceAOffset.value !== 0
-    || sourceBOffset.value !== 0
-    || sourceCOffset.value !== 0
-
-readonly property bool anyManualAlignmentActive:
-    manualAnchorActive || manualOffsetActive
-```
-
-对应按钮和状态标签也分别显示：
-
-```text
-Manual offset active
-Manual anchors active
-```
-
-必须增加一个 QML contract test，直接实例化 `Main.qml`，而不仅测试单独的 `ToolbarCombo.qml`。
-
----
-
-## P0-2：GitHub CI 仍未完成真实验证
-
-最新 `Quality` workflow 已失败，`Build and Test` 仍在排队。
-
-失败原因已经明确：`check-repository-guide.ps1` 要求指南包含 200～400 个词，当前为 406 个词。由于 `native-quality` 依赖该 job，format 和 lint 整个被跳过。
-
-发布说明虽然记录了本地 Debug/Release 299 个测试和本地 format/lint 通过，但 GitHub 并未验证最新提交。
-
-### 修改方案
-
-第一步，删减 `AGENTS.md` 至 400 词以内。
-
-第二步，解除质量 job 的串行耦合：
-
-```yaml
-jobs:
-  repository-guide:
-    ...
-
-  native-quality:
-    # 不要 needs: repository-guide
-    ...
-```
-
-或者：
-
-```yaml
-needs: repository-guide
-if: always()
-```
-
-前者更合适，因为文档长度失败不应阻止编译和静态分析运行。
-
-第三步，建立必须通过的 branch protection：
-
-```text
-Repository guide
-Native format and lint
-Debug build and test
-Release build and test
-Package verification
-GUI smoke
-```
-
-在上述状态全部绿色之前，不应将 `0.1.0` 视为稳定发布。
-
----
-
-# 四、媒体解码架构的主要不足
-
-## 1. Provider worker 仍会同步等待所有 future
-
-解码本身已经并行，但 `MultiSourceFrameProvider` 的 worker 会依次执行：
+性能程序现在根据实际输入数量计算预期 decoder 数量：
 
 ```cpp
-for (SlotDecode& slot : decoding) {
-    auto decoded = slot.result.get();
-}
+expectedSourceCount = third.has_value() ? 3 : 2;
+```
+
+并要求实际 backend 数量与其一致。
+
+因此两路 1080p120 不会再因为写死“三个 backend”而必然失败。
+
+## 3. Source A 错误归属已经修正
+
+此前 `SourceId=0` 被错误地当作“没有 source”。现在 `serviceError()` 明确接收：
+
+```cpp
+std::optional<domain::SourceId>
 ```
 
 所以：
 
-[
-T_\text{FrameSet}\approx\max(T_A,T_B,T_C)
-]
-
-这一点没有问题，但 provider 的控制线程在等待期间不能处理下一项 control operation，只能依靠 cancellation flag 和 FFmpeg interrupt 中断 actor。
-
-对于 2～3 路当前规模可以接受，但继续增加预取、硬件 fallback 或并行分析后会成为限制。
-
-### 目标方案：事件式 FrameSet assembly
-
-actor 不再通过 future 返回，而是向 provider completion mailbox 发布：
-
-```cpp
-struct SourceDecodeCompleted {
-    OperationId operationId;
-    SourceId sourceId;
-    Result<DecodedFrame> result;
-};
-```
-
-Provider 保存：
-
-```cpp
-unordered_map<OperationId, PendingFrameSet> pendingSets;
-```
-
-处理流程：
-
 ```text
-submit frame
-  ↓
-为每个 actor 发送 request
-  ↓
-provider worker 立即返回事件循环
-  ↓
-actor completion 进入 mailbox
-  ↓
-FrameSetAssembler.complete()
-  ↓
-全部 slot 完成后发布 FrameSet
+nullopt = 没有具体 source
+0       = Source A
+1       = Source B
+2       = Source C
 ```
 
-好处是：
+逻辑已经正确。正式合并前仍建议增加一个专门的 Source A 回归测试，防止以后再次把 0 当作空值。
 
-* provider 控制线程永远不等待 decoder；
-* close/cancel/open 可以及时进入控制面；
-* 容易加入 per-source timeout；
-* 容易记录每路 decode latency；
-* 硬件解码 fallback 不会阻塞整个 provider event loop。
+## 4. Release workflow 已经形成完整门禁
+
+新的发布流程不再只是“构建后上传文件”，现在包含：
+
+* tag 与 CMake 版本验证；
+* Debug 构建与测试；
+* Release 构建与测试；
+* format-check；
+* clang-tidy/QML 质量检查；
+* 同一 commit 的硬件与性能门禁；
+* 下载 DualVideoStudio 1.0.0 MSI；
+* 真实升级到 VCStation 1.1.0；
+* EXE 与 MSI Authenticode 签名；
+* packaged smoke；
+* shutdown soak；
+* ZIP/MSI SHA-256；
+* Draft GitHub Release。
+
+硬件 workflow 也支持 `workflow_call`，会精确 checkout 指定 SHA，并验证实际测试 commit 与预期一致。
+
+这套设计已经达到正式工程发布流程应有的结构。
 
 ---
 
-## 2. 当前 FrameSet cache 几乎无法跨请求复用
+# 二、七项核心用户需求已经基本达到预期
 
-`cachedSet()` 的 key 同时比较：
+## 1. 拖入视频：达到主要预期
 
-* 完整 `FrameRequestContext`
-* canonical frame
+已经支持：
 
-而 `FrameRequestContext` 内包含 `RequestId`。不同 seek 命令即使请求同一帧，也会有不同 context，因此无法 cache hit。
+* 拖入两个视频；
+* 拖入三个视频；
+* 拖入一个 `.dvsproj`；
+* Unicode 路径；
+* 重复文件检测；
+* 缺失文件检测；
+* 项目和视频混合拖入拒绝；
+* 打开前确认 A/B/C 顺序和 Reference。
 
-这会影响：
+界面也有完整的拖入覆盖层。
 
-* A/D 往返逐帧；
-* 时间线拖动后返回上一帧；
-* 差分模式切换；
-* 反复定位 bad case；
-* 未来 Prefetch。
+这一项已经可以满足主要工作流程：
 
-### 正确的缓存层次
-
-不要把完整 `FrameSet` 作为唯一缓存层。
-
-#### Source frame cache
-
-```cpp
-struct SourceFrameCacheKey {
-    SourceFingerprint source;
-    FrameId sourceFrame;
-    NormalizationProfile profile;
-};
+```text
+拖入 GT + Prediction
+→ 确认顺序
+→ 立即开始比较
 ```
 
-每路 actor 拥有一个 byte-budgeted LRU。
+剩余的小缺口是：
 
-#### FrameSet mapping cache
+* 单独拖入一个视频时只会设置 A；
+* 不能直接拖到 B/C 卡片替换指定 source；
+* 已有 A 后再拖一个文件，不会自动填入 B。
 
-```cpp
-struct FrameSetCacheKey {
-    SessionEpoch sessionEpoch;
-    uint64_t alignmentRevision;
-    FrameId canonicalFrame;
-};
-```
-
-映射 revision 一旦改变，旧 FrameSet 自动失效。
-
-#### GPU cache
-
-GPU frame 必须再包含：
-
-```cpp
-DeviceGeneration deviceGeneration;
-```
-
-不能跨 device loss 重用。
+这些属于便利性增强，不影响当前日常使用。
 
 ---
 
-## 3. Prefetch 数据结构存在，但调度尚未闭环
+## 2. 开始菜单和文件关联：达到预期
 
-Actor 和 provider 都定义了 Prefetch queue，但当前 coordinator 的帧请求路径主要产生 Exact 和 Sequential，尚未形成真正的 prefetch scheduler。
-
-### 推荐策略
-
-暂停状态下每次 exact frame 成功后：
+WiX 已经创建：
 
 ```text
-用户方向向前：
-  +1, +2, +3, -1
-
-用户方向向后：
-  -1, -2, -3, +1
+开始菜单
+└── VCStation
+    └── VCStation
 ```
 
-连续播放时：
+同时注册：
 
 ```text
-维持未来 2～4 个 canonical FrameSet 的 source frames
+.dvsproj → VCStation.exe "%1"
 ```
 
-跳转或 alignment revision 改变时：
+MSI 脚本已经验证：
 
-```text
-清除旧 generation 的 Prefetch
-```
+* 旧 DualVideoStudio 1.0.0 安装；
+* 升级到 VCStation；
+* 旧 ARP 条目被删除；
+* 旧 EXE 被删除；
+* 新快捷方式存在；
+* 新文件关联存在；
+* CLI probe 成功；
+* 卸载后清理。
 
-Prefetch 只填充 SourceFrameCache，不应提前构造和长期持有完整 GPU FrameSet。
+CTest 也已经有独立的旧版升级测试入口。
+
+代码层面已经达到预期。
 
 ---
 
-## 4. Probe、播放 decoder 和分析 decoder 重复建立 PTS index
+## 3. Compare 分割线和 Wipe：达到预期
 
-每个 `SoftwareDecoder::open()` 都重新调用 `buildPresentationTimestampIndex()`。
+Side-by-side 和 Three-up 都加入了明确的分割线。
 
-因此一次三路会话可能执行：
+Wipe 模式已经深入到 D3D11 renderer，不是单纯在界面上覆盖两个控件。它支持：
 
-```text
-MediaProbe        扫描 3 路
-Playback decoder  再扫描 3 路
-Alignment job     再扫描 3 路
-第二次分析        再扫描 3 路
-```
-
-对于长视频，这是当前最明显的启动和分析成本之一。
-
-### 具体方案：媒体运行时索引注册表
-
-在 `media_ffmpeg` 内新增：
-
-```cpp
-class PresentationIndexCache {
-public:
-    shared_ptr<const PresentationIndex>
-    findOrBuild(const MediaDescriptor&, CancellationToken);
-};
-```
-
-Key：
-
-```text
-source fingerprint
-+ selected stream index
-+ file size
-+ modified time
-+ FFmpeg major/minor
-+ index schema version
-```
-
-磁盘格式：
-
-```text
-magic
-schemaVersion
-sourceFingerprint
-streamIndex
-timeBase
-frameCount
-PTS[int64 × N]
-checksum
-```
-
-文件写入使用：
-
-```text
-temporary file → flush → verify → atomic rename
-```
-
-`MediaProbe`、playback decoder 和 analysis decoder 都通过该 cache 获取同一个 immutable index。
-
----
-
-## 5. 每帧仍创建 SwsContext 和临时 NV12 vector
-
-当前成功 decode 后仍执行：
-
-```cpp
-std::vector<uint8_t> nv12(...);
-sws_getContext(...);
-sws_scale(...);
-```
-
-即每帧重新创建 scaler 和中间 buffer。
-
-### 修改方案
-
-在 `SoftwareDecoder::Impl` 内持久保存：
-
-```cpp
-SwsContextPtr sws;
-Nv12BufferPool bufferPool;
-NormalizationProfile activeProfile;
-```
-
-使用：
-
-```cpp
-sws_getCachedContext(...)
-```
-
-并让 `FrameResourceFactory` 返回可写 resource：
-
-```cpp
-auto resource = factory.acquireWritableNv12(layout);
-sws_scale(..., resource.yPlane(), resource.uvPlane());
-return resource.seal();
-```
-
-这样可以删除中间 `std::vector` 和二次复制。
-
----
-
-# 五、对齐分析架构仍有明显优化空间
-
-## 1. 独立分析服务仍复用了完整播放 provider
-
-`AlignmentAnalysisService` 内部创建了一个低优先级 `MultiSourceFrameProvider`。
-
-这意味着分析一帧的路径是：
-
-```text
-FFmpeg AVFrame
-  ↓
-转换完整 NV12
-  ↓
-申请 FrameBudget
-  ↓
-构造 FrameHandle
-  ↓
-再从 NV12 下采样到 16×9
-```
-
-而分析真正需要的只是 144 个亮度值。
-
-### 目标架构
-
-新增专用分析解码器：
-
-```cpp
-class SignatureDecodeSession {
-public:
-    Result<FrameLumaSignature> decodeSignature(FrameId);
-    Result<vector<FrameLumaSignature>> decodeRange(...);
-};
-```
-
-直接从 `AVFrame::data[0]` 或原始 luma plane 下采样，不创建：
-
-* `FrameHandle`
-* NV12 FrameResource
-* GPU transferable frame
-* FrameSet
-* render cache
-
-这样可以把长视频分析的内存和拷贝量降低一个数量级。
-
-随后可从 application port 删除以下重复能力：
-
-```cpp
-IFrameProvider::submit(AlignmentEstimateRequest)
-IFrameProvider::submit(SequenceAlignmentRequest)
-```
-
-保留单一职责：
-
-```text
-IFrameProvider             只负责播放帧
-IAlignmentAnalysisService  只负责分析
-```
-
-当前两个接口同时暴露同一分析 request，协调器也保留了无分析服务时回退到 direct provider 的旧路径，这会长期增加状态机分支。
-
-建议删除旧 fallback 后，一并移除：
-
-* `PendingPhase::kEstimatingAlignment`
-* `PendingPhase::kAnalyzingSequence`
-* `AlignmentEstimated`
-* `SequenceAlignmentAnalyzed`
-
-只保留 job 型 analysis events。
-
----
-
-## 2. Global alignment 的进度语义不正确
-
-analysis service 的 `totalFrames()` 直接累加所有视频完整帧数。
-
-但 global offset 实际只解码少量 sample；目前 provider 的 progress emitter 也只针对 `SequenceAlignmentRequest`。
-
-结果可能是：
-
-```text
-Auto align: 0 / 100000
-```
-
-然后突然完成。
-
-### 修改方案
-
-把“frames”改成通用 work units：
-
-```cpp
-struct AlignmentWorkEstimate {
-    uint64_t totalUnits;
-    string unitName; // "samples" or "frames"
-};
-```
-
-Global：
-
-```text
-totalUnits =
-canonical samples
-+ 所有目标候选 sample 数
-```
-
-Sequence：
-
-```text
-totalUnits =
-所有 source frame counts
-+ DP work units
-```
-
-同时在完成 signature extraction 后继续报告 DP 阶段：
-
-```text
-Collecting signatures  75%
-Computing alignment    25%
-```
-
----
-
-## 3. 分析服务每个 job 都重新打开媒体
-
-每个 job 都会：
-
-1. 创建 `FrameProviderOpenRequest`；
-2. 等待 open；
-3. 提交分析；
-4. 等待 terminal。
-
-任务结束后没有显式 close，资源会一直保留到下一次 open 或 service shutdown。
-
-### 修改方案
-
-短期应至少使用 RAII：
-
-```cpp
-class ScopedAnalysisSession {
-public:
-    open();
-    ~ScopedAnalysisSession() { close(); }
-};
-```
-
-长期则使用 signature cache：
-
-```text
-第一次 Find drops：
-  decode + signature extraction + cache
-
-第二次重新调整 band/gap penalty：
-  直接读取 signature cache，只重新运行 DP
-```
-
-Signature cache key：
-
-```text
-source fingerprint
-+ rotation/SAR normalization
-+ signature resolution
-+ signature algorithm version
-+ FFmpeg normalization version
-```
-
----
-
-## 4. 16×9 signature 对真实游戏视频仍偏弱
-
-当前 signature 只有 16×9 亮度值。
-
-它适合快速粗搜索，但容易被以下内容干扰：
-
-* 黑场；
-* 固定 HUD；
-* 重复菜单；
-* 大面积静止背景；
-* 周期性动画；
-* 小范围快速运动；
-* Prediction 中只有局部插帧错误。
-
-### 建议采用两级分析
-
-#### Level 1：粗搜索
-
-```text
-16×9 luma
-pHash
-global gradient
-```
-
-用于搜索 offset 和 DP 初始路径。
-
-#### Level 2：候选验证
-
-```text
-64×36 luma
-Sobel magnitude
-局部方差
-8×8 block histogram
-temporal difference
-```
-
-只对 Level 1 的最佳候选和 runner-up 计算。
-
-最终距离可以为：
-
-[
-D =
-w_1 D_{\text{SSIM}}
-+w_2 D_{\text{gradient}}
-+w_3 D_{\text{temporal}}
-+w_4 D_{\text{block}}
-]
-
-同时允许用户指定忽略区域，例如屏蔽固定 UI 或黑边。
-
----
-
-## 5. 当前 DP 路径只适合近似相同帧率
-
-现有 sequence alignment 的 band center 是：
-
-[
-j \approx i+\delta
-]
-
-这适合：
-
-* 差一两帧；
-* 全局偏移；
-* 中间掉帧；
-* 重复帧。
-
-但不适合：
-
-* 24 FPS 与 30 FPS；
-* 30 FPS 与 60 FPS；
-* 手机录屏中持续时间漂移；
-* 录屏开始和结束存在不同步；
-* 长视频中逐渐累积的 drift。
-
-当前 validator 对帧率、帧数和时长不一致仍全部标记为普通 Warning，`AlignmentRequired` 实际没有被使用。
-
-### 正确方案：时间引导的 band
-
-为每个 canonical frame 计算初始目标：
-
-[
-t_i=T_\text{canonical}(i)
-]
-
-[
-j_0(i)=T_\text{target}^{-1}(t_i+\Delta t)
-]
-
-DP band 改成：
-
-[
-j\in[j_0(i)-W,\ j_0(i)+W]
-]
-
-而不是固定围绕 (i+\delta)。
-
-这样才能支持 VFR 和轻微速度漂移。
-
-### 兼容性等级也应调整
-
-| 情况           | Severity                    |
-| ------------ | --------------------------- |
-| 单个视频打不开、无法索引 | Fatal                       |
-| 帧率、帧数、持续时间不同 | AlignmentRequired           |
-| 分辨率、颜色元数据不同  | Warning                     |
-| 旋转/SAR 未处理   | AlignmentRequired 或 Warning |
-| HDR/位深无法归一化  | Fatal                       |
-
-在 `AlignmentRequired` 尚未完成前，UI 应禁用“自动应用”，只允许 Strict Index 和手动 offset。
-
----
-
-## 6. 自动应用仍是整张表的全有或全无
-
-当前 `autoApplicable` 由整体平均 match cost 和平均 confidence 决定。之后整张 result 被应用或完全不应用。
-
-这可能出现：
-
-```text
-90% 画面非常可靠
-10% 重复场景高度歧义
-平均 confidence 仍然通过
-整张 mapping 被自动应用
-```
-
-### 修改方案：分段对齐状态
-
-```cpp
-enum class AlignmentSegmentState {
-    Accepted,
-    ReviewRequired,
-    Rejected,
-};
-```
-
-每个 segment 评估：
-
-* mean confidence；
-* P10 confidence；
-* 最大连续低置信区间；
-* anomaly density；
-* scene-cut proximity；
-* mapping slope。
-
-最终允许：
-
-```text
-0–824       Accepted
-825–910     ReviewRequired
-911–2000    Accepted
-```
-
-`ReviewRequired` 区间保持 strict/global-offset 映射，直到用户确认。
-
----
-
-## 7. 手动锚点应成为 DP 的硬约束
-
-当前手动 anchors 是在最终 `sourceMappingsFor()` 中覆盖自动 map，而不是在 DP 中约束路径。
-
-更好的算法是：
-
-1. 按 anchor 将时间线切成多个区间；
-2. 每个区间的起点和终点固定；
-3. 在区间内部执行 banded DP；
-4. 确保路径经过所有 anchor；
-5. anchor 冲突时报告而不是强行覆盖。
-
-这样自动 map 与手动 map 会形成一张一致的单调路径。
-
----
-
-# 六、UI 结构仍然没有真正动态化
-
-核心已经是 `vector<ComparisonSource>`，但 UI 仍是：
-
-* `sourceAFilename`
-* `sourceBFilename`
-* `sourceCFilename`
-* `sourceAErrorKey`
-* 三个 offset 参数
-* 固定 A/B、A/C、B/C edge。
-
-对于最多三路来说可以运行，但它会让所有 UI 状态继续硬编码。
-
-### 建议新增 `SourceListModel`
-
-```cpp
-class SourceListModel : public QAbstractListModel {
-    enum Roles {
-        SourceIdRole,
-        RoleRole,
-        FilenameRole,
-        ErrorRole,
-        CurrentSourceFrameRole,
-        MatchKindRole,
-        ConfidenceRole,
-        MissingRole,
-        MissingReasonRole,
-        ManualOffsetRole,
-    };
-};
-```
-
-QML 使用：
-
-```qml
-Repeater {
-    model: controller.sources
-}
-```
-
-差分 edge 也应由模型动态生成：
-
-```text
-A ↔ B
-A ↔ C
-B ↔ C
-```
-
-而不是固定 enum 和固定三个 ComboBox item。
-
-这也会自然解决：
-
-* 第三路不存在时隐藏 C；
-* Reference 不是 A；
-* source display name；
-* source-specific compatibility warning；
-* 未来扩展第四路时不需要重写 UI。
-
----
-
-# 七、CompatibilityReport 在 UI 边界损失了信息
-
-领域层的 `CompatibilityFinding` 包含：
-
-* severity；
-* error code；
-* 具体 source IDs；
-* technical detail。
-
-但 Snapshot 只保留 `vector<MediaErrorCode>`。因此 UI 不知道：
-
-* 是 A 与 B 不一致，还是 A 与 C；
-* 同一 warning 是否出现两次；
-* severity 是 Warning 还是 AlignmentRequired。
-
-### 修改方案
-
-新增：
-
-```cpp
-struct CompatibilityFindingView {
-    CompatibilitySeverity severity;
-    MediaErrorCode code;
-    vector<SourceId> sources;
-};
-```
-
-Snapshot 持有 bounded findings：
-
-```cpp
-vector<CompatibilityFindingView> compatibilityFindings;
-```
-
-UI 显示：
-
-```text
-A ↔ C: frame rate mismatch — alignment required
-B ↔ C: resolution mismatch — resampled visual comparison
-```
-
----
-
-# 八、项目持久化目前没有形成真实产品闭环
-
-仓库中保留了：
-
-* `Project`
-* `ProjectJson`
-* `ProjectRepository`
-* schema v2；
-* relink；
-* fingerprint。
-
-但当前 GUI composition 只注入了 `SettingsRepository`，`PlaybackCoordinator::Dependencies` 中也没有 `ProjectRepository`。
-
-因此项目存取代码目前更像“编译中的未来模块”，而不是 GUI 可用能力。
-
-Schema v2 也只保存：
-
-* sources；
-* Reference；
-* marks；
-* last frame；
-* workspace。
-
-没有保存 offsets、anchors 和 alignment policy。
-
-### 必须先做产品决策
-
-#### 路线 A：0.1 只做临时比较器
-
-从生产构建中移除未接线的 ProjectRepository，减少维护面。
-
-#### 路线 B：正式支持可恢复审查项目
-
-新增独立 `WorkspaceCoordinator`，不要继续把所有项目逻辑塞进 `PlaybackCoordinator`。
-
-Schema v3 建议保存：
-
-```json
-{
-  "alignment": {
-    "mode": "manual-anchors",
-    "offsets": [
-      { "sourceId": 1, "frames": 1 }
-    ],
-    "anchors": [
-      {
-        "sourceId": 2,
-        "canonicalFrame": 824,
-        "sourceFrame": 825
-      }
-    ],
-    "analysisCacheKey": "..."
-  },
-  "view": {
-    "layout": "reference-focus",
-    "differenceEdge": [0, 2],
-    "differenceMetric": "heatmap",
-    "gain": 4
-  }
-}
-```
-
-完整 sequence map 不应写入 JSON；只保存派生 cache key，并根据 source fingerprint 和算法版本重新验证。
-
----
-
-# 九、差分图需要明确区分“视觉差分”和“像素精确差分”
-
-当前 shader 先将两路 NV12 独立转换到 RGB，再计算 RGB、Luma、Chroma 或 Heatmap。
-
-因此当前模式本质上是：
-
-> display-RGB visual difference
-
-它不一定等同于源像素 code-value exact difference。
-
-### 建议定义两类模式
-
-#### Visual Diff
-
-允许：
-
-* 分辨率不同；
-* BT.601/BT.709 转换；
-* range 转换；
-* spatial resampling；
-* bicubic。
-
-#### Exact Plane Diff
-
-要求：
-
-* 相同 resolution；
-* 相同 pixel format；
-* 相同 bit depth；
-* 相同 rotation/SAR；
-* ExactIndex；
-* 不进行 spatial resampling。
-
-直接比较：
-
-```text
-Y code values
-U code values
-V code values
-```
-
-新增状态：
-
-```cpp
-enum class ComparisonExactness {
-    ExactCodeValue,
-    DisplaySpaceConverted,
-    SpatiallyResampled,
-    TemporallyAligned,
-    Unavailable,
-};
-```
-
-在 UI 中持续显示 badge，而不是只显示一条临时 warning。
-
----
-
-# 十、Phase 5 尚未完成的分析能力
-
-架构文档已经明确列出尚缺：
-
-* threshold mask；
-* ROI zoom；
-* complete analysis grid。
-
-推荐完成顺序如下。
-
-## 1. 同步 pan/zoom
-
-所有 panel 使用同一个 normalized viewport：
-
-```cpp
-struct ViewTransform {
-    float centerX;
-    float centerY;
-    float scale;
-};
-```
-
-不同分辨率按 normalized coordinates 映射。
-
-## 2. 1:1 pixel 模式
-
-选择 reference canvas 后：
-
-* Reference 保持一个 source pixel 对一个 screen pixel；
-* Prediction 使用 nearest 或明确标注 resampling；
-* 鼠标显示每路像素值。
-
-## 3. Threshold mask
-
-```text
-abs difference < threshold → black
-abs difference ≥ threshold → highlight
-```
-
-阈值应支持：
-
-* 8-bit code value；
-* normalized float；
-* luma-only；
-* any-channel；
-* all-channel。
-
-## 4. Analysis grid
-
-推荐四格而不是六格：
-
-```text
-┌──────────────┬──────────────┐
-│ Reference    │ Prediction 1 │
-├──────────────┼──────────────┤
-│ Prediction 2 │ Selected Diff│
-└──────────────┴──────────────┘
-```
-
-这样比同时显示三张误差图更适合 1080p/4K 屏幕。
-
----
-
-# 十一、媒体兼容性和硬件路线
-
-当前正式支持仍是：
-
-* H.264；
-* HEVC；
-* MPEG-4 Part 2；
-* 8-bit YUV420；
-* SDR；
-* BT.601/BT.709；
-* 软件解码。
-
-后续路线不应直接跳到 D3D11VA，而应按以下顺序。
-
-## Phase 6A：软件路径性能封板
-
-完成：
-
-* PTS index cache；
-* signature cache；
-* `sws_getCachedContext`；
-* writable FrameResource pool；
-* SourceFrameCache；
-* real Prefetch；
-* performance telemetry。
-
-## Phase 6B：格式归一化
-
-内部 frame profile：
-
-```cpp
-enum class NormalizedFrameFormat {
-    Nv12_8,
-    P010_10,
-    Bgra8,
-};
-```
-
-支持：
-
-* 10-bit；
-* P010；
-* YUV422/YUV444 转换；
-* RGB/BGRA；
-* rotation；
-* SAR；
-* full/limited range；
-* transfer metadata。
-
-## Phase 6C：D3D11VA
-
-每路 decoder：
-
-```text
-AVHWDeviceContext
-       ↓
-D3D11VA frame
-       ↓
-shared D3D11 texture
-       ↓
-renderer
-```
-
-避免：
-
-```text
-GPU decode → CPU NV12 → GPU upload
-```
-
-必须保留：
-
-* software fallback；
-* fallback 原因；
-* 当前 decoder backend；
-* device loss generation；
-* P010 shader；
-* hardware-specific integration tests。
-
----
-
-# 十二、测试与性能门禁
-
-发布说明记录本地 299/299 Debug 和 Release 测试通过，但 README 仍明确说明 hardware、performance 和 shutdown-soak 层目前没有真实测试。
-
-下一阶段应增加以下真实测试。
-
-## 正确性
-
-* Reference 为 B/C；
-* Reference 为 VFR；
-* 帧率不同但 Strict Index 打开；
-* decoder 中间坏帧必须失败，不得 Missing；
-* alignment gap、before start、after end 三种 Missing；
-* source file 在 probe 后变化；
-* device loss 后旧 GPU frame 不复用；
-* Difference unavailable；
-* QML 根组件完整加载。
-
-## 对齐
-
-* 黑场；
-* 重复场景；
-* scene cut；
-* 固定 HUD；
-* 手机 VFR 录屏；
-* 30→60 FPS；
-* 全局 offset + 中间掉帧；
-* 两个 anchors 约束 DP；
-* 局部低置信区间；
-* 100,000 帧取消；
-* signature cache 命中与失效。
-
-## 性能
-
-至少采集：
-
-```text
-probe/index duration
-cold exact seek p50/p95
-warm ±1 step p50/p95
-per-source decode latency
-FrameSet assembly latency
-cache hit ratio
-CPU→GPU upload time
-render time
-dropped complete FrameSet count
-analysis frames/s
-peak CPU/GPU memory
-worker thread count
-```
-
-硬件验收目标应包括：
-
-```text
-3 × 1080p60 连续播放 5 分钟
-3 × 4K30 连续播放 5 分钟
-无 source split
-无线程数量持续增长
-无帧资源预算泄漏
-关闭过程符合既定 7 秒上限
-```
-
----
-
-# 十三、推荐的落地实施顺序
-
-## 阶段 1：合并门禁封板
-
-修改：
-
-```text
-src/ui_qml/qml/Main.qml
-AGENTS.md
-.github/workflows/quality.yml
-tests/component/ui/
-```
-
-完成：
-
-* 修复重复 `manualAlignmentActive`；
-* 拆分 offset 与 anchor 状态；
-* 修复 406 词门禁；
-* 让 native-quality 独立运行；
-* 增加完整 Main.qml load test；
-<!-- * 确保所有 GitHub checks 绿色。 -->
-
-## 阶段 2：播放性能闭环
-
-新增：
-
-```text
-SourceFrameCache
-FrameSetCacheKey
-PrefetchScheduler
-PresentationIndexCache
-Nv12BufferPool
-```
-
-修改：
-
-```text
-SoftwareDecoder
-SourceDecodeActor
-MultiSourceFrameProvider
-PlaybackCoordinator
-```
-
-完成：
-
-* 缓存 key 不再包含 requestId；
-* 实现方向感知 Prefetch；
-* 复用 PTS index；
-* 复用 SwsContext；
-* 删除中间 NV12 vector。
-
-## 阶段 3：分析解码专用化
-
-新增：
-
-```text
-SignatureDecodeSession
-SignatureCache
-AlignmentWorkEstimator
-```
-
-删除：
-
-```text
-IFrameProvider 中的分析方法
-PlaybackCoordinator 的旧 foreground analysis fallback
-旧 AlignmentEstimated / SequenceAlignmentAnalyzed 事件
-```
-
-完成：
-
-* 直接从 AVFrame 提取 signature；
-* 每个 job 显式 close；
-* global/sequence 都有准确进度；
-* 第二次分析不重新解码。
-
-## 阶段 4：对齐鲁棒性
-
-完成：
-
-* 多尺度 signature；
-* 时间引导 band；
-* VFR target timeline；
-* anchors 约束 DP；
-* scene cut；
-* segment-level confidence；
-* AlignmentRequired severity；
-* 用户确认/撤销自动结果。
-
-## 阶段 5：动态 UI 与项目闭环
-
-完成：
-
-* `SourceListModel`；
-* 结构化 compatibility findings；
-* dynamic difference-edge model；
-* Project schema v3；
-* offsets/anchors/view state 持久化；
-* derived alignment cache；
-* project open/save/relink 接入 GUI。
-
-## 阶段 6：高级分析和硬件
-
-完成：
-
-* synchronized zoom；
+* A/B；
+* A/C；
+* B/C；
+* 可拖动分割位置；
+* 同步缩放；
+* 同步平移；
 * ROI；
-* threshold mask；
-* analysis grid；
-* exact plane diff；
-* P010；
-* 10-bit；
-* D3D11VA；
-* hardware/performance test suites。
+* 保持相同 canonical frame。
+
+WARP 测试还验证了 A/C 和 25% 分割位置。
+
+这一项完成质量较高，符合肉眼观察插帧边缘、纹理和重影的需求。
 
 ---
 
-# 原始审计的最终判断
+## 4. 不明按钮和控制区：基本达到预期
 
-当前代码的主干技术路线是正确的，并且已经跨过最危险的架构阶段：多路数据模型、canonical source、持久 actor、独立 analysis service、原子 FrameSet、GPU renderer 和 presentation acknowledgement 都已成立。
+原来挤在一行中的：
 
-目前最大的不足已经不是“还缺一个按钮”，而是以下四个工程闭环：
+```text
+Offset
+Auto Align
+Find Drops
+Anchors
+Apply
+Reset
+```
 
-1. **缓存闭环**：现有 cache key 和缺少真实 Prefetch，使 actor 并行优势没有完全转化为交互速度。
-2. **媒体运行时闭环**：PTS index、SwsContext、NV12 buffer 和 signature 仍存在重复构建与拷贝。
-3. **对齐可信度闭环**：当前算法适合小偏移与少量掉帧，但还不适合持续漂移、跨帧率和复杂重复场景。
-4. **产品状态闭环**：UI 仍硬编码 A/B/C，项目持久化未接入，对齐语义没有完整保存。
+已经移动到默认折叠的高级对齐 Inspector。
 
-因此，下一步最值得投入的路线不是继续扩大功能面，而是依次完成：
+按钮名称也变得更明确：
 
-> **CI/QML 封板 → 解码缓存与预取 → 专用 signature 分析链 → 时间引导和分段对齐 → 动态 UI/项目持久化 → D3D11VA/P010。**
+* `Estimate global frame offset`
+* `Analyze missing / duplicate frames`
+* `Edit manual anchors`
+* `Apply frame offsets`
+* `Return to Strict Index`
 
-这条顺序可以最大程度降低后续硬件化时的返工风险。
+每个操作还有用途说明和示例。
+
+文件、比较和分析功能也已经放入标准菜单。
+
+### 仍未完全达到的细节
+
+当前界面存在英文和中文混用：
+
+```text
+Open videos…
+Save review project
+另存评测项目…
+Export Bad Case…
+```
+
+此外，顶部工具栏采用横向 Flickable 解决 960 像素窗口下的溢出，但没有明显滚动条或“右侧还有内容”的提示。
+
+因此这一项属于：
+
+> 功能理解问题已经解决，但视觉和本地化仍需要最后一轮产品打磨。
+
+---
+
+## 5. ffprobe：达到预期
+
+最终用户包已经不再部署外部：
+
+```text
+ffmpeg.exe
+ffprobe.exe
+```
+
+应用和 CLI 都直接使用 FFmpeg 动态库。
+
+打包阶段还会主动检查这两个 EXE 不得出现在最终包中。
+
+这一项已经完整达到预期。
+
+---
+
+## 6. 高频逐帧不再反复全屏 Loading：达到预期
+
+现在已经把状态拆成：
+
+```text
+busy         = 打开、保存、状态变更
+framePending = 当前只是在请求另一帧
+```
+
+界面仅在没有任何已显示帧时使用全屏 Loading；已有旧帧时保持旧画面。
+
+如果新帧超过约 140 ms 仍未准备好，只在右上角显示轻量的：
+
+```text
+Fetching latest frame…
+```
+
+导航请求在上一请求未完成时仍然可以提交，旧请求被 supersede，最终呈现最新请求。
+
+测试也覆盖了“只有最新 navigation context 完成后才清除 framePending”。
+
+这正是我们希望获得的体验。
+
+---
+
+## 7. 针对 60/120 FPS 短视频：基本达到预期
+
+预取窗口会根据 canonical FPS 自动调整：
+
+```text
+普通帧率：3 前 / 1 后
+约 60 FPS：6 前 / 2 后
+约 120 FPS：12 前 / 3 后
+```
+
+同时新增：
+
+* 两路 1080p120、60 秒；
+* 三路 1080p120、60 秒；
+* 三路 1080p60、5 分钟；
+* 三路 4K30 Main10、5 分钟。
+
+对于绝大多数 1 分钟以内、少数 2 分钟的素材，这一技术路线是合理的。
+
+当前 Signature cache 默认允许 50,000 个 signature，能够覆盖大约：
+
+```text
+3 路 × 120 FPS × 2 分钟 = 43,200
+```
+
+因此与真实工作负载比较匹配。
+
+剩余优化是让预取同时根据分辨率和实际内存预算缩小窗口，但这不是当前短视频工作流的阻断项。
+
+---
+
+# 三、现在还不能直接宣称“完全达到正式发布预期”
+
+## 1. 缺少该分支的 GitHub PR 验证证据
+
+目前没有发现 `feature/vcstation-userplan` 对应的 PR。
+
+Build/Test 只会在：
+
+* Pull Request；
+* push 到 `main`；
+
+时自动执行。
+
+因此，虽然代码和测试定义已经完善，但现在还不能确认最新分支已经实际通过：
+
+* Debug；
+* Release；
+* component/e2e；
+* format；
+* lint；
+* QML；
+* clang-tidy。
+
+这是当前最主要的“证据缺口”，而不是功能缺口。
+
+## 2. 120 FPS 和升级门禁存在，但尚需真实运行结果
+
+现在的测试逻辑已经正确，但测试定义存在并不等于硬件门禁已经通过。
+
+正式结论需要以下四个结果：
+
+```text
+1080p120-2source  PASS
+1080p120-3source  PASS
+DualVideoStudio 1.0.0 → VCStation 1.1.0 PASS
+签名 MSI packaged-smoke PASS
+```
+
+尤其是 120 FPS 的真实结果必须来自登录交互桌面的 D3D11VA runner，不能由 WARP 或普通单元测试替代。
+
+## 3. USERPLAN 已与代码事实不一致
+
+当前 `USERPLAN.md` 仍然写着：
+
+* 版本还是 1.0.0；
+* 两路 120 FPS 门禁必然失败；
+* Source A attribution 未修；
+* Release workflow 缺少版本和硬件门禁。
+
+但这些问题在代码中已经修复。
+
+文档还保留旧的 P0 清单和“不可合并”结论。
+
+这会误导后续开发者，也可能让自动编码员工继续重复修复已经完成的内容。合并前应将 USERPLAN 改成：
+
+```text
+Completed
+Validated locally
+Pending CI
+Pending hardware
+Deferred P1/P2
+```
+
+---
+
+# 四、仍可继续改善，但不阻挡内部使用
+
+## 1. 单文件拖放体验
+
+建议让单文件自动填入下一个空 source，并支持拖到指定 A/B/C 卡片替换。
+
+## 2. 统一界面语言
+
+建议源字符串统一英文，通过 Qt Linguist 提供 `zh_CN`；或者短期全部改中文。当前混合语言会削弱专业感。
+
+## 3. Bad Case 导出
+
+当前导出：
+
+```text
+comparison.bmp
+evidence.json
+```
+
+建议改为 PNG，并记录：
+
+* view mode；
+* difference edge；
+* metric/gain；
+* Wipe position；
+* ROI；
+* threshold。
+
+## 4. 旧用户设置迁移
+
+应用数据目录已从：
+
+```text
+%LocalAppData%\DualVideoStudio
+```
+
+切换到：
+
+```text
+%LocalAppData%\VCStation
+```
+
+MSI 能升级程序，但用户偏好不会自动迁移。建议首次启动时检测旧设置并一次性导入，或者明确说明设置会重置。
+
+## 5. Provider 仍部分阻塞
+
+虽然 SourceDecodeActor 已改成 callback completion，但 Provider 仍在自己的 worker 内等待一个请求的全部 source completion。
+
+对于当前 2～3 路短视频没有明显问题，可以留到后续架构优化。
+
+---
+
+# 五、最终验收判断
+
+## 已达到的预期
+
+* 拖入视频即可比较；
+* 开始菜单入口；
+* `.dvsproj` 文件关联；
+* Side-by-side 分割线；
+* Wipe Compare；
+* 高级对齐折叠与解释；
+* Save As 含义明确；
+* 外部 ffprobe 移除；
+* 高频逐帧不再全屏闪烁；
+* 60/120 FPS 动态预取；
+* 120 FPS 性能门禁定义；
+* MSI 旧版升级测试；
+* 签名和完整 Release workflow。
+
+## 尚未达到的最后条件
+
+* 最新代码尚无正式 PR；
+* 最新 Debug/Release/Quality checks 尚无 GitHub 结果；
+* 最新两路/三路 1080p120 尚无真实硬件结果；
+* 最新旧版 MSI 升级门禁尚无实际运行记录；
+* USERPLAN 仍是过期结论。
+
+---
+
+# 最终决策建议
+
+**当前版本已经达到我们期望的产品形态，可以交给真实使用者进行内部试用。**
+
+但发布决策应设为：
+
+```text
+内部试用：通过
+进入 PR：通过
+合并 main：等待 CI 全绿
+发布 VCStation 1.1.0：等待硬件、升级和签名包门禁通过
+```
+
+现在不需要继续增加大功能。下一步应集中完成：
+
+> **更新 USERPLAN → 建立 PR → 跑通 Debug/Release/Quality → 跑通 2/3 路 1080p120 → 验证 1.0.0 MSI 升级 → 发布 1.1.0。**

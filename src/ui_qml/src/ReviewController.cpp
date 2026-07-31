@@ -3,8 +3,14 @@
 #include "dvs/application/ComparisonExactness.h"
 #include "dvs/ui/SourceListModel.h"
 
+#include "BadCaseExporter.h"
+
 #include <QFileInfo>
 #include <QMetaObject>
+#include <QQuickItem>
+#include <QQuickItemGrabResult>
+#include <QSet>
+#include <QSharedPointer>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -23,7 +29,7 @@
 namespace dvs::ui {
 namespace {
 
-constexpr int kProjectionIntervalMilliseconds = 16;
+constexpr int kFallbackProjectionIntervalMilliseconds = 10;
 constexpr qsizetype kMaximumAlignmentTimelineMarkers = 256;
 
 struct LocalFileCandidate final {
@@ -57,6 +63,14 @@ struct LocalFileValidation final {
     };
 }
 
+[[nodiscard]] QVariantMap rejectedDrop(const QString& errorKey, const QString& detail = {}) {
+    return QVariantMap{
+        {QStringLiteral("accepted"), false},
+        {QStringLiteral("errorKey"), errorKey},
+        {QStringLiteral("detail"), detail},
+    };
+}
+
 [[nodiscard]] ReviewController::ReviewDisplayState
 mapDisplayState(const domain::SessionState state) noexcept {
     switch (state) {
@@ -80,10 +94,12 @@ struct ReviewView final {
     QString sourceCFilename;
     ReviewController::ReviewDisplayState displayState = ReviewController::ReviewDisplayState::Empty;
     bool busy = false;
+    bool framePending = false;
     bool playing = false;
     bool graphicsReady = false;
     qint64 currentFrame = -1;
     qulonglong totalFrames = 0U;
+    int oneSecondStepFrames = 30;
     QString sourceAErrorKey;
     QString sourceBErrorKey;
     QString sourceCErrorKey;
@@ -161,9 +177,9 @@ public:
         }
 
         QObject::connect(&projectionTimer_, &QTimer::timeout, &owner_, [this] { refresh(); });
-        projectionTimer_.setInterval(kProjectionIntervalMilliseconds);
+        projectionTimer_.setInterval(kFallbackProjectionIntervalMilliseconds);
         refresh();
-        if (!stopped_) {
+        if (!stopped_ && !dependencies_.eventDriven) {
             projectionTimer_.start();
         }
     }
@@ -309,7 +325,7 @@ public:
     [[nodiscard]] bool applyAlignmentOffsets(const qint64 sourceAFrames,
                                              const qint64 sourceBFrames,
                                              const qint64 sourceCFrames) {
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canFirst; },
             [this, sourceAFrames, sourceBFrames, sourceCFrames](
                 const application::CommandContext& context) {
@@ -365,7 +381,7 @@ public:
             });
         }
 
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canFirst; },
             [offsets = std::move(offsets)](const application::CommandContext& context) mutable {
                 return application::PlaybackCommand{application::SetAlignmentOffsetsCommand{
@@ -403,7 +419,7 @@ public:
     }
 
     [[nodiscard]] bool confirmAutomaticAlignment() {
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canConfirmAutomaticAlignment; },
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
@@ -412,7 +428,7 @@ public:
     }
 
     [[nodiscard]] bool undoAutomaticAlignment() {
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canUndoAutomaticAlignment; },
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
@@ -427,7 +443,7 @@ public:
             canonicalFrame < 0 || sourceFrame < 0) {
             return false;
         }
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canFirst; },
             [sourceIndex, canonicalFrame, sourceFrame](const application::CommandContext& context) {
                 return application::PlaybackCommand{application::SetManualAlignmentAnchorCommand{
@@ -445,7 +461,7 @@ public:
     }
 
     [[nodiscard]] bool clearManualAlignmentAnchors() {
-        return dispatchNavigation(
+        return dispatchStateChange(
             [](const ReviewView& view) { return view.canFirst; },
             [](const application::CommandContext& context) {
                 return application::PlaybackCommand{
@@ -480,6 +496,45 @@ public:
         return view_.playing ? pause() : play();
     }
 
+    [[nodiscard]] bool exportBadCase(QQuickItem* const comparisonSurface,
+                                     const QUrl& destinationFolder) {
+        if (!onOwnerThread() || stopped_ || comparisonSurface == nullptr ||
+            !destinationFolder.isLocalFile() || !snapshot_ ||
+            !snapshot_->displayedFrame.has_value()) {
+            return false;
+        }
+        const QFileInfo destination{destinationFolder.toLocalFile()};
+        const QString parentPath = destination.canonicalFilePath();
+        if (!destination.isDir() || parentPath.isEmpty()) {
+            return false;
+        }
+
+        const std::shared_ptr<const application::SessionSnapshot> evidence = snapshot_;
+        ReviewController* const ownerPointer = &owner_;
+        const QSharedPointer<QQuickItemGrabResult> result = comparisonSurface->grabToImage();
+        if (!result) {
+            return false;
+        }
+        QObject::connect(result.data(),
+                         &QQuickItemGrabResult::ready,
+                         &owner_,
+                         [evidence, ownerPointer, parentPath, result] {
+                             const internal::BadCaseExportResult exported =
+                                 internal::exportBadCaseEvidence(
+                                     result->image(), *evidence, parentPath);
+                             if (exported.succeeded()) {
+                                 emit ownerPointer->badCaseExported(exported.folder);
+                             } else {
+                                 emit ownerPointer->badCaseExportFailed(exported.error);
+                             }
+                         });
+        return true;
+    }
+
+    void refreshProjection() noexcept {
+        refresh();
+    }
+
     void stop() noexcept {
         if (stopped_) {
             return;
@@ -487,6 +542,7 @@ public:
         stopped_ = true;
         projectionTimer_.stop();
         pendingCommand_.reset();
+        pendingNavigationCommand_.reset();
         pendingTransportCommand_.reset();
         publishProjection();
     }
@@ -506,6 +562,10 @@ private:
                  dependencies_.takeCompletedCommands()) {
                 if (pendingCommand_.has_value() && terminal.context == *pendingCommand_) {
                     pendingCommand_.reset();
+                }
+                if (pendingNavigationCommand_.has_value() &&
+                    terminal.context == *pendingNavigationCommand_) {
+                    pendingNavigationCommand_.reset();
                 }
                 if (pendingTransportCommand_.has_value() &&
                     terminal.context == *pendingTransportCommand_) {
@@ -529,6 +589,7 @@ private:
         stopped_ = true;
         projectionTimer_.stop();
         pendingCommand_.reset();
+        pendingNavigationCommand_.reset();
         pendingTransportCommand_.reset();
         publishProjection();
     }
@@ -549,6 +610,11 @@ private:
                                     ? static_cast<qint64>(snapshot_->displayedFrame->value())
                                     : -1;
             next.totalFrames = static_cast<qulonglong>(snapshot_->canonicalFrameCount);
+            if (snapshot_->validatedComparison &&
+                snapshot_->validatedComparison->canonicalRate().has_value()) {
+                next.oneSecondStepFrames = std::clamp(
+                    qRound(snapshot_->validatedComparison->canonicalRate()->displayFps()), 1, 1000);
+            }
             next.playing = snapshot_->playbackState == domain::PlaybackState::kPlaying ||
                            snapshot_->playbackState == domain::PlaybackState::kBuffering;
             next.alignmentRequired = snapshot_->alignmentRequired;
@@ -860,6 +926,9 @@ private:
         sourceModel_.setRows(std::move(sourceRows));
 
         next.busy = pendingCommand_.has_value() && !stopped_;
+        next.framePending = !stopped_ && (pendingNavigationCommand_.has_value() ||
+                                          (snapshot_ && snapshot_->requestedFrame.has_value() &&
+                                           snapshot_->requestedFrame != snapshot_->displayedFrame));
         const bool transportPending = pendingTransportCommand_.has_value();
         const bool playbackDraining =
             snapshot_ && !next.playing && snapshot_->requestedFrame.has_value();
@@ -960,6 +1029,36 @@ private:
             failClosed();
             return false;
         }
+        application::PlaybackCommand command = factory(*context);
+        application::PortSubmitResult result = application::PortSubmitResult::Closed;
+        try {
+            result = dependencies_.submit(std::move(command));
+        } catch (...) {
+            failClosed();
+            return false;
+        }
+        if (result != application::PortSubmitResult::Accepted) {
+            return false;
+        }
+        pendingNavigationCommand_ = *context;
+        publishProjection();
+        return true;
+    }
+
+    template <typename Enabled, typename Factory>
+    [[nodiscard]] bool dispatchStateChange(Enabled enabled, Factory factory) {
+        if (!onOwnerThread() || stopped_) {
+            return false;
+        }
+        refresh();
+        if (stopped_ || !enabled(view_)) {
+            return false;
+        }
+        const std::optional<application::CommandContext> context = allocateCommandContext();
+        if (!context.has_value()) {
+            failClosed();
+            return false;
+        }
         return dispatch(factory(*context));
     }
 
@@ -1029,6 +1128,7 @@ private:
     QString localSourceBErrorKey_;
     QString localSourceCErrorKey_;
     std::optional<application::CommandContext> pendingCommand_;
+    std::optional<application::CommandContext> pendingNavigationCommand_;
     std::optional<application::CommandContext> pendingTransportCommand_;
     std::uint64_t nextCommandId_ = 1U;
     bool commandIdsExhausted_ = false;
@@ -1065,6 +1165,10 @@ bool ReviewController::busy() const noexcept {
     return impl_->view().busy;
 }
 
+bool ReviewController::framePending() const noexcept {
+    return impl_->view().framePending;
+}
+
 bool ReviewController::playing() const noexcept {
     return impl_->view().playing;
 }
@@ -1079,6 +1183,10 @@ qint64 ReviewController::currentFrame() const noexcept {
 
 qulonglong ReviewController::totalFrames() const noexcept {
     return impl_->view().totalFrames;
+}
+
+int ReviewController::oneSecondStepFrames() const noexcept {
+    return impl_->view().oneSecondStepFrames;
 }
 
 QString ReviewController::sourceAErrorKey() const {
@@ -1216,6 +1324,53 @@ bool ReviewController::openComparisonSet(const QUrl& first,
     return impl_->openComparisonSet(first, second, third, referenceSourceIndex);
 }
 
+QVariantMap ReviewController::handleDroppedUrls(const QVariantList& urls) const {
+    if (urls.isEmpty()) {
+        return rejectedDrop(QStringLiteral("drop-empty"));
+    }
+    if (urls.size() > 3) {
+        return rejectedDrop(QStringLiteral("drop-too-many"));
+    }
+
+    QVariantList normalizedUrls;
+    normalizedUrls.reserve(urls.size());
+    QSet<QString> uniquePaths;
+    qsizetype projectCount = 0;
+
+    for (const QVariant& value : urls) {
+        const LocalFileValidation validated = validateLocalFile(value.toUrl());
+        if (!validated.candidate.has_value()) {
+            return rejectedDrop(validated.errorKey == QStringLiteral("source-missing")
+                                    ? QStringLiteral("drop-missing")
+                                    : QStringLiteral("drop-invalid-local"),
+                                value.toString());
+        }
+
+        const LocalFileCandidate& candidate = *validated.candidate;
+        const QString canonicalPath = QString::fromStdWString(candidate.path.wstring());
+        const QString comparisonPath = canonicalPath.toCaseFolded();
+        if (uniquePaths.contains(comparisonPath)) {
+            return rejectedDrop(QStringLiteral("drop-duplicate"), candidate.filename);
+        }
+        uniquePaths.insert(comparisonPath);
+        normalizedUrls.push_back(QUrl::fromLocalFile(canonicalPath));
+        if (candidate.filename.endsWith(QStringLiteral(".dvsproj"), Qt::CaseInsensitive)) {
+            ++projectCount;
+        }
+    }
+
+    if (projectCount > 0 && (projectCount != 1 || normalizedUrls.size() != 1)) {
+        return rejectedDrop(QStringLiteral("drop-mixed"));
+    }
+
+    return QVariantMap{
+        {QStringLiteral("accepted"), true},
+        {QStringLiteral("kind"),
+         projectCount == 1 ? QStringLiteral("project") : QStringLiteral("videos")},
+        {QStringLiteral("urls"), normalizedUrls},
+    };
+}
+
 bool ReviewController::first() {
     return impl_->first();
 }
@@ -1290,6 +1445,15 @@ bool ReviewController::pause() {
 
 bool ReviewController::togglePlayback() {
     return impl_->togglePlayback();
+}
+
+bool ReviewController::exportBadCase(QQuickItem* const comparisonSurface,
+                                     const QUrl& destinationFolder) {
+    return impl_->exportBadCase(comparisonSurface, destinationFolder);
+}
+
+void ReviewController::refreshProjection() noexcept {
+    impl_->refreshProjection();
 }
 
 void ReviewController::stop() noexcept {

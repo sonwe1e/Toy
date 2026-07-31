@@ -95,6 +95,17 @@ public:
         });
     }
 
+    [[nodiscard]] bool waitForFailure(const application::AlignmentAnalysisJobId jobId) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(lock, std::chrono::seconds{5}, [this, jobId] {
+            return std::any_of(events_.begin(), events_.end(), [jobId](const auto& event) {
+                const auto* const failed =
+                    std::get_if<application::AlignmentAnalysisFailed>(&event);
+                return failed != nullptr && failed->jobId == jobId;
+            });
+        });
+    }
+
     [[nodiscard]] std::vector<application::ApplicationEvent> events() const {
         std::scoped_lock lock(mutex_);
         return events_;
@@ -357,6 +368,35 @@ TEST(AlignmentAnalysisServiceTests, CompletesSequenceJobOnIndependentDecodeProvi
     EXPECT_EQ(service.openSessionCountForTesting(), 0U);
 }
 
+TEST(AlignmentAnalysisServiceTests, AttributesInvalidSourceASequenceOffsetToSourceZero) {
+    AlignmentAnalysisService service;
+    const auto events = std::make_shared<AnalysisEventSink>();
+    const application::FrameProviderOpenRequest open = makeOpenRequest(805U);
+    const application::SequenceAlignmentRequest request{
+        .context = makePlaybackContext(806U),
+        .canonicalSourceId = 1U,
+        .expectedOffsets =
+            {
+                application::SourceFrameOffset{.sourceId = 0U, .frames = 5},
+            },
+        .options = application::SequenceAlignmentOptions{.bandWidth = 4U},
+        .jobId = application::AlignmentAnalysisJobId{2U},
+        .sources = open.sources,
+        .timeline = open.timeline,
+    };
+
+    ASSERT_EQ(service.submit(request, events), application::PortSubmitResult::Accepted);
+    ASSERT_TRUE(events->waitForFailure(request.jobId));
+    const std::vector<application::ApplicationEvent> recorded = events->events();
+    const auto failed = std::find_if(recorded.begin(), recorded.end(), [](const auto& event) {
+        return std::holds_alternative<application::AlignmentAnalysisFailed>(event);
+    });
+    ASSERT_NE(failed, recorded.end());
+    const auto& error = std::get<application::AlignmentAnalysisFailed>(*failed).error;
+    ASSERT_TRUE(error.source.has_value());
+    EXPECT_EQ(*error.source, 0U);
+}
+
 TEST(MultiSourceFrameProviderTests, KeepsOneStableDecodeWorkerPerSourceAcrossExactSeeks) {
     platform::FrameBudget budget{8U * 1024U * 1024U};
     MultiSourceFrameProvider provider{budget};
@@ -429,8 +469,11 @@ TEST(MultiSourceFrameProviderTests, FrameSetCacheIgnoresRequestIdentityButHonors
     EXPECT_EQ(provider.frameSetCacheHitCountForTesting(), 1U);
 }
 
-TEST(MultiSourceFrameProviderTests, FrameSetCacheEvictsBySharedBudgetBytes) {
-    platform::FrameBudget budget{256U * 1024U};
+TEST(MultiSourceFrameProviderTests, FrameSetCacheLeavesRenderHeadroomUnderSharedBudget) {
+    // Two complete fixture sets fit in half the budget, but only one fits in the provider's
+    // quarter-budget cache allowance. Revisiting frame zero must decode it again so the remaining
+    // three quarters stay available to the published, retiring, and in-flight render generations.
+    platform::FrameBudget budget{512U * 1024U};
     MultiSourceFrameProvider provider{budget};
     const auto events = std::make_shared<RecordingEventSink>();
     const application::FrameProviderOpenRequest open = makeOpenRequest(734U);

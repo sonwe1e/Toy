@@ -94,5 +94,5 @@ jobs:
       - name: Run startup check
         shell: pwsh
         run: >-
-          & ".\out\build\${{ matrix.preset }}\bin\DualVideoStudioCli.exe"
+          & ".\out\build\${{ matrix.preset }}\bin\VCStationCli.exe"
           --startup-check

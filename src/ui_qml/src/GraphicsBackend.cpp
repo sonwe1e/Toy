@@ -58,6 +58,18 @@ void configureGraphicsBackend() noexcept {
     if (!qEnvironmentVariableIsSet("QSG_NO_VSYNC")) {
         static_cast<void>(qputenv("QSG_NO_VSYNC", QByteArrayLiteral("1")));
     }
+    // QWindow otherwise keeps a small idle delay before UpdateRequest delivery. Media cadence
+    // already provides the idle boundary, and the extra GUI-thread delay is large enough to miss
+    // 120 fps frame deadlines even on a high-refresh physical display.
+    if (!qEnvironmentVariableIsSet("QT_QPA_UPDATE_IDLE_TIME")) {
+        static_cast<void>(qputenv("QT_QPA_UPDATE_IDLE_TIME", QByteArrayLiteral("0")));
+    }
+    // Main.qml customizes control backgrounds. The Windows native style rejects those
+    // customizations and retries style images on every rendered frame, so use the lightweight
+    // deployed Basic style unless the caller explicitly selected another one.
+    if (!qEnvironmentVariableIsSet("QT_QUICK_CONTROLS_STYLE")) {
+        static_cast<void>(qputenv("QT_QUICK_CONTROLS_STYLE", QByteArrayLiteral("Basic")));
+    }
     QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
 }
 

@@ -32,7 +32,7 @@ function(_dvs_require_llvm_tool_version executable toolName)
 
     if(NOT "${dvs_tool_version}" STREQUAL "${dvs_required_llvm_tool_version}")
         message(FATAL_ERROR
-            "DualVideoStudio requires ${toolName} ${dvs_required_llvm_tool_version}, but '${executable}' "
+            "VCStation requires ${toolName} ${dvs_required_llvm_tool_version}, but '${executable}' "
             "reports ${dvs_tool_version}.")
     endif()
 endfunction()
@@ -109,16 +109,22 @@ function(dvs_add_quality_targets)
         COMMAND_EXPAND_LISTS
         VERBATIM
     )
-    add_custom_target(
-        lint
-        COMMAND
+    # clang-tidy is designed to analyze one translation unit per process. Passing the complete
+    # source list to one LLVM 19.1.5 process can retain analyzer state across translation units
+    # and crash inside the MSVC standard-library model, hiding the actual lint result.
+    set(dvs_clang_tidy_commands)
+    foreach(dvs_cpp_lint_file IN LISTS cppLintFiles)
+        list(
+            APPEND
+            dvs_clang_tidy_commands
+            COMMAND
             "${CLANG_TIDY_EXECUTABLE}"
             "-p=${CMAKE_BINARY_DIR}"
             "--extra-arg=-Wno-unused-command-line-argument"
-            ${cppLintFiles}
-        COMMAND_EXPAND_LISTS
-        VERBATIM
-    )
+            "${dvs_cpp_lint_file}"
+        )
+    endforeach()
+    add_custom_target(lint ${dvs_clang_tidy_commands} VERBATIM)
 
     add_custom_target(format DEPENDS dvs_format_cpp)
     add_custom_target(format-check DEPENDS dvs_format_check_cpp)
@@ -128,8 +134,8 @@ function(dvs_add_quality_targets)
     # production targets, so make the standalone lint command establish that prerequisite.
     add_dependencies(
         lint
-        DualVideoStudio
-        DualVideoStudioCli
+        VCStation
+        VCStationCli
         dvs_check_no_playback_qimage
     )
 

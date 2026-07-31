@@ -1,41 +1,41 @@
-# DualVideoStudio
+# VCStation（VideoCompareStation）
 
-DualVideoStudio is a Windows-only C++20 and Qt Quick application being rebuilt as a
-**VFI-dedicated video comparator**: it natively compares 2–3 videos on the same
-canonical frame position — a Reference and one or two model predictions — with
-explicit time alignment, frame-exact navigation, and pairwise difference maps for
-any two selected sources.
+VCStation 是面向 Windows 的 2～3 路逐帧视频审查工具，使用 C++20、Qt Quick、
+FFmpeg 动态库和 D3D11。它把 Reference 与一到两路预测视频放在同一个 canonical
+frame position 上，支持精确逐帧、任意两路 Wipe/Diff、显式对齐以及缺帧和重复帧诊断。
 
-The governing plan for this rebuild is [USERPLAN.md](USERPLAN.md). Progress is staged
-in phases on the `refactor/unified-comparator` branch:
+当前产品方案以 [USERPLAN.md](USERPLAN.md) 为准。`legacy/` 只保存历史实现作为行为参考，
+不参与构建。
 
-| Phase | Scope | Status |
-|---|---|---|
-| 0 | Repository root promotion, legacy archive, docs, CI split | done |
-| 1 | Prune export/clip/proxy scope | done |
-| 2 | Generalize the hardcoded A/B model to 2–3 dynamic sources (`FramePair` → `FrameSet`) | done |
-| 3 | Parallel per-source decode, three-up/reference-focus layouts, selectable difference edges | done |
-| 4 | Strict-index and aligned-capture modes (offset, drop/duplicate detection, anchors) | done |
-| 5 | Extended difference and analysis layouts | done |
-| 6 | Advanced analysis, 10-bit/P010, format normalization, D3D11VA, performance | done |
+---
 
-`legacy/` contains the retired `DualVideoTool` and the `video-compare` fork as
-interaction and algorithm references only; neither is part of the CMake build.
+## 主要工作流
 
-## Requirements
+启动后可直接拖入 2～3 个视频；三路素材会先确认 A/B/C 顺序和 Reference。也可以拖入
+`.dvsproj` 或从 File 菜单打开评测项目。项目文件保存视频路径、Reference、Offset、
+锚点和视图设置，不会导出新视频。
 
-- Windows x64 with Visual Studio 2022 (BuildTools suffice) and the MSVC v143 toolchain
-- CMake 4.4 or newer and single-config Ninja
-- Dependencies from the vcpkg manifest: FFmpeg 8.1.2 (avcodec/avformat/swscale),
-  Qt 6.11 (Base, Declarative, ShaderTools), GoogleTest, nlohmann-json
+常用审查能力包括：
 
-Build output, downloaded tools, test results, and packages stay below the untracked
-`out/` directory. A populated `out/vcpkg` installed-tree is reused without rebuilding
-when present; otherwise manifest mode installs it on first configure.
+- Side by side 使用明确白色分割线，Wipe compare 可拖动分割线并比较 A/B、A/C 或 B/C；
+- A/D 或左右方向键逐 1 帧，Shift+A/D 逐 5 帧，Ctrl+A/D 按 canonical FPS 跳 1 秒；
+- 连续逐帧期间保留旧画面并接受新请求，最终只呈现最新请求，不用全屏 Loading 遮挡；
+- Advanced Alignment Inspector 默认收起，需要时再估计整体偏移、分析缺帧/重复帧或设置手动锚点；
+- File → Export Bad Case 会把当前对比图和包含 frame/source/alignment 身份的
+  `evidence.json` 原子发布到一个独立目录。
 
-## Build and Test
+用户包不携带外部 `ffmpeg.exe` 或 `ffprobe.exe`。GUI 与
+`VCStationCli --probe` 都直接使用随包分发的 FFmpeg 动态库。
 
-Run commands from a Visual Studio developer shell at the repository root:
+---
+
+## 构建与验证
+
+要求 Windows x64、Visual Studio 2022 Build Tools/MSVC v143、CMake 4.4、Ninja 和
+vcpkg。首次配置会根据 `vcpkg.json` 安装 Qt 6.11、FFmpeg 8.1.2、GoogleTest 与
+nlohmann-json。所有生成物都在未跟踪的 `out/` 下。
+
+从 Visual Studio x64 开发者 PowerShell 运行：
 
 ```powershell
 cmake --preset dev
@@ -45,120 +45,64 @@ cmake --build --preset dev --target format-check
 cmake --build --preset dev --target lint
 ```
 
-Launch the development build after it succeeds:
+启动应用与 CLI 诊断：
 
 ```powershell
-.\out\build\dev\bin\DualVideoStudio.exe
+.\out\build\dev\bin\VCStation.exe
+.\out\build\dev\bin\VCStationCli.exe --startup-check
+.\out\build\dev\bin\VCStationCli.exe --probe .\video.mp4
 ```
 
-The UI opens two required sources and one optional third source as one atomic comparison
-set. Choose which source is the Reference, then use side-by-side, three-up,
-reference-focus, or Difference view; Difference can compare A/B, A/C, or B/C. Navigation
-uses **First**, **Previous**, **Next**, **Last** or the Home, Left, Right, and End keys.
-The UI stays disabled until the D3D11 scene graph is ready and reports source-specific
-validation or decode errors without replacing a previously presented frame.
-
-Strict index is the default: canonical frame `i` maps to frame `i` in every source.
-The alignment bar can apply a signed global frame offset to non-reference sources without
-reopening the media, or run **Auto align**. Automatic estimation samples low-resolution
-luma evidence, searches a bounded offset window, and combines structural, edge, and
-perceptual-hash distances. A clear winner is applied and re-presented atomically; an
-ambiguous winner is shown only as a confidence-scored suggestion. Out-of-range mappings
-become an explicit `Missing` source slot and are never clamped or silently replaced by a
-neighboring frame. Frame-rate, duration, resolution, and color differences remain visible
-as non-blocking compatibility warnings.
-
-**Find drops** performs a bounded-band, full-sequence alignment to identify missing,
-extra, and duplicated target frames. Confident mappings are applied atomically; ambiguous
-results remain suggestions. The operation accepts at most 50,000 frames by default and has
-a hard safety cap of 100,000 frames per source. **Anchors...** adds or replaces manual
-canonical-to-source frame pairs; anchors override automatic mappings and interpolate
-monotonically between points. The timeline marks missing frames in red, duplicates in
-orange, extra frames in purple, manual anchors in cyan, and the start of each low-confidence
-region in yellow. Strict reset clears offsets and anchors.
-
-For a deterministic headless GUI check using the software D3D11 device:
+确定性的 WARP UI smoke：
 
 ```powershell
-.\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
+.\out\build\dev\bin\VCStation.exe --ui-smoke `
   .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
   .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4
 ```
 
-Pass a third path to exercise the complete three-source path:
+Release 与安装包：
 
 ```powershell
-.\out\build\dev\bin\DualVideoStudio.exe --ui-smoke `
-  .\tests\fixtures\media\h264_a_320x180_30fps_12.mp4 `
-  .\tests\fixtures\media\h264_b_160x90_30fps_12.mp4 `
-  .\tests\fixtures\media\h265_a_320x180_30fps_12.mp4
+cmake --preset release
+cmake --build --preset release
+ctest --preset release --output-on-failure
+cpack --preset release-zip
+cpack --preset release-msi
+ctest --preset shutdown-soak --output-on-failure
+ctest --preset packaged-smoke --output-on-failure
 ```
 
-Developer diagnostics use the console-subsystem executable, so output and exit codes
-remain scriptable without making the desktop executable open a terminal:
+MSI 生成还要求 .NET SDK 8、WiX 4.0.4 与 `WixToolset.UI.wixext` 4.0.4；
+`packaged-smoke` 会真实安装 per-machine MSI，因此 runner 必须提升权限且不能已有
+VCStation 安装。详细配置见
+[docs/self-hosted-runner.md](docs/self-hosted-runner.md)。
+
+---
+
+## 性能与发布门禁
+
+硬件门禁必须在登录到交互桌面的 D3D11VA runner 上运行，不能用 WARP 或 CPU 测试替代。
+`performance-d3d11` 包括三路 1080p60 与 4K30 Main10 五分钟门禁，以及两路/三路
+1080p120 各 60 秒门禁；检查 presentation ACK 连续性、source atomicity、完整
+FrameSet drop、帧预算、冷 seek P95、相邻逐帧和有界关闭。
 
 ```powershell
-.\out\build\dev\bin\DualVideoStudio.exe --startup-check
-.\out\build\dev\bin\DualVideoStudioCli.exe --probe .\video.mp4
-```
-
-Use `release`, `dev-coverage`, or `asan` in place of `dev` for the corresponding
-workflow. The hardware layer contains real D3D11VA and decoder-surface zero-copy tests.
-The performance layer contains visible-window, three-source 1080p60 and 4K30 Main10
-five-minute gates. Point them at the six long-running fixtures and run:
-
-```powershell
-$env:DVS_PERFORMANCE_FIXTURE_ROOT = 'D:\dvs-performance-fixtures'
+$env:DVS_PERFORMANCE_FIXTURE_ROOT = 'G:\GitHubActions\Toy-data\performance'
 ctest --preset hardware-d3d11 --output-on-failure
 ctest --preset performance-d3d11 --output-on-failure
 ```
 
-`tools/run-performance-gate.ps1` is the shared local/runner entry point. It validates
-real presentation ACK continuity, source atomicity, D3D11VA backend selection, frame
-budget, thread stability, cold seek P95, warm adjacent stepping, analysis throughput,
-and bounded shutdown. Packaged and shutdown-soak layers remain separate release gates.
+标签触发的 Release workflow 在测试后签名 `VCStation.exe`、`VCStationCli.exe` 和 MSI，
+再执行真实安装与 shutdown soak 门禁。签名证书缺失时发布会失败关闭，不会生成未签名的
+正式 Release。
 
-## Runtime Tool Pinning
+---
 
-The application bundles the reviewed GPL-enabled Gyan FFmpeg/ffprobe 8.1.2 essentials
-runtime. Its immutable GitHub release URL, archive digest, executable digests, license,
-publisher release, and upstream source commit are pinned in
-`tools/dependencies/ffmpeg-runtime.json`. Coverage tools remain unconfigured until an
-exact artifact is reviewed.
+## 代码结构
 
-`tools/bootstrap-runtime.ps1` is deliberately fail-closed. It refuses an unconfigured
-manifest, an unpinned version, a non-HTTPS URL, an invalid SHA-256, an unsafe archive,
-or a destination outside `out/tools`. It never falls back to a tool on `PATH` and never
-selects a latest release.
-
-Bootstrap the pinned FFmpeg component explicitly:
-
-```powershell
-.\tools\bootstrap-runtime.ps1 -Component Ffmpeg
-```
-
-Do not use `-Component All` until the coverage manifest is pinned. Existing destinations are
-reused only when their provenance matches; `-Force` is required for a reviewed
-replacement. The initial CI workflows do not download unpinned runtime tools.
-
-Native CI jobs require a self-hosted Windows x64 runner labeled `dvs-toolchain-4.4`,
-with the requirements above and either `VCPKG_ROOT` or `VCPKG_INSTALLATION_ROOT`
-configured. The runner must be 2.327.1 or newer because the pinned checkout action
-uses Node 24. Hardware gates additionally require `dvs-gpu`, an interactive desktop,
-and the repository variable `DVS_PERFORMANCE_FIXTURE_ROOT`. See
-[docs/self-hosted-runner.md](docs/self-hosted-runner.md) for the pinned runner download,
-fixture contract, registration commands, and public-repository safety boundary.
-
-## Repository Layout
-
-Core rules live in `src/domain` and orchestration in `src/application`. Windows
-infrastructure lives in `platform_windows`; FFmpeg, persistence, job, and QML adapters
-may use its services. Tests are grouped by layer under `tests/`; build helpers live in
-`cmake/`, scripts in `tools/`, packaging definitions in `packaging/`, and user-facing
-assets in `assets/`. Design documents live under `docs/` — see
-[docs/architecture.md](docs/architecture.md), [docs/alignment.md](docs/alignment.md),
-and [docs/media-support.md](docs/media-support.md) for the target design, and
-`docs/superpowers/` for the historical slice specs.
-
-See [AGENTS.md](AGENTS.md) for contributor commands, module boundaries, coding style,
-test gates, and pull-request evidence requirements.
+`src/domain` 只包含规则，`src/application` 只包含用例和 ports；
+`platform_windows`、`media_ffmpeg`、`persistence_json` 与 `ui_qml` 是外层适配器，
+`src/app` 负责组合。测试按层放在 `tests/`，打包定义在 `packaging/`，品牌资源在
+`assets/branding/`。架构与贡献约束见
+[docs/architecture.md](docs/architecture.md) 和 [AGENTS.md](AGENTS.md)。

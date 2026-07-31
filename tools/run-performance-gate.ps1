@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('1080p60', '4k30-main10')]
+    [ValidateSet('1080p60', '1080p120-2source', '1080p120-3source', '4k30-main10')]
     [string]$Profile,
 
     [Parameter(Mandatory = $true)]
@@ -28,14 +28,23 @@ if (-not $LogRoot) {
 New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
 $resolvedLogRoot = (Resolve-Path -LiteralPath $LogRoot).Path
 
-$fixtureNames = if ($Profile -eq '1080p60') {
-    @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4', 'gate-1080p60-c.mp4')
-} else {
-    @(
-        'gate-4k30-main10-a.mp4',
-        'gate-4k30-main10-b.mp4',
-        'gate-4k30-main10-c.mp4'
-    )
+$fixtureNames = switch ($Profile) {
+    '1080p60' {
+        @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4', 'gate-1080p60-c.mp4')
+    }
+    '1080p120-2source' {
+        @('gate-1080p120-a.mp4', 'gate-1080p120-b.mp4')
+    }
+    '1080p120-3source' {
+        @('gate-1080p120-a.mp4', 'gate-1080p120-b.mp4', 'gate-1080p120-c.mp4')
+    }
+    '4k30-main10' {
+        @(
+            'gate-4k30-main10-a.mp4',
+            'gate-4k30-main10-b.mp4',
+            'gate-4k30-main10-c.mp4'
+        )
+    }
 }
 $fixtures = foreach ($name in $fixtureNames) {
     (Resolve-Path -LiteralPath (Join-Path $resolvedFixtureRoot $name)).Path
@@ -43,16 +52,10 @@ $fixtures = foreach ($name in $fixtureNames) {
 
 $stderrPath = Join-Path $resolvedLogRoot "$Profile-stderr.log"
 $stdoutPath = Join-Path $resolvedLogRoot "$Profile-stdout.log"
+$arguments = @('--ui-performance') + $fixtures + @('--seconds', $DurationSeconds)
 $process = Start-Process `
     -FilePath $resolvedExecutable `
-    -ArgumentList @(
-        '--ui-performance',
-        $fixtures[0],
-        $fixtures[1],
-        $fixtures[2],
-        '--seconds',
-        $DurationSeconds
-    ) `
+    -ArgumentList $arguments `
     -RedirectStandardError $stderrPath `
     -RedirectStandardOutput $stdoutPath `
     -PassThru `
@@ -68,6 +71,19 @@ if (-not $resultLine) {
 }
 
 $json = $resultLine.Substring('DVS_PERFORMANCE_RESULT '.Length) | ConvertFrom-Json
+$expectedSourceCount = if ($Profile -eq '1080p120-2source') { 2 } else { 3 }
+if ($json.expected_source_count -ne $expectedSourceCount) {
+    throw (
+        "The $Profile gate reported expected_source_count=" +
+        "$($json.expected_source_count), expected $expectedSourceCount."
+    )
+}
+if (-not $json.screen_refresh_hz -or $json.screen_refresh_hz -lt 120) {
+    throw (
+        "The $Profile gate rendered on a $($json.screen_refresh_hz) Hz screen; " +
+        'a physical screen at 120 Hz or higher is required.'
+    )
+}
 if ($process.ExitCode -ne 0 -or -not $json.passed) {
     throw "The $Profile performance gate failed with exit code $($process.ExitCode)."
 }

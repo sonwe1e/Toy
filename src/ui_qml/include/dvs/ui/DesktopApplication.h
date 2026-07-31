@@ -18,6 +18,7 @@ class WorkspaceController;
 struct DesktopApplicationOptions final {
     bool smokeMode = false;
     bool preferSoftwareDevice = false;
+    bool preferHighRefreshScreen = false;
 };
 
 // Owns QGuiApplication, the QML engine, and the top-level window. The composition root is created
@@ -42,6 +43,7 @@ public:
                             SurfaceBinder bindSurface);
     [[nodiscard]] int exec();
     void exit(int exitCode) noexcept;
+    [[nodiscard]] double activeScreenRefreshRate() const noexcept;
 
     // Drives the same QML properties, button handlers, and window key events as a user. These
     // helpers keep the end-to-end smoke path on the declarative UI boundary instead of calling
