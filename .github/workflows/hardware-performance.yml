@@ -130,10 +130,25 @@ jobs:
           New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
           $env:DVS_TESTED_SHA |
             Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
+          @(
+            'v1.1.0 release-blocking profiles:',
+            '- 1080p60',
+            '- 1080p120-2source',
+            '- 1080p120-3source',
+            '',
+            '4k30-main10 is deferred and was not executed by this workflow.'
+          ) | Set-Content (Join-Path $artifactRoot 'release-gate-policy.txt') -Encoding ascii
           $resultRoot = Join-Path $env:DVS_PERFORMANCE_FIXTURE_ROOT 'results'
           if (Test-Path -LiteralPath $resultRoot) {
-            Get-ChildItem -LiteralPath $resultRoot -File |
-              Copy-Item -Destination $artifactRoot -Force
+            $profiles = @('1080p60', '1080p120-2source', '1080p120-3source')
+            foreach ($profile in $profiles) {
+              foreach ($stream in @('stdout', 'stderr')) {
+                $logPath = Join-Path $resultRoot "$profile-$stream.log"
+                if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+                  Copy-Item -LiteralPath $logPath -Destination $artifactRoot -Force
+                }
+              }
+            }
           }
 
       - name: Upload performance logs
