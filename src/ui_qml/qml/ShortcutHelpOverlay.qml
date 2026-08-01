@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 
 Popup {
     id: control
@@ -38,13 +39,34 @@ Popup {
             color: "#9fc3ff"
             font.pixelSize: 12
         }
-        Label {
+        GridLayout {
             width: parent.width
-            text: control.playerPreset ? qsTr("Left / Right     Seek 5 seconds\nCtrl+Left / Right  Seek 30 seconds\n, / .              Previous / next frame\nSpace              Play / pause\nI / O              Set In / Out\n\\                  Play selected range\nF11 or double-click Full screen\nRight click         Viewer commands\nTab                 Hide interface\n?                   This help") : qsTr("Left / Right      Previous / next frame\nShift+Left / Right Step 5 frames\nCtrl+Left / Right  Step 1 second\nA / D              Previous / next frame\nSpace              Play / pause\nI / O              Set In / Out\n\\                  Play selected range\nF11 or double-click Full screen\nRight click         Viewer commands\nTab                 Hide interface\n?                   This help")
-            color: "#d8e2f2"
-            font.family: "Consolas"
-            font.pixelSize: 13
-            lineHeight: 1.3
+            columns: 2
+            columnSpacing: 22
+            rowSpacing: 7
+
+            Repeater {
+                model: control.playerPreset ? [[qsTr("Left / Right"), qsTr("Seek 5 seconds")], [qsTr("Ctrl+Left / Right"), qsTr("Seek 30 seconds")], [qsTr(", / ."), qsTr("Previous / next frame")], [qsTr("Space"), qsTr("Play / pause")], [qsTr("I / O"), qsTr("Set In / Out")], [qsTr("\\"), qsTr("Play selected range")], [qsTr("F11 or double-click"), qsTr("Full screen")], [qsTr("Right click"), qsTr("Viewer commands")], [qsTr("Tab"), qsTr("Hide interface")], [qsTr("?"), qsTr("This help")]] : [[qsTr("Left / Right"), qsTr("Previous / next frame")], [qsTr("Shift+Left / Right"), qsTr("Step 5 frames")], [qsTr("Ctrl+Left / Right"), qsTr("Step 1 second")], [qsTr("A / D"), qsTr("Previous / next frame")], [qsTr("Space"), qsTr("Play / pause")], [qsTr("I / O"), qsTr("Set In / Out")], [qsTr("\\"), qsTr("Play selected range")], [qsTr("F11 or double-click"), qsTr("Full screen")], [qsTr("Right click"), qsTr("Viewer commands")], [qsTr("Tab"), qsTr("Hide interface")], [qsTr("?"), qsTr("This help")]]
+
+                delegate: RowLayout {
+                    required property var modelData
+                    Layout.columnSpan: 2
+                    Layout.fillWidth: true
+
+                    Label {
+                        Layout.preferredWidth: 180
+                        text: String(parent.modelData[0])
+                        color: "#9fc3ff"
+                        font.pixelSize: 13
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: String(parent.modelData[1])
+                        color: "#d8e2f2"
+                        font.pixelSize: 13
+                    }
+                }
+            }
         }
     }
 }

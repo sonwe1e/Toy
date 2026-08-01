@@ -1,882 +1,874 @@
 # 核心结论
 
-上一版路线需要做一次结构性调整：不再把“单视频播放”“多视频比较”“隐藏工具栏”“全屏”视为彼此独立的功能，而是统一成一个 **1～3 路视频审查画布**。
-
-新的产品形态应是：
+提交 `0b639491` 已经完成了明显的 **Player-first 界面重构**。相比上一版，界面不再是“三张 Source 卡片 + 多条永久工具栏”的工程控制台，而是形成了：
 
 ```text
-1 路视频
-→ 单画面铺满整个画布
-
-2 路视频
-→ 默认左右两栏铺满整个画布
-
-3 路视频
-→ 默认三栏铺满整个画布
-
-沉浸模式
-→ 隐藏菜单、Source 栏、比较工具栏、时间轴和按钮
-→ 视频画布占满窗口或整个显示器
-→ 快捷键继续有效
-→ Wipe 手柄继续可拖动
+空状态
+→ 播放器式单视频
+→ 上下文式多视频比较
+→ Viewer 原生右键菜单
+→ 悬浮播放控制器
+→ 多轨审查时间轴
+→ 可展开专业 Inspector
 ```
 
-实现上最关键的不是再往 `Main.qml` 增加几个 `visible` 条件，而是建立三个清晰的基础模型：
+整体方向正确，界面架构完成度约 **85%**。空状态、单视频、双/三路模式的层级已经比较合理，默认窗口中的 Viewport 占比也达到测试设定的 78% 以上。
 
-1. **源数量决定有效画面布局**；
-2. **画布内容与外围工具栏完全解耦**；
-3. **按钮、快捷键和右键菜单共享同一套 Action，不依赖控件是否可见**。
+但当前仍存在几项会直接影响实际显示的缺陷：
+
+1. 空状态会错误显示底部播放控制器；
+2. 单视频 OSC 自动隐藏逻辑存在闪烁和隐形点击问题；
+3. OSC 内部时间轴和播放按钮存在几何重叠；
+4. Viewer 顶部 Source 标签、Diff 控件和状态信息会相互遮挡；
+5. Frame Error Banner 实际可能被定位到 Viewport 之外；
+6. 时间轴悬浮预览的帧号、Timecode 和缩略图状态没有同步；
+7. 单视频右键打开 Inspector 后，Inspector 实际不会显示。
+
+因此当前版本已经适合内部体验，但还不建议把这套界面视为最终稳定版。
 
 ---
 
-# 一、修订后的交互设计
+# 一、本次修改完成得比较好的部分
 
-## 1. Wipe 手柄改为“窄而高”
+## 1. 界面信息架构已经明显改善
 
-你提出的方向是合理的：现在的手柄偏宽、偏短，看上去像普通按钮，而且精确选中比较困难。
-
-建议将可见手柄调整为：
+当前主界面固定占用高度大致为：
 
 ```text
-可见宽度：18～22 px
-可见高度：76～92 px
-圆角：9～11 px
-分割线：2～3 px
-实际鼠标命中宽度：48～56 px
-实际命中高度：覆盖整条分割线
+Command Bar        48 px
+Active Source Strip 42 px
+Compare Mode Bar   40 px（仅多视频）
 ```
 
-也就是说，视觉上左右收窄、上下拉长，但实际鼠标可点击区域仍然较宽：
+多视频模式总计约 130 px，比上一版接近 300 px 的永久工具区明显精简。底部播放控制器改为覆盖在 Viewer 上，不再挤压 Viewport。代码测试也明确要求 Viewport 高度占窗口内容区至少 78%。
+
+这已经接近成熟播放器和审片工具常见的“画面为主、操作浮层化”结构。
+
+## 2. Active Source 与待打开 Source 已经分离
+
+新的 `ReviewShellController` 区分：
 
 ```text
-     实际命中区域 52 px
-┌──────────────────┐
-│       │ 18 px    │
-│       │          │
-│       │ 可见手柄 │  84 px
-│       │          │
-│       │          │
-└──────────────────┘
+activeSources
+    后端真正成功打开的 Source
+
+stagedSources
+    用户正在选择、但尚未成功应用的 Source
 ```
 
-手柄内部不再使用横向 `↔`，建议改成三组竖向抓取点：
+它还维护 canonical source、外部启动请求队列、界面显示状态和 dirty guard。失败的 Source 替换不会立即重绘当前活动 Source，避免出现“界面写着新文件，但画面仍是旧文件”的状态。
+
+`ReviewController` 也已经向 QML 暴露 `activeSources`、`canonicalSourceIndex` 和 `referenceSourceIndex`，Reference 不再完全是 QML 自己猜测的局部状态。
+
+这是本次最重要的正确性改进之一。
+
+## 3. Source Strip 比旧三卡布局更适合播放器
+
+当前 Source 以 Chip 形式显示：
 
 ```text
-•
-•
-•
+A · reference.mp4   R
+B · prediction.mp4  …
+C · prediction2.mp4 …
++
 ```
 
-这样视觉语义更接近“拖动分割线”，而不是“点击切换”。
+Reference/Canonical Source 具有不同底色和边框，右侧菜单可以切换 Reference 或移除 Source。单视频时只显示一个 Chip 和添加按钮，不再永久显示空的 B/C 卡片。
 
-### 操作行为
+这已经符合之前提出的“单视频看起来应当是完整播放器，而不是尚未配置完的比较任务”。
 
-* 拖动整条分割线附近都能移动 Wipe；
-* 双击手柄恢复到 50%；
-* 鼠标进入手柄时稍微提高亮度；
-* 拖动时手柄放大约 8%，强化当前抓取状态；
-* 沉浸模式下仍保留手柄；
-* 非 Wipe 模式下手柄完全不存在。
+## 4. Compare Mode Bar 的主次功能层级合理
+
+Side、Wipe、Diff 作为高频命令直接显示；Three-up、Reference Focus、Analysis Grid 放入扩展菜单；三路模式才出现 Pair 选择。
+
+这种层级比以前把 Reference、View、Metric、Gain、Pair、Filter 全部挤在横向 Flickable 中更容易理解。
+
+## 5. Viewer 与 Renderer 使用了相同几何
+
+`ComparisonSurface` 现在直接向 QML 暴露：
+
+```text
+wipeSplitLogicalX
+sourcePanelRects
+presentationGeometryChanged
+```
+
+Source 标签不再自行假设“左半边、右半边”，而是读取 Renderer 的真实布局。这对于 Three-up、Reference Focus、Analysis Grid 和 Wipe 非常重要。
+
+对应测试已经验证三路面板、Reference Focus、Analysis Grid 和 Wipe Pair 的几何。
+
+## 6. 快捷键、右键菜单和 Inspector 已形成完整入口
+
+当前已经支持：
+
+* Review / Player 两套快捷键方案；
+* `?` 打开快捷键帮助；
+* 右键访问 View、Pair、Reference、Bad Case、Inspector 和 Full Screen；
+* `I/O` 设置 In/Out；
+* `\` 播放选中区间；
+* 双击 Viewer 切换全屏。
+
+从功能可发现性上看，已经比上一版成熟很多。
 
 ---
 
-## 2. 单视频必须铺满整个画布
+# 二、当前最明显的界面显示缺陷
 
-单视频模式不应该模拟“两栏布局中的左侧一栏”，而应当使用整个可用画布：
+## P0-1：空状态仍会显示完整播放控制器
 
-```text
-┌──────────────────────────────────────┐
-│                                      │
-│                                      │
-│            单视频完整画面             │
-│                                      │
-│                                      │
-└──────────────────────────────────────┘
-```
-
-加入第二个视频后，再切换为：
-
-```text
-┌───────────────────┬──────────────────┐
-│                   │                  │
-│     Source A      │     Source B     │
-│                   │                  │
-└───────────────────┴──────────────────┘
-```
-
-加入第三个视频后：
-
-```text
-┌─────────────┬─────────────┬─────────────┐
-│  Source A   │  Source B   │  Source C   │
-└─────────────┴─────────────┴─────────────┘
-```
-
-这不是简单地改变 QML 宽度。当前核心验证器、`FrameSet`、Snapshot 和 Frame Provider 都把“两路”作为最小数量，因此需要将底层会话正式泛化为 1～3 路。
-
----
-
-## 3. 新增视频时采用“会话重建”，不要热插 Decoder
-
-单视频正在播放时加入第二个视频，不建议直接往现有 `MultiSourceFrameProvider` 中热插一个 `SourceDecodeActor`。这会显著增加：
-
-* 播放中途的生命周期竞争；
-* 当前 FrameSet 与新 source 数量不一致；
-* cancellation 和 generation 管理复杂度；
-* GPU mailbox 中旧单路帧与新双路帧混合的风险。
-
-建议使用受控的原子重建流程：
-
-```text
-单视频正在显示 frame 824
-        ↓
-用户加入第二个视频
-        ↓
-暂停播放
-        ↓
-记录当前 MediaTime 和 ViewTransform
-        ↓
-确认 A/B 顺序与 Reference
-        ↓
-关闭旧单路 provider session
-        ↓
-用 A/B 创建新的双路 session
-        ↓
-在新 canonical timeline 中寻找同一 MediaTime
-        ↓
-显示对应 FrameSet
-        ↓
-默认进入 Side-by-side
-```
-
-这样仍然复用现有 session epoch 和 playback generation 机制，不需要让一个活动 provider 动态改变 source 数量。
-
-### 为什么保存 MediaTime，而不是只保存 FrameId
-
-假设单视频 A 是 120 FPS，而新加入的 B 是 60 FPS，或者用户把 B 改成 Reference，原来的 frame 824 不一定仍对应同一时刻。
-
-应保存：
-
-```cpp
-struct ReviewResumePoint {
-    domain::MediaTime mediaTime;
-    bool wasPlaying;
-    SurfaceViewTransform transform;
-    std::optional<SurfaceNormalizedRect> roi;
-};
-```
-
-新 session 打开后，根据新 canonical timeline 找到最接近该时间的位置。
-
-加入新视频后建议默认保持暂停，避免用户还没理解新的左右顺序就自动继续播放。
-
----
-
-# 二、统一画面布局模型
-
-## 1. 不单独维护“单视频模式”开关
-
-不要增加一个容易失配的：
-
-```cpp
-bool singleVideoMode;
-```
-
-模式应直接从 source 数量推导：
-
-```cpp
-enum class ReviewContentMode {
-    Empty,
-    SingleSource,
-    Comparison,
-};
-
-ReviewContentMode contentMode(std::size_t sourceCount) {
-    if (sourceCount == 0) {
-        return ReviewContentMode::Empty;
-    }
-    if (sourceCount == 1) {
-        return ReviewContentMode::SingleSource;
-    }
-    return ReviewContentMode::Comparison;
-}
-```
-
-这样不会出现：
-
-```text
-singleVideoMode = true
-但 sources.size() = 2
-```
-
-这种状态冲突。
-
----
-
-## 2. 新增 Single View，但保留旧枚举数值
-
-当前 ViewMode 已经包含 Side-by-side、Three-up、Difference、Analysis Grid 和 Wipe。
-
-新增 Single 时必须放在最后并使用显式数值，避免旧设置中的整数改变含义：
-
-```cpp
-enum class SurfaceViewMode : std::uint8_t {
-    SideBySide     = 0,
-    ThreeUp        = 1,
-    ReferenceFocus = 2,
-    Difference     = 3,
-    AnalysisGrid   = 4,
-    Wipe           = 5,
-    Single         = 6,
-};
-```
-
-有效模式由 source 数量与用户偏好共同决定：
-
-```cpp
-SurfaceViewMode effectiveViewMode(
-    std::size_t sourceCount,
-    SurfaceViewMode requestedMode,
-    SurfaceViewMode lastComparisonMode) {
-
-    if (sourceCount == 1) {
-        return SurfaceViewMode::Single;
-    }
-
-    if (requestedMode == SurfaceViewMode::Single) {
-        return lastComparisonMode;
-    }
-
-    return requestedMode;
-}
-```
-
-这意味着：
-
-* 只有一个视频时强制完整单画面；
-* 加入第二个视频后恢复用户上一次使用的比较模式；
-* 默认上一次模式为空时使用 Side-by-side；
-* 从两个视频退回一个视频时，原比较模式仍然记住。
-
----
-
-## 3. Renderer 中的 Single 布局
-
-在 `D3d11ComparisonRenderer::prepareSetDraw()` 中增加：
-
-```cpp
-if (state.viewMode == SurfaceViewMode::Single) {
-    const GpuFrameResource* frame = firstAvailableFrame();
-
-    appendRegionDraw(
-        SurfaceRect{
-            .x = 0.0F,
-            .y = 0.0F,
-            .width = state.logicalWidth,
-            .height = state.logicalHeight,
-        },
-        *frame,
-        *backing
-    );
-}
-```
-
-Renderer 仍然执行 aspect fit，因此“铺满整个画布”指的是使用整个画布作为可用边界，而不是强行拉伸视频破坏比例：
-
-```text
-画布比例与视频一致
-→ 视频真正填满
-
-画布比例与视频不同
-→ 保持比例，剩余区域为黑色 letterbox
-```
-
-当前 GPU 层的 `GpuFrameSet` 并没有要求至少存在两个 GPU slot，因此单路 GPU 上传本身不需要另起一套实现。
-
----
-
-# 三、增加“沉浸式审查模式”
-
-## 1. 区分隐藏工具栏和操作系统全屏
-
-建议提供两个彼此独立、但可以组合的状态：
-
-```cpp
-struct PresentationShellState {
-    bool chromeVisible = true;
-    bool fullScreen = false;
-};
-```
-
-对应交互：
-
-| 操作      | 行为             |
-| ------- | -------------- |
-| `Tab`   | 显示或隐藏应用工具栏     |
-| `F11`   | 进入或退出真正的显示器全屏  |
-| `Esc`   | 退出全屏；非全屏时恢复工具栏 |
-| 鼠标移动到顶部 | 可选地临时显示简化顶部栏   |
-| 鼠标移动到底部 | 可选地临时显示播放控制栏   |
-
-这样支持三种使用方式：
-
-```text
-普通窗口 + 完整工具栏
-普通窗口 + 纯画布
-全屏 + 纯画布
-```
-
-不建议把 `F11` 与“隐藏工具栏”永久绑定。用户可能需要在全屏状态下临时按 `Tab` 调出工具栏调整比较对象或 Diff 参数。
-
----
-
-## 2. 沉浸模式下保留哪些元素
-
-全部隐藏：
-
-* Window MenuBar；
-* Source A/B/C 卡片；
-* Comparison toolbar；
-* Alignment Inspector；
-* Timeline；
-* Transport 按钮；
-* 永久 source 标签；
-* 快捷键说明文字。
-
-继续保留：
-
-* 视频画布；
-* Wipe 分割线和手柄；
-* 首次打开 Loading；
-* 严重错误提示；
-* 延迟帧的小型 indicator；
-* 临时播放/暂停反馈；
-* 临时 Frame 编号反馈。
-
-例如按一次右方向键后，在画面底部短暂显示：
-
-```text
-Frame 825 / 3600
-```
-
-约 800 ms 后淡出。这样不需要永久时间轴，用户仍知道当前位置。
-
----
-
-## 3. QML 布局不要继续锚定到工具栏对象
-
-当前 viewport 的上、下、右边界直接依赖比较栏、Transport 和 Alignment Inspector。
-
-建议改成一个永远占满窗口的 `contentHost`：
+`oscState` 当前定义为：
 
 ```qml
-Item {
-    id: contentHost
-    anchors.fill: parent
+!chromeVisible ? Hidden
+: singleMode ? Auto
+: Pinned
+```
 
-    ComparisonViewport {
-        anchors.fill: parent
+当 `sourceCount === 0` 时，`singleMode` 为 false，因此 OSC 会进入 `Pinned`。也就是说，空状态下虽然中央显示“Drop one to three videos”，底部仍会出现一个禁用的 Timecode、Timeline 和播放按钮区域。
 
-        anchors.topMargin:
-            root.chromeVisible
-            ? sourceBar.height + comparisonBar.height
-            : 0
+这会破坏刚刚建立起来的干净空状态。
 
-        anchors.bottomMargin:
-            root.chromeVisible
-            ? transportBar.height
-            : 0
+应改成：
 
-        anchors.rightMargin:
-            root.chromeVisible && root.inspectorOpen
-            ? alignmentInspector.width
-            : 0
+```qml
+readonly property int oscState:
+    sourceCount === 0 ? 2
+    : !chromeVisible ? 2
+    : singleMode ? 1
+    : 0
+```
+
+空状态只能显示：
+
+```text
+品牌栏
+中央打开入口
+拖放提示
+```
+
+不应显示任何禁用播放组件。
+
+---
+
+## P0-2：单视频 OSC 自动隐藏逻辑实际上会立即消失
+
+`PlayerOsc` 在鼠标离开时执行：
+
+```qml
+pointerInside = false
+hideTimer.restart()
+```
+
+但透明度直接依赖 `pointerInside`，因此鼠标一离开控制器，OSC 会立刻开始消失；900 ms Timer 最后只是再次将已经为 false 的属性设置为 false。
+
+正确逻辑应当将“鼠标是否位于控制区”和“控制器当前是否显示”拆开：
+
+```qml
+property bool revealActive: controllerState === Pinned
+
+onHoveredChanged: {
+    if (hovered) {
+        revealActive = true
+        hideTimer.stop()
+    } else {
+        hideTimer.restart()
     }
 }
+
+Timer {
+    interval: 1200
+    onTriggered: revealActive = false
+}
 ```
 
-各工具栏作为独立 chrome 层存在：
+另外，当前 OSC 即使 `opacity: 0`，仍然保持 `visible: true`，其中的 Timeline MouseArea 和按钮仍可能接收事件。用户在看不到控制器时点击底部 94 px 区域，可能触发 seek。
+
+建议增加独立的 8～12 px 底部唤醒热区，并在控制器隐藏时禁用内部交互：
 
 ```qml
-SourceBar {
-    visible: root.chromeVisible
-}
-
-ComparisonToolbar {
-    visible: root.chromeVisible
-}
-
-TransportBar {
-    visible: root.chromeVisible
-}
-
-AlignmentInspector {
-    visible: root.chromeVisible && root.inspectorOpen
-}
+controlsEnabled: opacity > 0.5
 ```
-
-隐藏 chrome 后 margin 自动归零，画布真正扩展至窗口四边，不留下空白占位。
 
 ---
 
-# 四、快捷键必须与按钮显示状态解耦
+## P0-3：OSC 内部布局存在实际几何重叠
 
-当前部分 Shortcut 会检查底部 Button 的 `enabled`，并通过 `button.click()` 执行命令。
+`PlayerOsc` 高度是 94 px，其中同时放置：
 
-这种方式在工具栏被 Loader 卸载或按钮隐藏后容易失效。
+* 顶部 Timecode Readout；
+* 42 px Timeline；
+* 42 px TransportBar；
+* 上下 margin。
 
-## 推荐使用统一 Action 层
+TransportBar 又通过 `scale: 0.72` 进行视觉缩小，但 `scale` 不会改变 QML 布局占用尺寸。
 
-新建：
+按当前坐标估算：
 
 ```text
-qml/actions/ReviewActions.qml
+Readout             y ≈ 8–24
+Timeline            y ≈ 26–68
+Transport 原始区域   y ≈ 47–89
+Transport 可见区域   y ≈ 53–83
 ```
 
-例如：
+Timeline 主轨和播放按钮会有约 14～20 px 的重叠，进度滑块可能被按钮遮挡。
+
+不建议继续用 `scale` 压缩完整 TransportBar。应新增真正的 Compact Transport：
+
+```text
+按钮：38 × 34
+图标：20 × 20
+间距：4
+```
+
+PlayerOsc 建议改为 116～124 px：
+
+```text
+Readout        20 px
+Timeline       38 px
+Transport      36 px
+Margins        18 px
+```
+
+或者将 Timecode 放到播放按钮左侧，使 Timeline 单独占一整行。
+
+---
+
+## P0-4：顶部标签和 Diff 控件会发生遮挡
+
+`analysisChrome` 固定在 Viewer 右上角；Source 标签同样位于每个 Panel 的顶部，并且标签是后声明的 QML sibling。两者没有设置明确的 z 层级。
+
+在 Side-by-side 模式中，右侧 Source 标签大约占据：
+
+```text
+右侧 Panel x + 12
+到窗口右边 - 12
+高度 46 px
+```
+
+Diff/Threshold 控件也位于右上角、高度 32 px，区域基本完全重合。Source 标签很可能盖住：
+
+* Threshold；
+* Exactness；
+* Threshold code；
+* Filter；
+* Reset zoom；
+* Clear ROI。
+
+同样的问题也可能影响顶部 Alignment Status。
+
+应建立统一 Viewer Overlay 层级：
+
+```text
+z = 10  Source badges
+z = 20  Persistent status
+z = 30  Analysis controls
+z = 40  Toast / Frame pending
+z = 50  Wipe handle
+```
+
+更推荐把大部分 Diff 参数移入 Compare Inspector，只在 Viewer 留下：
+
+```text
+Threshold 开关
+Exactness 状态徽标
+Reset View 图标
+```
+
+而不是保留一整排高宽度控件。
+
+---
+
+## P0-5：Frame Error Banner 的锚点已经失效
+
+`surfaceLabels` 当前是一个 `anchors.fill: parent` 的 Item。
+
+但 `frameErrorBanner` 仍然使用：
 
 ```qml
-QtObject {
-    id: actions
+anchors.top: surfaceLabels.bottom
+```
 
-    readonly property bool canPrevious:
-        root.graphicsReady
-        && !root.busy
-        && root.controller
-        && root.controller.canPrevious
+由于 `surfaceLabels.bottom` 就是整个 Viewport 的底边，Error Banner 会被放到 Viewport 底部之外。
 
-    function previousFrame() {
-        if (canPrevious)
-            root.controller.previous()
-    }
+也就是说，在已有旧帧的情况下，如果下一帧读取失败，本来应该显示的：
 
-    function nextFrame() {
-        if (canNext)
-            root.controller.next()
-    }
+```text
+Frame unchanged
+<具体错误>
+```
 
-    function stepBackwardFive() {
-        if (canPrevious)
-            root.controller.stepFrames(-5)
-    }
+很可能完全不可见。
 
-    function togglePlayback() {
-        if (root.controller)
-            root.controller.togglePlayback()
-    }
+应改成统一顶部 Overlay Stack，例如：
+
+```qml
+Column {
+    id: topStatusStack
+    anchors.top: parent.top
+    anchors.horizontalCenter: parent.horizontalCenter
+    topPadding: 12
 }
 ```
 
-按钮调用：
+Source badge、Alignment warning、Frame error 都由同一个布局容器管理，禁止彼此使用不相关组件的 `bottom` 作为锚点。
+
+---
+
+## P0-6：Wipe 靠近边缘时 Source 标签会互相覆盖
+
+Wipe 模式的 `sourcePanelRects` 会按照分割位置返回左右区域。Source 标签宽度却使用：
 
 ```qml
-onClicked: actions.previousFrame()
+Math.max(80, panelWidth - 24)
 ```
 
-快捷键调用：
+当 Wipe 位于 5% 或 95% 附近时，窄侧 Panel 可能只有 40～60 px，但标签仍然至少 80 px，因此会越过 Wipe 分割线，与另一侧标签重叠。
+
+建议：
+
+```text
+Panel ≥ 160 px
+    显示字母 + 文件名
+
+Panel 80～159 px
+    只显示字母
+
+Panel < 80 px
+    隐藏标签，保留边缘 Source badge
+```
+
+对于 Wipe，最稳妥的是在 Viewport 左上和右上固定显示 A/B Badge，不让标签宽度跟随分割区域变化。
+
+---
+
+# 三、时间轴当前存在的显示与同步问题
+
+## 1. Hover Frame 与 Timecode/缩略图没有同步
+
+`Main.qml` 将以下属性传入 `PlayerOsc`：
 
 ```qml
-Shortcut {
-    sequence: "Left"
-    enabled: actions.canPrevious
-    onActivated: actions.previousFrame()
+previewFrame: root.timelinePreviewFrame
+previewTimecode: root.previewTimecode
+previewThumbnailSource:
+    thumbnailCache.urlForFrame(root.timelinePreviewFrame)
+```
+
+但 `PlayerOsc` 收到 Timeline 的 hover 后，直接执行：
+
+```qml
+control.previewFrame = frame
+```
+
+这会破坏原来的属性绑定，而且不会更新 `root.timelinePreviewFrame`。
+
+结果可能是：
+
+```text
+Popup 显示 Frame 850
+Timecode 仍为 00:00:00:00
+缩略图仍是 Frame 0 或空白
+```
+
+应改为信号：
+
+```qml
+signal previewRequested(int frame)
+
+TimelineTracks {
+    onPreviewRequested:
+        control.previewRequested(frame)
 }
 ```
 
-右键菜单也调用：
+Main 中统一更新：
 
 ```qml
-MenuItem {
-    text: qsTr("Previous frame")
-    onTriggered: actions.previousFrame()
+onPreviewRequested: frame => {
+    timelinePreviewFrame = frame
 }
 ```
 
-因此无论 Transport 是否显示，所有操作都走同一条路径。
+`PlayerOsc` 不应修改一个由外部绑定进来的属性。
 
----
+## 2. 拖动 Timeline 时反而隐藏缩略图
 
-## 建议保留的快捷键
-
-考虑你明确提到左右和上下仍要有效，建议保持兼容：
-
-| 快捷键                     | 操作         |
-| ----------------------- | ---------- |
-| `Left` / `A`            | 上一帧        |
-| `Right` / `D`           | 下一帧        |
-| `Down` / `Shift+A`      | 后退 5 帧     |
-| `Up` / `Shift+D`        | 前进 5 帧     |
-| `Ctrl+Left` / `Ctrl+A`  | 后退约 1 秒    |
-| `Ctrl+Right` / `Ctrl+D` | 前进约 1 秒    |
-| `Space`                 | 播放或暂停      |
-| `Home`                  | 首帧         |
-| `End`                   | 末帧         |
-| `Tab`                   | 显示或隐藏工具栏   |
-| `F11`                   | 全屏         |
-| `Esc`                   | 退出全屏或恢复工具栏 |
-
-Wipe 仍使用鼠标拖动。还可以增加：
-
-```text
-Alt + Left  → Wipe 向左移动 1%
-Alt + Right → Wipe 向右移动 1%
-Shift + Alt + Left/Right → 移动 5%
-```
-
-这样在沉浸模式下也能精确调整 Wipe，而不会占用原本的逐帧快捷键。
-
----
-
-# 五、Wipe 坐标的最终修正方案
-
-当前 Wipe 不一致的根源仍然是：
-
-* QML 按整个 viewport 宽度计算手柄；
-* Renderer 按视频 aspect-fit 后的内容矩形计算分割。
-
-修订后的约定应是：
-
-> `wipePosition` 表示完整 `ComparisonSurface` 中的归一化横坐标，而不是视频内容矩形中的横坐标。
-
-## Renderer 计算
-
-```cpp
-const float surfaceSplitX =
-    state.logicalWidth * std::clamp(
-        state.wipePosition,
-        0.0F,
-        1.0F
-    );
-
-const float normalizedContentSplit =
-    std::clamp(
-        (surfaceSplitX - destination.x)
-            / destination.width,
-        0.0F,
-        1.0F
-    );
-```
-
-实际绘制：
-
-```cpp
-leftDestination.width =
-    std::max(0.0F, surfaceSplitX - destination.x);
-
-rightDestination.x =
-    std::max(destination.x, surfaceSplitX);
-
-rightDestination.width =
-    std::max(
-        0.0F,
-        destination.x
-            + destination.width
-            - rightDestination.x
-    );
-```
-
-UV 裁切使用 `normalizedContentSplit`。
-
-## QML 计算
+当前 Popup 条件是：
 
 ```qml
-function setWipeFromSceneX(sceneX) {
-    const local = viewportFrame.mapToItem(
-        dualVideoSurface,
-        sceneX,
-        0
-    );
-
-    root.wipePosition = Math.max(
-        0,
-        Math.min(
-            1,
-            local.x / dualVideoSurface.width
-        )
-    );
-}
+visible: tracks.hoverFrame >= 0 && !tracks.dragging
 ```
 
-最理想的下一步是由 C++ 暴露实际分割坐标：
+因此用户按住鼠标精确拖动时，缩略图会消失。
+
+专业审片工具通常正是在拖动时持续显示 Frame/Timecode/Thumbnail。应改为：
+
+```qml
+visible: tracks.hoverFrame >= 0
+```
+
+拖动状态可以改变边框颜色，而不是隐藏预览。
+
+## 3. 缩略图捕获了整个 Viewer UI，而不是纯视频画面
+
+`TimelineThumbnailCache.sourceItem` 当前设置为：
+
+```qml
+viewportFrame
+```
+
+而 `viewportFrame` 内包含：
+
+* Source 标签；
+* Diff 控件；
+* Frame Pending；
+* Error Overlay；
+* Alignment 状态。
+
+生成的缩略图可能带有这些 UI 覆盖物。缓存实现本身会使用 `grabToImage()` 捕获传入 Item。
+
+应改为：
+
+```qml
+sourceItem: viewportFrame.surface
+```
+
+保证缩略图只包含 Renderer 输出。
+
+## 4. Timeline Zoom 后 In/Out 区域可能画出边界
+
+In/Out Range 的 x 做了最小值限制，但 width 没有根据当前 Zoom Window 裁剪；`TimelineTracks` 本身也没有 `clip: true`。
+
+当 In/Out 位于当前可见窗口之外时，Range 条可能绘制到 Timeline 外部。
+
+应先计算：
+
+```text
+visibleIn  = clamp(inFrame, windowStart, windowEnd)
+visibleOut = clamp(outFrame, windowStart, windowEnd)
+```
+
+并设置：
+
+```qml
+clip: true
+```
+
+## 5. 三条 Marker Track 没有图例
+
+当前 Missing、Duplicate、Extra、Anchor 分布在不同高度，但用户无法从界面知道每一行代表什么。
+
+至少需要 hover 信息：
+
+```text
+Source B · Missing frame
+Frame 840
+Confidence 12%
+```
+
+Inspector Review 页中还应提供固定颜色图例。
+
+---
+
+# 四、单视频模式仍有几个体验问题
+
+## 1. 单视频 Inspector 实际无法显示
+
+右键菜单始终提供：
+
+```text
+Inspector and media info
+```
+
+包括单视频模式。
+
+但 Main 中 Inspector 的显示条件是：
+
+```qml
+visible:
+    chromeVisible
+    && inspectorOpen
+    && !singleMode
+```
+
+所以单视频右键点击 Inspector 后，状态会变成打开，但界面没有任何变化。
+
+正确设计应是：
+
+```text
+单视频：
+    Review
+    Info
+
+多视频：
+    Compare
+    Alignment
+    Review
+    Info
+```
+
+不能直接隐藏整个 Inspector。
+
+## 2. 单视频 Source Chip 的 “R” 语义不够清晰
+
+单视频只有一个 Source，它必然是 canonical timeline source。此时仍显示一个可点击的 `R` 按钮；打开后，“Use as reference”和“Remove source”都会被禁用。
+
+这会形成一个没有有效操作的菜单。
+
+单视频应：
+
+* 将 `R` 改为不可点击的 `SOURCE` 或 `TIMELINE` Badge；
+* 或将菜单改为 Source Info / Replace Video；
+* 不显示全部禁用的菜单。
+
+## 3. Source 信息重复显示
+
+单视频模式同时存在：
+
+* Active Source Strip 文件名；
+* Viewer 顶部近乎整行的 Source 标签。
+
+这会重复占用空间。Viewer Label 更适合缩小为：
+
+```text
+A
+```
+
+或完全隐藏，鼠标进入画面时再临时显示。
+
+---
+
+# 五、多视频模式的进一步问题
+
+## 1. Pair 在无关模式下仍然显示
+
+三路视频时，Pair Combo 始终可见，即使当前是 Side-by-side 或 Three-up。
+
+但 Pair 只真正影响：
+
+* Wipe；
+* Diff；
+* Analysis Grid。
+
+在 Side-by-side 中显示 Pair，会让用户误以为它会改变左右两栏。
+
+建议：
+
+```qml
+visible:
+    sourceCount === 3
+    && (wipeMode || differenceMode || analysisGridMode)
+```
+
+## 2. 高级模式没有明确的当前状态
+
+当用户通过 `…` 选择 Three-up、Reference Focus 或 Analysis Grid 后：
+
+* Side/Wipe/Diff 三个按钮都不会选中；
+* `…` 按钮也没有 Active Indicator；
+* MenuItem 没有 check mark。
+
+建议：
+
+```text
+… · Three up
+```
+
+或者给 `…` 按钮增加 Accent Dot，并让 MenuItem 具有 checked 状态。
+
+## 3. Reference Focus 和 Analysis Grid 缺少显式分隔线
+
+目前只为 Side-by-side 和 Three-up 绘制白色分割线。
+
+Reference Focus 与 Analysis Grid 依赖画面内容本身来区分 Panel；当视频边缘为黑色时，边界可能不明显。
+
+建议 Renderer/QML 暴露 `panelDividerRects`，所有多 Panel 模式都使用相同的 1～2 px 分隔线。
+
+## 4. 沉浸模式会隐藏全部 A/B/C 身份
+
+纯画布状态下 Source 标签完全隐藏。对于单视频没问题，但双/三路比较时，用户可能忘记左右分别对应哪个 Source。
+
+建议沉浸模式保留可选的紧凑 Badge：
+
+```text
+左上：A
+右上：B
+```
+
+只保留字母，不显示文件名，也可以在 1.5 秒后降低透明度。
+
+---
+
+# 六、Inspector 当前还不像完成态
+
+Tabbed Inspector 已经有正确的四类结构，但内容完成度不平衡：
+
+| Tab       | 当前完成度                 |
+| --------- | --------------------- |
+| Compare   | 只有说明文字和 Reset zoom    |
+| Alignment | 功能较完整                 |
+| Review    | 只有 In、Out 和 Export    |
+| Info      | 只有文件名和 Renderer Ready |
+
+## 1. Compare Tab 与 Viewer 控件职责冲突
+
+Compare 页写着“高级参数仍在 Viewer”，因此本身几乎为空；而 Viewer 顶部又因为控件太多发生遮挡。
+
+建议把以下内容移入 Compare Tab：
+
+* Pair；
+* Reference；
+* Metric；
+* Gain；
+* Filter；
+* Threshold；
+* Exactness；
+* Wipe Position；
+* Reset View。
+
+Viewer 只保留 Side/Wipe/Diff 和少量状态徽标。
+
+## 2. Alignment 页缺少滚动容器
+
+`AlignmentInspector` 本身是一个固定 Rectangle + Column，没有 Flickable。三路 Source、自动分析按钮和长 Compatibility 文本在 960×640 或长文本语言下可能被裁切或重叠。
+
+应将整个内容放入 `Flickable` 或 `ScrollView`，Compatibility 信息作为 Column 最后一项，而不是单独锚定到底部。
+
+## 3. Review Tab 缺少实际操作
+
+应该至少增加：
+
+* Set In；
+* Set Out；
+* Clear Range；
+* Loop Range；
+* Export Bad Case；
+* Marker 列表。
+
+当前用户只能通过键盘设置 In/Out，Inspector 只是显示结果。
+
+## 4. Info Tab 信息不足
+
+建议显示每个 Source 的：
+
+```text
+Resolution
+FPS / timing mode
+Frame count
+Codec
+Pixel format
+Bit depth
+Color matrix/range
+Decode backend
+Canonical / Reference role
+```
+
+“D3D11 renderer ready”不需要作为 Info 页最主要的内容。
+
+---
+
+# 七、Timecode 和 Range 的技术语义仍需修正
+
+## 1. 当前 Timecode 不是严格的媒体 Timecode
+
+当前 Timecode 由：
+
+```text
+frameIndex ÷ rounded FPS
+```
+
+计算。
+
+这对于以下素材不严格正确：
+
+* 29.97 FPS；
+* 59.94 FPS；
+* VFR；
+* 非零起始 PTS；
+* Drop-frame Timecode。
+
+对于一个强调 frame-exact 的工具，不应将这种字符串直接作为严格 Timecode。
+
+建议后端直接暴露：
 
 ```cpp
-Q_PROPERTY(
-    qreal wipeSplitLogicalX
-    READ wipeSplitLogicalX
-    NOTIFY presentationGeometryChanged
-)
+currentMediaTime
+frameStartMediaTime(frame)
+rationalFrameRate
+timingMode
 ```
 
-QML 手柄只读取这个属性，不再自己重复计算 Renderer 几何。这能彻底避免 DPI、边距、ROI 和窗口缩放造成的偏差。
+显示策略：
+
+```text
+整数 CFR：
+    HH:MM:SS:FF
+
+30000/1001 或 60000/1001：
+    支持 NDF / DF
+
+VFR：
+    HH:MM:SS.mmm + Frame N
+```
+
+## 2. In/Out 仍然只是 QML 临时属性
+
+`inFrame`、`outFrame` 和 `rangePlaybackActive` 当前定义在 Main.qml 中，没有进入项目保存状态。
+
+因此：
+
+* 保存项目后不会恢复；
+* 改变 Reference 后不会按 MediaTime 重映射；
+* 添加/移除 Source 后可能指向错误时刻；
+* Loop 开启后没有清晰的关闭入口。
+
+领域层原本已经有 In/Out Mark 概念，建议正式接入 Workspace/Project，并在拓扑或 canonical source 改变时按 MediaTime 转换。
 
 ---
 
-# 六、单视频加入第二个视频后的 UI 状态机
+# 八、视觉风格仍然不完全统一
 
-建议明确以下转换：
+当前自定义组件如：
 
-## Empty → Single
+* `ReviewActionButton`；
+* `ToolbarCombo`；
+* `TransportButton`；
 
-```text
-拖入一个视频
-→ 直接打开
-→ 显示第一帧
-→ Single View
-→ 完整画布
-```
+都有统一的深色风格。
 
-不再显示“还需要再拖一个视频”的错误提示。当前逻辑只会把单个文件选为 A，并提示继续拖入，尚未打开视频。
+但新组件中仍大量直接使用默认 Qt 控件：
 
-## Single → Comparison
+* EmptyReviewView 的 Button；
+* ActiveSourceStrip 的 ToolButton/Menu；
+* CompareModeBar 的 Button/ComboBox；
+* TabbedInspector 的 TabBar/Button；
+* Analysis Chrome 的 CheckBox、SpinBox、Button。
 
-```text
-当前单视频 A
-+ 拖入视频 B
-→ 显示 Compare Confirmation
-→ 默认 A 为 Reference
-→ 保留当前时间位置
-→ 切换 Side-by-side
-```
+这些控件的最终外观取决于运行机器的 Qt Quick Controls Style 和 Windows 主题。在浅色系统主题下，可能出现浅色按钮、原生灰色下拉框与深蓝界面混杂。
 
-## Comparison → Three-source
+建议新增统一组件：
 
 ```text
-A + B
-+ 拖入 C
-→ 确认顺序
-→ 保持现有 A/B 顺序
-→ 默认 C 追加在末尾
-→ 默认切换 Three-up
+ReviewButton
+ReviewToolButton
+ReviewMenu
+ReviewMenuItem
+ReviewTabBar
+ReviewCheckBox
+ReviewSpinBox
 ```
 
-## Comparison → Single
+或者在应用启动前显式固定 Controls Style，再统一设置 Palette。
 
-从 Source 卡片移除 B/C 后：
-
-```text
-只剩 A
-→ 自动切换 Single
-→ 保留当前时间和画面变换
-```
-
-不应要求关闭当前会话再手动重新打开。
+快捷键帮助目前使用固定空格排版的多行字符串；翻译后无法保持对齐。应改成两列 `GridLayout`。
 
 ---
 
-# 七、项目持久化需要同步升级
+# 九、当前测试覆盖的不足
 
-当前 Project View 枚举不包含 Single、Wipe 和 Analysis Grid，difference edge 又始终要求两个 source。
+现有测试已经覆盖：
 
-建议在 v1.2.0 升级为 Schema v4：
+* Main QML 实例化；
+* 默认 Viewport 占比；
+* 960×640 布局；
+* 1/2/3 Source 模式；
+* 隐藏 Chrome 后的焦点和快捷键；
+* Shortcut Preset；
+* Source Panel 几何；
+* Wipe 与 Drop Dialog 的 DPI。
 
-```cpp
-enum class ProjectViewLayout {
-    Single,
-    SideBySide,
-    ThreeUp,
-    ReferenceFocus,
-    Difference,
-    AnalysisGrid,
-    Wipe,
-};
+但当前没有独立测试覆盖：
 
-struct ProjectViewState {
-    ProjectViewLayout layout;
+* 空状态 OSC 是否隐藏；
+* PlayerOsc 自动显示/延迟隐藏；
+* OSC 内部组件是否重叠；
+* Frame Error Banner 是否在 Viewport 内；
+* Source Label 与 Analysis Chrome 是否重叠；
+* Timeline hover 的 Timecode/Thumbnail；
+* Wipe 5%/95% 时标签重叠；
+* 单视频 Inspector；
+* Timeline Zoom 下 Range 裁剪；
+* Basic/Windows Style 下的整窗截图。
 
-    std::optional<
-        std::array<SourceId, 2>
-    > comparisonEdge;
+UI CMake 中目前只为 ToolbarCombo、Drop Dialog、Wipe Handle 和 ReviewActions 注册了独立 QML 测试。
 
-    ProjectDifferenceMetric metric;
-    ProjectDifferenceFilter filter;
-
-    std::uint8_t gain = 1;
-    float wipePosition = 0.5F;
-
-    bool thresholdEnabled = false;
-    float threshold = 0.0F;
-
-    SurfaceViewTransform transform;
-
-    std::optional<
-        SurfaceNormalizedRect
-    > roi;
-};
-```
-
-单视频项目：
+建议增加：
 
 ```text
-layout = Single
-comparisonEdge = nullopt
+tst_empty_review_view.qml
+tst_player_osc.qml
+tst_timeline_tracks.qml
+tst_comparison_viewport_overlays.qml
+tst_tabbed_inspector.qml
 ```
 
-双视频 Wipe 项目：
+以及以下截图矩阵：
 
 ```text
-layout = Wipe
-comparisonEdge = [0, 1]
-wipePosition = 0.37
+窗口：960×640 / 1440×900
+缩放：100% / 125% / 150%
+模式：Empty / Single / Side / Wipe / Diff / Three-up
+Inspector：Closed / Open
+Style：Basic / Windows
 ```
 
-全屏和工具栏隐藏状态不建议写入项目。否则用户双击项目后可能意外直接进入无工具栏全屏。它们应该属于临时窗口状态或全局用户偏好。
+该 SHA 当前也没有可见的 GitHub workflow run 或 commit status，因此以上判断是代码级界面审核，不等同于真实 Windows 机器上的像素验收。
 
 ---
 
-# 八、文件级实施方案
+# 十、建议整改优先级
 
-## v1.1.1：沉浸模式和 Wipe 修复
+## 第一阶段：必须先修的显示问题
 
-```text
-src/ui_qml/qml/
-├── Main.qml
-├── ComparisonViewport.qml
-├── WipeHandle.qml
-├── TransportBar.qml
-├── ReviewActions.qml
-└── DropConfirmationDialog.qml
-```
+1. 空状态隐藏 PlayerOsc；
+2. 修复 OSC 自动隐藏和隐形交互；
+3. 重新布局 OSC，消除 Timeline/Transport 重叠；
+4. 修复 Frame Error Banner 锚点；
+5. 建立 Viewer Overlay z 层级；
+6. 修复 Timeline hover 预览同步；
+7. 单视频允许打开 Review/Info Inspector；
+8. Wipe 极端位置隐藏或缩减 Source 标签。
 
-修改内容：
+## 第二阶段：完成专业界面收口
 
-```text
-Main.qml
-    增加 chromeVisible
-    增加 fullScreen
-    增加 Tab / F11 / Esc
-    不再让快捷键依赖按钮
+1. 将 Diff 高级控件迁入 Compare Inspector；
+2. Alignment Inspector 增加滚动；
+3. Review Tab 增加 In/Out/Loop/Clear；
+4. Info Tab 增加真实媒体信息；
+5. Pair 只在相关模式显示；
+6. Advanced Mode 显示当前选择；
+7. 沉浸模式增加可选 A/B/C 紧凑标识；
+8. 统一所有 Qt Controls 视觉组件。
 
-WipeHandle.qml
-    视觉 20 × 84
-    命中区域 52 px
-    DragHandler
-    双击复位
+## 第三阶段：完善审片语义
 
-ComparisonViewport.qml
-    chrome 隐藏时 anchors.fill
-    Wipe 在沉浸模式下保持可见
-
-D3d11ComparisonRenderer.cpp
-    修复 surface/content 两套坐标
-```
+1. 后端 MediaTime Timecode；
+2. In/Out 项目持久化；
+3. Range 在 Reference 改变时按时间重映射；
+4. Marker Hover 详细信息；
+5. 缩略图只抓取视频 Surface；
+6. OSC Pinned/Auto/Hidden 变为可保存的用户偏好。
 
 ---
 
-## v1.2.0：1～3 路统一会话
+# 最终评价
+
+当前提交已经成功完成了**界面产品方向的转变**：
 
 ```text
-src/domain/
-    ComparisonValidator
-    Project
-    ProjectJson Schema v4
+之前：
+工程面板包围视频
 
-src/application/
-    FrameSet
-    SessionSnapshot
-    PlaybackCoordinator
-    ReviewResumePoint
-
-src/media_ffmpeg/
-    MultiSourceFrameProvider
-    FrameSetAssembler
-
-src/platform_windows/
-    D3d11ComparisonRenderer
-    SurfaceViewMode::Single
-
-src/ui_qml/
-    ReviewController
-    SourceBar
-    ComparisonToolbar
-    Main
+现在：
+视频 Viewer 为主体，
+专业能力通过上下文条、OSC、右键菜单和 Inspector 展开
 ```
 
-新增核心入口：
+这是正确且有价值的修改。
 
-```cpp
-bool ReviewController::openSources(
-    const QList<QUrl>& sources,
-    int referenceIndex,
-    std::optional<domain::MediaTime> resumeTime
-);
-```
+当前界面最需要处理的已经不是“大方向”，而是若干真实的布局和状态收口问题，尤其是：
 
-不要再继续扩展：
+> **空状态 OSC、OSC 内部重叠、顶部 Overlay 冲突、Frame Error Banner 越界，以及 Timeline Preview 不同步。**
 
-```cpp
-openComparisonSet(
-    first,
-    second,
-    third,
-    referenceIndex
-)
-```
-
-因为这种固定参数 API 与 1～3 路模型不匹配。
-
----
-
-# 九、测试与验收矩阵
-
-## Wipe
-
-必须覆盖：
-
-```text
-25%、50%、75%
-16:9、9:16、不同分辨率
-100%、125%、150% DPI
-普通窗口、隐藏工具栏、全屏
-ROI、Zoom、Pan
-A/B、A/C、B/C
-```
-
-验收：
-
-```text
-手柄中心与实际视频切换边界
-误差不超过 1 个物理像素
-```
-
-## 单视频
-
-必须覆盖：
-
-```text
-拖入一个视频
-文件选择器打开一个视频
-命令行 --play
-单视频播放
-单视频逐帧
-单视频 1080p60
-单视频 1080p120
-单视频 → 双视频
-双视频 → 单视频
-保存并恢复单视频项目
-```
-
-## 沉浸模式
-
-必须覆盖：
-
-```text
-Tab 隐藏工具栏
-Tab 恢复工具栏
-F11 全屏
-Esc 退出全屏
-隐藏工具栏时所有快捷键有效
-隐藏工具栏时 Wipe 可拖动
-错误和 Loading 仍可见
-```
-
----
-
-# 最终实施顺序
-
-修订后的顺序应为：
-
-> **修复 Wipe 坐标 → 重做窄高型 Wipe 手柄 → 抽离 Action/Shortcut 层 → 实现工具栏隐藏 → 实现 F11 全屏 → 发布交互补丁 → 泛化 1～3 路会话 → 实现 Single View → 实现加入第二路时的受控会话重建 → 升级 Project Schema v4。**
-
-其中最重要的架构原则是：
-
-> **画面布局由 source 数量决定，外围工具栏只是可隐藏的外壳；快捷键和 Wipe 属于审查画布本身，不应依赖工具栏是否存在。**
+修复这些问题之后，VCStation 的界面就可以从“功能完整的新 UI”进入“可以稳定交付给普通使用者的成熟 UI”。

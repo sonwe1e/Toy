@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls
 
 Item {
     id: control
@@ -22,6 +23,7 @@ Item {
 
     objectName: "timelineSlider"
     height: 42
+    clip: true
     activeFocusOnTab: enabled
     Accessible.role: Accessible.Slider
     Accessible.name: qsTr("Review timeline")
@@ -100,9 +102,12 @@ Item {
     }
 
     Rectangle {
-        visible: control.inFrame >= 0 && control.outFrame >= control.inFrame && control.totalFrames > 1
-        x: Math.max(0, control.positionForFrame(control.inFrame) * control.width)
-        width: Math.max(2, (control.outFrame - control.inFrame) / Math.max(1, control.visibleFrameCount - 1) * control.width)
+        objectName: "rangeHighlight"
+        visible: control.inFrame >= 0 && control.outFrame >= control.inFrame && control.totalFrames > 1 && control.outFrame >= control.windowStartFrame && control.inFrame <= control.windowStartFrame + control.visibleFrameCount - 1
+        readonly property real visibleIn: Math.max(control.windowStartFrame, Math.min(control.windowStartFrame + control.visibleFrameCount - 1, control.inFrame))
+        readonly property real visibleOut: Math.max(control.windowStartFrame, Math.min(control.windowStartFrame + control.visibleFrameCount - 1, control.outFrame))
+        x: Math.max(0, control.positionForFrame(visibleIn) * control.width)
+        width: visibleOut < visibleIn ? 0 : Math.max(2, (visibleOut - visibleIn) / Math.max(1, control.visibleFrameCount - 1) * control.width)
         height: 4
         radius: 2
         color: "#536dfe"
@@ -126,6 +131,15 @@ Item {
             y: kind === "missing" ? 10 : (kind === "duplicate" || kind === "extra" ? 19 : 28)
             radius: 2
             color: kind === "missing" ? "#f87171" : (kind === "duplicate" ? "#fb923c" : (kind === "extra" ? "#c084fc" : (kind === "anchor" ? "#22d3ee" : "#facc15")))
+
+            HoverHandler {
+                id: markerHover
+            }
+
+            ToolTip {
+                visible: markerHover.hovered
+                text: qsTr("Source %1 · %2\nFrame %3\nConfidence %4%").arg(String(marker.modelData.source)).arg(marker.kind).arg(Number(marker.modelData.frame) + 1).arg(Number(marker.modelData.confidence))
+            }
         }
     }
 

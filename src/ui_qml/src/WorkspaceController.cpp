@@ -249,6 +249,14 @@ public:
         return restoredViewSerial_;
     }
 
+    [[nodiscard]] int restoredInFrame() const noexcept {
+        return inFrame_;
+    }
+
+    [[nodiscard]] int restoredOutFrame() const noexcept {
+        return outFrame_;
+    }
+
     [[nodiscard]] bool openProject(const QUrl& projectFile) {
         const auto path = localPath(projectFile);
         return path.has_value() &&
@@ -319,6 +327,25 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool updateReviewMarks(const int inFrame, const int outFrame) {
+        const auto playback = workspace_.playbackSnapshot();
+        if (!playback || playback->canonicalFrameCount == 0U || inFrame < -1 || outFrame < -1 ||
+            (inFrame >= 0 &&
+             static_cast<std::uint64_t>(inFrame) >= playback->canonicalFrameCount) ||
+            (outFrame >= 0 &&
+             static_cast<std::uint64_t>(outFrame) >= playback->canonicalFrameCount)) {
+            return false;
+        }
+        if (inFrame_ == inFrame && outFrame_ == outFrame) {
+            return true;
+        }
+        inFrame_ = inFrame;
+        outFrame_ = outFrame;
+        workspace_.markViewDirty();
+        Q_EMIT owner_.stateChanged();
+        return true;
+    }
+
     void stop() noexcept {
         stopped_ = true;
     }
@@ -344,7 +371,13 @@ private:
         const std::string displayName = snapshot_ && !snapshot_->displayName.empty()
                                             ? snapshot_->displayName
                                             : projectPath.stem().string();
-        return workspace_.saveProject(projectPath, displayName, view) ==
+        const std::optional<domain::FrameId> inMark =
+            inFrame_ >= 0 ? std::optional<domain::FrameId>{domain::FrameId{inFrame_}}
+                          : std::nullopt;
+        const std::optional<domain::FrameId> outMark =
+            outFrame_ >= 0 ? std::optional<domain::FrameId>{domain::FrameId{outFrame_}}
+                           : std::nullopt;
+        return workspace_.saveProject(projectPath, displayName, view, inMark, outMark) ==
                application::PortSubmitResult::Accepted;
     }
 
@@ -363,6 +396,12 @@ private:
         snapshot_ = next;
         if (applyRestoredView) {
             presentationView_ = *snapshot_->restoredViewState;
+            inFrame_ = snapshot_->restoredInMark.has_value()
+                           ? static_cast<int>(snapshot_->restoredInMark->value())
+                           : -1;
+            outFrame_ = snapshot_->restoredOutMark.has_value()
+                            ? static_cast<int>(snapshot_->restoredOutMark->value())
+                            : -1;
             ++restoredViewSerial_;
             applyingRestoredView_ = true;
             applyViewState(preferences_, *snapshot_->restoredViewState);
@@ -377,6 +416,8 @@ private:
     std::shared_ptr<const application::WorkspaceSnapshot> snapshot_;
     domain::ProjectViewState presentationView_;
     qulonglong restoredViewSerial_ = 0U;
+    int inFrame_ = -1;
+    int outFrame_ = -1;
     bool stopped_ = false;
     bool applyingRestoredView_ = false;
 };
@@ -436,6 +477,14 @@ qulonglong WorkspaceController::restoredViewSerial() const noexcept {
     return impl_->restoredViewSerial();
 }
 
+int WorkspaceController::restoredInFrame() const noexcept {
+    return impl_->restoredInFrame();
+}
+
+int WorkspaceController::restoredOutFrame() const noexcept {
+    return impl_->restoredOutFrame();
+}
+
 bool WorkspaceController::openProject(const QUrl& projectFile) {
     return impl_->openProject(projectFile);
 }
@@ -458,6 +507,10 @@ bool WorkspaceController::relinkSource(const int sourceId, const QUrl& sourceFil
 
 bool WorkspaceController::updatePresentationState(const QVariantMap& state) {
     return impl_->updatePresentationState(state);
+}
+
+bool WorkspaceController::updateReviewMarks(const int inFrame, const int outFrame) {
+    return impl_->updateReviewMarks(inFrame, outFrame);
 }
 
 void WorkspaceController::refreshProjection() {

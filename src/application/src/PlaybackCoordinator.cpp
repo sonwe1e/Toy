@@ -688,6 +688,7 @@ private:
 
     void publishSnapshot(const bool notify = true) {
         state_.alignmentOffsets = alignmentOffsets_;
+        state_.canonicalTimeline = canonicalTimeline_;
         auto snapshot = std::make_shared<const SessionSnapshot>(state_);
         std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceMaps;
         if (publishedSequenceAlignmentRevision_ != state_.alignmentRevision) {

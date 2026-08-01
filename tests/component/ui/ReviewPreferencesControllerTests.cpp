@@ -134,6 +134,7 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     EXPECT_EQ(controller.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
     EXPECT_EQ(controller.differenceFilter(),
               ReviewPreferencesController::DifferenceFilter::Bilinear);
+    EXPECT_EQ(controller.oscMode(), -1);
 
     application::SettingsSnapshot settings;
     settings.values.emplace("review.large-step-frames", "5");
@@ -142,6 +143,7 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     settings.values.emplace("review.difference-gain", "8x");
     settings.values.emplace("review.difference-edge", "1-2");
     settings.values.emplace("review.difference-filter", "bicubic");
+    settings.values.emplace("review.osc-mode", "auto");
     repository->completeLoad(std::move(settings));
 
     ASSERT_TRUE(waitForPreferences([&controller] { return controller.largeStepFrames() == 5; }));
@@ -152,6 +154,7 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     EXPECT_EQ(controller.differenceEdge(), ReviewPreferencesController::DifferenceEdge::Edge1And2);
     EXPECT_EQ(controller.differenceFilter(),
               ReviewPreferencesController::DifferenceFilter::Bicubic);
+    EXPECT_EQ(controller.oscMode(), 1);
     controller.stop();
 }
 
@@ -195,6 +198,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     controller.setDifferenceGain(ReviewPreferencesController::DifferenceGain::Gain16x);
     controller.setDifferenceEdge(ReviewPreferencesController::DifferenceEdge::Edge0And2);
     controller.setDifferenceFilter(ReviewPreferencesController::DifferenceFilter::Nearest);
+    controller.setOscMode(2);
 
     ASSERT_TRUE(
         waitForPreferences([&repository] { return repository->saveRequests.size() == 1U; }));
@@ -206,6 +210,7 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     EXPECT_EQ(values.at("review.difference-gain"), "16x");
     EXPECT_EQ(values.at("review.difference-edge"), "0-2");
     EXPECT_EQ(values.at("review.difference-filter"), "nearest");
+    EXPECT_EQ(values.at("review.osc-mode"), "hidden");
     repository->completeSave();
     controller.stop();
 }
@@ -215,6 +220,8 @@ TEST_F(ReviewPreferencesControllerTests, RejectsUnsupportedSetterValuesAndCancel
     ReviewPreferencesController controller{repository};
     controller.setLargeStepFrames(7);
     EXPECT_EQ(controller.largeStepFrames(), 10);
+    controller.setOscMode(3);
+    EXPECT_EQ(controller.oscMode(), -1);
     controller.stop();
     ASSERT_EQ(repository->canceled.size(), 1U);
     EXPECT_EQ(repository->canceled.front(), repository->loadRequests.front().context);

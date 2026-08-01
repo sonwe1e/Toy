@@ -210,7 +210,9 @@ public:
 
     [[nodiscard]] PortSubmitResult saveProject(const std::filesystem::path& projectPath,
                                                std::string displayName,
-                                               const domain::ProjectViewState viewState) {
+                                               const domain::ProjectViewState viewState,
+                                               const std::optional<domain::FrameId> inMark,
+                                               const std::optional<domain::FrameId> outMark) {
         pump();
         if (stopped_) {
             return PortSubmitResult::Closed;
@@ -236,19 +238,38 @@ public:
             dependencies_.acceptedSequenceAlignments();
         const domain::ProjectAlignmentState alignmentState =
             alignmentStateFor(*playback, sequenceAlignments);
-        domain::Result<domain::Project> prepared =
-            currentProject_.has_value()
-                ? currentProject_->replaceReviewState(*playback->validatedComparison,
-                                                      viewState,
-                                                      alignmentState,
-                                                      *playback->displayedFrame)
-                : domain::Project::create(
-                      dependencies_.createProjectId(), displayName, *playback->validatedComparison);
+        domain::Result<domain::Project> prepared = [&]() {
+            if (!currentProject_.has_value()) {
+                return domain::Project::create(
+                    dependencies_.createProjectId(), displayName, *playback->validatedComparison);
+            }
+            domain::Project base = *currentProject_;
+            base.clearMarks();
+            return base.replaceReviewState(*playback->validatedComparison,
+                                           viewState,
+                                           alignmentState,
+                                           *playback->displayedFrame);
+        }();
         if (!prepared) {
             setError(prepared.error());
             return PortSubmitResult::Busy;
         }
         domain::Project project = std::move(prepared).value();
+        project.clearMarks();
+        if (inMark.has_value()) {
+            auto markStatus = project.setInMark(*inMark);
+            if (!markStatus) {
+                setError(markStatus.error());
+                return PortSubmitResult::Busy;
+            }
+        }
+        if (outMark.has_value()) {
+            auto markStatus = project.setOutMark(*outMark);
+            if (!markStatus) {
+                setError(markStatus.error());
+                return PortSubmitResult::Busy;
+            }
+        }
         auto status = project.setLastDisplayedFrame(*playback->displayedFrame);
         if (!status) {
             setError(status.error());
@@ -865,6 +886,10 @@ private:
             currentProject_.has_value()
                 ? std::optional<domain::ProjectViewState>{currentProject_->viewState()}
                 : std::nullopt;
+        state_.restoredInMark =
+            currentProject_.has_value() ? currentProject_->inMark() : std::nullopt;
+        state_.restoredOutMark =
+            currentProject_.has_value() ? currentProject_->outMark() : std::nullopt;
     }
 
     void resetClosedReview() {
@@ -998,8 +1023,10 @@ PortSubmitResult WorkspaceCoordinator::closeReview() {
 
 PortSubmitResult WorkspaceCoordinator::saveProject(const std::filesystem::path& projectPath,
                                                    std::string displayName,
-                                                   const domain::ProjectViewState viewState) {
-    return impl_->saveProject(projectPath, std::move(displayName), viewState);
+                                                   const domain::ProjectViewState viewState,
+                                                   const std::optional<domain::FrameId> inMark,
+                                                   const std::optional<domain::FrameId> outMark) {
+    return impl_->saveProject(projectPath, std::move(displayName), viewState, inMark, outMark);
 }
 
 PortSubmitResult WorkspaceCoordinator::relinkSource(const domain::SourceId sourceId,

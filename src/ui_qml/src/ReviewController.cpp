@@ -23,6 +23,7 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -31,6 +32,76 @@ namespace {
 
 constexpr int kFallbackProjectionIntervalMilliseconds = 10;
 constexpr qsizetype kMaximumAlignmentTimelineMarkers = 256;
+[[nodiscard]] QString twoDigits(const std::int64_t value) {
+    return QString::number(value).rightJustified(2, QLatin1Char{'0'});
+}
+
+[[nodiscard]] QString mediaClock(const domain::MediaTime time) {
+    const std::int64_t milliseconds = std::max<std::int64_t>(0, time.microseconds() / 1'000);
+    const std::int64_t hours = milliseconds / 3'600'000;
+    const std::int64_t minutes = (milliseconds / 60'000) % 60;
+    const std::int64_t seconds = (milliseconds / 1'000) % 60;
+    const std::int64_t millis = milliseconds % 1'000;
+    return QStringLiteral("%1:%2:%3.%4")
+        .arg(twoDigits(hours),
+             twoDigits(minutes),
+             twoDigits(seconds),
+             QString::number(millis).rightJustified(3, QLatin1Char{'0'}));
+}
+
+[[nodiscard]] bool supportsDropFrame(const domain::RationalRate& rate) noexcept {
+    return (rate.numerator() == 30'000 && rate.denominator() == 1'001) ||
+           (rate.numerator() == 60'000 && rate.denominator() == 1'001);
+}
+
+[[nodiscard]] QString cfrTimecode(std::int64_t frame, const int nominalFps, const bool dropFrame) {
+    frame = std::max<std::int64_t>(0, frame);
+    std::int64_t timecodeFrame = frame;
+    if (dropFrame) {
+        const std::int64_t droppedPerMinute = nominalFps == 60 ? 4 : 2;
+        const std::int64_t framesPerTenMinutes = nominalFps * 600 - droppedPerMinute * 9;
+        const std::int64_t framesPerMinute = nominalFps * 60 - droppedPerMinute;
+        const std::int64_t tenMinuteBlocks = frame / framesPerTenMinutes;
+        const std::int64_t remaining = frame % framesPerTenMinutes;
+        timecodeFrame += droppedPerMinute * 9 * tenMinuteBlocks;
+        if (remaining >= droppedPerMinute) {
+            timecodeFrame += droppedPerMinute * ((remaining - droppedPerMinute) / framesPerMinute);
+        }
+    }
+    const std::int64_t frames = timecodeFrame % nominalFps;
+    const std::int64_t totalSeconds = timecodeFrame / nominalFps;
+    const std::int64_t seconds = totalSeconds % 60;
+    const std::int64_t minutes = (totalSeconds / 60) % 60;
+    const std::int64_t hours = (totalSeconds / 3'600) % 24;
+    const QLatin1Char separator = dropFrame ? QLatin1Char{';'} : QLatin1Char{':'};
+    return QStringLiteral("%1:%2:%3%4%5")
+        .arg(twoDigits(hours),
+             twoDigits(minutes),
+             twoDigits(seconds),
+             QString{separator},
+             twoDigits(frames));
+}
+
+[[nodiscard]] QString timingModeName(const domain::TimingConfidence confidence) {
+    switch (confidence) {
+    case domain::TimingConfidence::kDeclaredCfr:
+        return QStringLiteral("Declared CFR");
+    case domain::TimingConfidence::kVerifiedCfr:
+        return QStringLiteral("Verified CFR");
+    case domain::TimingConfidence::kVariableFrameRate:
+        return QStringLiteral("VFR");
+    }
+    return QStringLiteral("Unknown");
+}
+
+[[nodiscard]] QString colorMatrixName(const domain::ColorMatrix matrix) {
+    return matrix == domain::ColorMatrix::kBt709 ? QStringLiteral("BT.709")
+                                                 : QStringLiteral("BT.601");
+}
+
+[[nodiscard]] QString colorRangeName(const domain::ColorRange range) {
+    return range == domain::ColorRange::kFull ? QStringLiteral("Full") : QStringLiteral("Limited");
+}
 
 struct LocalFileCandidate final {
     std::filesystem::path path;
@@ -104,6 +175,12 @@ struct ReviewView final {
     qint64 currentFrame = -1;
     qulonglong totalFrames = 0U;
     int oneSecondStepFrames = 30;
+    qint64 currentMediaTime = -1;
+    QString currentTimecode = QStringLiteral("00:00:00:00");
+    QString rationalFrameRate;
+    QString timingMode;
+    bool dropFrameTimecodeAvailable = false;
+    QVariantList sourceMediaInfo;
     QString sourceAErrorKey;
     QString sourceBErrorKey;
     QString sourceCErrorKey;
@@ -198,6 +275,73 @@ public:
 
     [[nodiscard]] QAbstractItemModel* sources() noexcept {
         return &sourceModel_;
+    }
+
+    [[nodiscard]] QString timecodeForFrame(const qint64 frame, const bool dropFrame) const {
+        if (frame < 0 || !snapshot_ || !snapshot_->validatedComparison) {
+            return QStringLiteral("00:00:00:00");
+        }
+        const domain::MediaDescriptor& descriptor =
+            snapshot_->validatedComparison->canonicalDescriptor();
+        std::optional<domain::MediaTime> frameTime;
+        if (snapshot_->canonicalTimeline.has_value()) {
+            auto converted = domain::canonicalFrameStartTime(
+                *snapshot_->canonicalTimeline, domain::FrameId{static_cast<std::int64_t>(frame)});
+            if (converted) {
+                frameTime = converted.value();
+            }
+        } else if (descriptor.frameRate.has_value()) {
+            auto converted = descriptor.frameRate->frameStartTime(
+                domain::FrameId{static_cast<std::int64_t>(frame)});
+            if (converted) {
+                frameTime = converted.value();
+            }
+        }
+
+        if (descriptor.timingConfidence == domain::TimingConfidence::kVariableFrameRate ||
+            !descriptor.frameRate.has_value()) {
+            return frameTime.has_value()
+                       ? QStringLiteral("%1 · Frame %2")
+                             .arg(mediaClock(*frameTime), QString::number(frame + 1))
+                       : QStringLiteral("Frame %1").arg(frame + 1);
+        }
+
+        const domain::RationalRate& rate = *descriptor.frameRate;
+        if (rate.denominator() == 1) {
+            return cfrTimecode(frame, static_cast<int>(rate.numerator()), false);
+        }
+        if (supportsDropFrame(rate)) {
+            return cfrTimecode(frame, rate.numerator() == 60'000 ? 60 : 30, dropFrame) +
+                   (dropFrame ? QStringLiteral(" DF") : QStringLiteral(" NDF"));
+        }
+        return frameTime.has_value() ? QStringLiteral("%1 · Frame %2")
+                                           .arg(mediaClock(*frameTime), QString::number(frame + 1))
+                                     : QStringLiteral("Frame %1").arg(frame + 1);
+    }
+
+    [[nodiscard]] qint64 mediaTimeForFrame(const qint64 frame) const {
+        if (frame < 0 || !snapshot_ || !snapshot_->canonicalTimeline.has_value()) {
+            return -1;
+        }
+        auto converted = domain::canonicalFrameStartTime(
+            *snapshot_->canonicalTimeline, domain::FrameId{static_cast<std::int64_t>(frame)});
+        return converted ? converted.value().microseconds() : -1;
+    }
+
+    [[nodiscard]] qint64 frameForMediaTime(const qint64 microseconds) const {
+        if (microseconds < 0 || !snapshot_ || !snapshot_->canonicalTimeline.has_value() ||
+            snapshot_->canonicalFrameCount == 0U) {
+            return -1;
+        }
+        auto converted = domain::canonicalFrameAtOrBefore(*snapshot_->canonicalTimeline,
+                                                          domain::MediaTime{microseconds});
+        if (!converted) {
+            return -1;
+        }
+        return std::clamp<std::int64_t>(
+            converted.value().value(),
+            0,
+            static_cast<std::int64_t>(snapshot_->canonicalFrameCount - 1U));
     }
 
     [[nodiscard]] bool openComparison(const QUrl& first, const QUrl& second) {
@@ -641,6 +785,15 @@ private:
             if (snapshot_->validatedComparison) {
                 next.canonicalSourceIndex =
                     static_cast<int>(snapshot_->validatedComparison->canonicalSourceId());
+                const domain::MediaDescriptor& canonical =
+                    snapshot_->validatedComparison->canonicalDescriptor();
+                next.timingMode = timingModeName(canonical.timingConfidence);
+                if (canonical.frameRate.has_value()) {
+                    next.rationalFrameRate = QStringLiteral("%1/%2")
+                                                 .arg(canonical.frameRate->numerator())
+                                                 .arg(canonical.frameRate->denominator());
+                    next.dropFrameTimecodeAvailable = supportsDropFrame(*canonical.frameRate);
+                }
                 for (const domain::ComparisonSource& source :
                      snapshot_->validatedComparison->sources()) {
                     const QString sourcePath =
@@ -656,6 +809,49 @@ private:
                         next.sourceBFilename = filename;
                     } else if (source.id == 2U) {
                         next.sourceCFilename = filename;
+                    }
+                    const domain::MediaDescriptor& descriptor = source.descriptor;
+                    const QString rate = descriptor.frameRate.has_value()
+                                             ? QStringLiteral("%1/%2 fps")
+                                                   .arg(descriptor.frameRate->numerator())
+                                                   .arg(descriptor.frameRate->denominator())
+                                             : QStringLiteral("VFR");
+                    next.sourceMediaInfo.push_back(QVariantMap{
+                        {QStringLiteral("label"), sourceName(source.id)},
+                        {QStringLiteral("filename"), filename},
+                        {QStringLiteral("width"), descriptor.extent.width},
+                        {QStringLiteral("height"), descriptor.extent.height},
+                        {QStringLiteral("frameRate"), rate},
+                        {QStringLiteral("frameCount"), descriptor.frameCount.value},
+                        {QStringLiteral("timingMode"), timingModeName(descriptor.timingConfidence)},
+                        {QStringLiteral("codec"), QString::fromStdString(descriptor.codecId)},
+                        {QStringLiteral("pixelFormat"),
+                         QString::fromStdString(descriptor.pixelFormatId)},
+                        {QStringLiteral("bitDepth"), descriptor.bitDepth},
+                        {QStringLiteral("colorMatrix"),
+                         colorMatrixName(descriptor.colorMetadata.matrix)},
+                        {QStringLiteral("colorRange"),
+                         colorRangeName(descriptor.colorMetadata.range)},
+                        {QStringLiteral("decodeBackend"),
+                         descriptor.decodeCapabilities.d3d11VaDecode ? QStringLiteral("D3D11VA")
+                                                                     : QStringLiteral("Software")},
+                        {QStringLiteral("role"),
+                         source.id == snapshot_->validatedComparison->canonicalSourceId()
+                             ? QStringLiteral("Canonical")
+                             : (source.role == domain::ComparisonRole::kReference
+                                    ? QStringLiteral("Reference")
+                                    : QStringLiteral("Prediction"))},
+                    });
+                }
+            }
+            if (next.currentFrame >= 0) {
+                next.currentTimecode = timecodeForFrame(next.currentFrame, false);
+                if (snapshot_->canonicalTimeline.has_value()) {
+                    auto converted = domain::canonicalFrameStartTime(
+                        *snapshot_->canonicalTimeline,
+                        domain::FrameId{static_cast<std::int64_t>(next.currentFrame)});
+                    if (converted) {
+                        next.currentMediaTime = converted.value().microseconds();
                     }
                 }
             }
@@ -1251,6 +1447,30 @@ int ReviewController::oneSecondStepFrames() const noexcept {
     return impl_->view().oneSecondStepFrames;
 }
 
+qint64 ReviewController::currentMediaTime() const noexcept {
+    return impl_->view().currentMediaTime;
+}
+
+QString ReviewController::currentTimecode() const {
+    return impl_->view().currentTimecode;
+}
+
+QString ReviewController::rationalFrameRate() const {
+    return impl_->view().rationalFrameRate;
+}
+
+QString ReviewController::timingMode() const {
+    return impl_->view().timingMode;
+}
+
+bool ReviewController::dropFrameTimecodeAvailable() const noexcept {
+    return impl_->view().dropFrameTimecodeAvailable;
+}
+
+QVariantList ReviewController::sourceMediaInfo() const {
+    return impl_->view().sourceMediaInfo;
+}
+
 QString ReviewController::sourceAErrorKey() const {
     return impl_->view().sourceAErrorKey;
 }
@@ -1469,6 +1689,18 @@ bool ReviewController::stepFrames(const qint64 delta) {
 
 bool ReviewController::seekFrame(const qint64 frame) {
     return impl_->seekFrame(frame);
+}
+
+QString ReviewController::timecodeForFrame(const qint64 frame, const bool dropFrame) const {
+    return impl_->timecodeForFrame(frame, dropFrame);
+}
+
+qint64 ReviewController::mediaTimeForFrame(const qint64 frame) const {
+    return impl_->mediaTimeForFrame(frame);
+}
+
+qint64 ReviewController::frameForMediaTime(const qint64 microseconds) const {
+    return impl_->frameForMediaTime(microseconds);
 }
 
 bool ReviewController::applyAlignmentOffsets(const qint64 sourceAFrames,

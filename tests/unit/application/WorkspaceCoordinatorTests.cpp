@@ -486,6 +486,34 @@ TEST(WorkspaceCoordinatorTests, SavesASingleSourceProjectWithSingleViewAndNoDiff
     EXPECT_EQ(repository->saveRequest->project.viewState(), view);
 }
 
+TEST(WorkspaceCoordinatorTests, SavesAndProjectsReviewRangeMarks) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSet(), domain::FrameId{4});
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    ASSERT_EQ(workspace->saveProject("C:/projects/range.dvsproj",
+                                     "Range",
+                                     domain::ProjectViewState{},
+                                     domain::FrameId{2},
+                                     domain::FrameId{7}),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(repository->saveRequest.has_value());
+    ASSERT_TRUE(repository->saveRequest->project.inMark().has_value());
+    ASSERT_TRUE(repository->saveRequest->project.outMark().has_value());
+    EXPECT_EQ(*repository->saveRequest->project.inMark(), domain::FrameId{2});
+    EXPECT_EQ(*repository->saveRequest->project.outMark(), domain::FrameId{7});
+
+    repository->post(ApplicationEvent{ProjectSaved{
+        .context = repository->saveRequest->context,
+    }});
+    postSucceeded(*repository, repository->saveRequest->context.request);
+    const auto snapshot = workspace->snapshot();
+    EXPECT_EQ(snapshot->restoredInMark, domain::FrameId{2});
+    EXPECT_EQ(snapshot->restoredOutMark, domain::FrameId{7});
+}
+
 TEST(WorkspaceCoordinatorTests, SavesTopologyChangesAsOneSourceAndViewTransaction) {
     auto repository = std::make_shared<FakeProjectRepository>();
     auto playback = std::make_shared<FakePlayback>();

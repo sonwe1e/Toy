@@ -3,6 +3,7 @@
 #include "dvs/application/FrameSet.h"
 #include "dvs/application/RequestContext.h"
 #include "dvs/domain/CompatibilityReport.h"
+#include "dvs/domain/FrameTimeline.h"
 #include "dvs/domain/MediaError.h"
 #include "dvs/domain/ValidatedComparisonSet.h"
 
@@ -55,6 +56,7 @@ struct SessionSnapshot final {
     std::optional<domain::FrameId> displayedFrame;
     std::optional<domain::FrameId> requestedFrame;
     std::uint64_t canonicalFrameCount = 0;
+    std::optional<domain::CanonicalTimeline> canonicalTimeline;
     std::vector<SessionSourceView> sources;
     std::shared_ptr<const domain::ValidatedComparisonSet> validatedComparison;
     std::vector<PresentedSourceState> presentedSources;

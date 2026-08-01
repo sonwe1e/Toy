@@ -1,4 +1,5 @@
 #include "dvs/domain/ComparisonValidator.h"
+#include "dvs/domain/FrameTimeline.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewShellController.h"
 #include "dvs/ui/SourceListModel.h"
@@ -11,6 +12,7 @@
 #include <QThread>
 #include <QUrl>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -85,11 +87,12 @@ template <typename Predicate>
 }
 
 [[nodiscard]] application::SessionSnapshot
-readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
-                         const std::size_t referenceIndex = 0U) {
+readySnapshotWithTiming(const std::vector<std::filesystem::path>& paths,
+                        const std::size_t referenceIndex,
+                        const std::optional<domain::RationalRate> rate,
+                        const domain::TimingConfidence timingConfidence,
+                        const std::int64_t frameCount) {
     application::SessionSnapshot snapshot = readySnapshot(2, 12);
-    const auto rate = domain::RationalRate::create(30, 1);
-    EXPECT_TRUE(rate);
     std::vector<domain::ComparisonSource> sources;
     sources.reserve(paths.size());
     for (std::size_t index = 0U; index < paths.size(); ++index) {
@@ -101,13 +104,16 @@ readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
                 domain::MediaDescriptor{
                     .normalizedPath = paths[index],
                     .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
-                    .frameRate = rate.value(),
+                    .frameRate = rate,
                     .frameCount =
                         domain::FrameCountInfo{
-                            .value = 12,
-                            .origin = domain::FrameCountOrigin::kReported,
+                            .value = frameCount,
+                            .origin =
+                                timingConfidence == domain::TimingConfidence::kVariableFrameRate
+                                    ? domain::FrameCountOrigin::kIndexed
+                                    : domain::FrameCountOrigin::kReported,
                         },
-                    .duration = domain::MediaTime{400'000},
+                    .duration = domain::MediaTime{std::max<std::int64_t>(400'000, frameCount)},
                     .codecId = "h264",
                     .pixelFormatId = "nv12",
                     .bitDepth = 8U,
@@ -116,7 +122,7 @@ readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
                             .softwareDecode = true,
                             .d3d11VaDecode = true,
                         },
-                    .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
+                    .timingConfidence = timingConfidence,
                     .sourceIdentity =
                         domain::SourceFileIdentity{
                             .byteSize = 7U,
@@ -141,7 +147,18 @@ readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
     }
     snapshot.canonicalFrameCount =
         static_cast<std::uint64_t>(snapshot.validatedComparison->canonicalFrameCount());
+    if (rate.has_value())
+        snapshot.canonicalTimeline = *rate;
     return snapshot;
+}
+
+[[nodiscard]] application::SessionSnapshot
+readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
+                         const std::size_t referenceIndex = 0U) {
+    const auto rate = domain::RationalRate::create(30, 1);
+    EXPECT_TRUE(rate);
+    return readySnapshotWithTiming(
+        paths, referenceIndex, rate.value(), domain::TimingConfidence::kVerifiedCfr, 12);
 }
 
 class FakeBackend final {
@@ -221,6 +238,60 @@ protected:
         ensureCoreApplication();
     }
 };
+
+TEST_F(ReviewControllerTests, ProjectsMediaTimeTimecodeAndDetailedSourceInformation) {
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({"C:/media/reference.mp4", "C:/media/prediction.mp4"});
+    ReviewController controller{dependenciesFor(backend)};
+
+    EXPECT_EQ(controller.currentMediaTime(), 66'667);
+    EXPECT_EQ(controller.timecodeForFrame(2), QStringLiteral("00:00:00:02"));
+    EXPECT_EQ(controller.mediaTimeForFrame(2), 66'667);
+    EXPECT_EQ(controller.frameForMediaTime(66'667), 2);
+    EXPECT_EQ(controller.rationalFrameRate(), QStringLiteral("30/1"));
+    EXPECT_EQ(controller.timingMode(), QStringLiteral("Verified CFR"));
+    EXPECT_FALSE(controller.dropFrameTimecodeAvailable());
+    const QVariantList info = controller.sourceMediaInfo();
+    ASSERT_EQ(info.size(), 2);
+    const QVariantMap first = info.front().toMap();
+    EXPECT_EQ(first.value(QStringLiteral("width")).toUInt(), 1'920U);
+    EXPECT_EQ(first.value(QStringLiteral("height")).toUInt(), 1'080U);
+    EXPECT_EQ(first.value(QStringLiteral("codec")).toString(), QStringLiteral("h264"));
+    EXPECT_EQ(first.value(QStringLiteral("decodeBackend")).toString(), QStringLiteral("D3D11VA"));
+}
+
+TEST_F(ReviewControllerTests, FormatsFractionalDropFrameAndVariableRateMediaTime) {
+    const auto ntscRate = domain::RationalRate::create(30'000, 1'001);
+    ASSERT_TRUE(ntscRate);
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot = readySnapshotWithTiming({"C:/media/ntsc.mp4"},
+                                                       0U,
+                                                       ntscRate.value(),
+                                                       domain::TimingConfidence::kVerifiedCfr,
+                                                       20'000);
+    ReviewController controller{dependenciesFor(backend)};
+
+    EXPECT_TRUE(controller.dropFrameTimecodeAvailable());
+    EXPECT_EQ(controller.timecodeForFrame(1'800, false), QStringLiteral("00:01:00:00 NDF"));
+    EXPECT_EQ(controller.timecodeForFrame(1'800, true), QStringLiteral("00:01:00;02 DF"));
+
+    auto variable = domain::FrameTimeline::create(
+        {domain::MediaTime{0}, domain::MediaTime{41'000}, domain::MediaTime{83'000}});
+    ASSERT_TRUE(variable);
+    backend->currentSnapshot = readySnapshotWithTiming(
+        {"C:/media/vfr.mp4"}, 0U, std::nullopt, domain::TimingConfidence::kVariableFrameRate, 3);
+    backend->currentSnapshot.canonicalTimeline =
+        std::make_shared<const domain::FrameTimeline>(std::move(variable).value());
+    backend->currentSnapshot.displayedFrame = domain::FrameId{2};
+    controller.refreshProjection();
+
+    EXPECT_EQ(controller.timingMode(), QStringLiteral("VFR"));
+    EXPECT_TRUE(controller.rationalFrameRate().isEmpty());
+    EXPECT_EQ(controller.timecodeForFrame(2), QStringLiteral("00:00:00.083 · Frame 3"));
+    EXPECT_EQ(controller.mediaTimeForFrame(2), 83'000);
+    EXPECT_EQ(controller.frameForMediaTime(82'999), 1);
+}
 
 TEST_F(ReviewControllerTests, ReviewsDroppedFilesInCppAndNormalizesUnicodePaths) {
     QTemporaryDir directory;

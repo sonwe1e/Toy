@@ -230,6 +230,14 @@ public:
         }
         QObject* const control = window_->findChild<QObject*>(
             QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (control != nullptr && !control->property("enabled").toBool()) {
+            QObject* const transport = window_->findChild<QObject*>(QStringLiteral("transport"));
+            if (transport != nullptr && transport->property("controllerState").toInt() == 1) {
+                // Automation mirrors the user's bottom-edge wake gesture before clicking an
+                // auto-hidden OSC control. Normal pointer input remains blocked while hidden.
+                static_cast<void>(transport->setProperty("revealActive", true));
+            }
+        }
         return control != nullptr && control->property("enabled").toBool() &&
                QMetaObject::invokeMethod(control, "click", Qt::DirectConnection);
     }

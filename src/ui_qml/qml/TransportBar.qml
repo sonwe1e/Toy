@@ -14,6 +14,7 @@ Item {
     property bool canLast: false
     property bool playing: false
     property Item focusTarget: null
+    property bool compact: false
 
     signal firstRequested
     signal previousSecondRequested
@@ -39,16 +40,16 @@ Item {
         required property url iconSource
         required property string helpText
 
-        implicitWidth: 48
-        implicitHeight: 42
+        implicitWidth: control.compact ? 38 : 48
+        implicitHeight: control.compact ? 34 : 42
         activeFocusOnTab: true
         Accessible.name: helpText.split("\n")[0]
         Accessible.description: helpText
 
         contentItem: Image {
             source: button.iconSource
-            sourceSize.width: 24
-            sourceSize.height: 24
+            sourceSize.width: control.compact ? 20 : 24
+            sourceSize.height: control.compact ? 20 : 24
             fillMode: Image.PreserveAspectFit
             opacity: button.enabled ? 1.0 : 0.35
         }
@@ -68,7 +69,7 @@ Item {
     Row {
         id: buttons
 
-        spacing: 6
+        spacing: control.compact ? 4 : 6
 
         TransportButton {
             id: firstButton
@@ -118,7 +119,7 @@ Item {
             id: playbackButton
 
             objectName: "playbackButton"
-            implicitWidth: 54
+            implicitWidth: control.compact ? 42 : 54
             iconSource: control.playing ? "qrc:/icons/pause.svg" : "qrc:/icons/play.svg"
             helpText: control.playing ? qsTr("Pause\nShortcut: Space") : qsTr("Play\nShortcut: Space")
             enabled: control.playing ? control.canPause : control.canPlay

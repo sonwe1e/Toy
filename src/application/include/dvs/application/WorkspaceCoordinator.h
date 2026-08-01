@@ -22,6 +22,8 @@ struct WorkspaceSnapshot final {
     std::string displayName;
     SourceRevalidationDiagnostics sourceDiagnostics;
     std::optional<domain::ProjectViewState> restoredViewState;
+    std::optional<domain::FrameId> restoredInMark;
+    std::optional<domain::FrameId> restoredOutMark;
     std::optional<domain::MediaError> lastError;
 
     [[nodiscard]] bool operator==(const WorkspaceSnapshot&) const = default;
@@ -57,9 +59,12 @@ public:
 
     [[nodiscard]] PortSubmitResult openProject(const std::filesystem::path& projectPath);
     [[nodiscard]] PortSubmitResult closeReview();
-    [[nodiscard]] PortSubmitResult saveProject(const std::filesystem::path& projectPath,
-                                               std::string displayName,
-                                               domain::ProjectViewState viewState);
+    [[nodiscard]] PortSubmitResult
+    saveProject(const std::filesystem::path& projectPath,
+                std::string displayName,
+                domain::ProjectViewState viewState,
+                std::optional<domain::FrameId> inMark = std::nullopt,
+                std::optional<domain::FrameId> outMark = std::nullopt);
     [[nodiscard]] PortSubmitResult relinkSource(domain::SourceId sourceId,
                                                 const std::filesystem::path& sourcePath);
 

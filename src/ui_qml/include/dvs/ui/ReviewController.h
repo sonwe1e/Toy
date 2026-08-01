@@ -44,6 +44,12 @@ class ReviewController final : public QObject {
     Q_PROPERTY(qint64 currentFrame READ currentFrame NOTIFY frameStateChanged)
     Q_PROPERTY(qulonglong totalFrames READ totalFrames NOTIFY stateChanged)
     Q_PROPERTY(int oneSecondStepFrames READ oneSecondStepFrames NOTIFY stateChanged)
+    Q_PROPERTY(qint64 currentMediaTime READ currentMediaTime NOTIFY frameStateChanged)
+    Q_PROPERTY(QString currentTimecode READ currentTimecode NOTIFY frameStateChanged)
+    Q_PROPERTY(QString rationalFrameRate READ rationalFrameRate NOTIFY stateChanged)
+    Q_PROPERTY(QString timingMode READ timingMode NOTIFY stateChanged)
+    Q_PROPERTY(bool dropFrameTimecodeAvailable READ dropFrameTimecodeAvailable NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList sourceMediaInfo READ sourceMediaInfo NOTIFY stateChanged)
     Q_PROPERTY(QString sourceAErrorKey READ sourceAErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceBErrorKey READ sourceBErrorKey NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCErrorKey READ sourceCErrorKey NOTIFY stateChanged)
@@ -120,6 +126,12 @@ public:
     [[nodiscard]] qint64 currentFrame() const noexcept;
     [[nodiscard]] qulonglong totalFrames() const noexcept;
     [[nodiscard]] int oneSecondStepFrames() const noexcept;
+    [[nodiscard]] qint64 currentMediaTime() const noexcept;
+    [[nodiscard]] QString currentTimecode() const;
+    [[nodiscard]] QString rationalFrameRate() const;
+    [[nodiscard]] QString timingMode() const;
+    [[nodiscard]] bool dropFrameTimecodeAvailable() const noexcept;
+    [[nodiscard]] QVariantList sourceMediaInfo() const;
     [[nodiscard]] QString sourceAErrorKey() const;
     [[nodiscard]] QString sourceBErrorKey() const;
     [[nodiscard]] QString sourceCErrorKey() const;
@@ -174,6 +186,9 @@ public:
     Q_INVOKABLE bool last();
     Q_INVOKABLE bool stepFrames(qint64 delta);
     Q_INVOKABLE bool seekFrame(qint64 frame);
+    Q_INVOKABLE QString timecodeForFrame(qint64 frame, bool dropFrame = false) const;
+    Q_INVOKABLE qint64 mediaTimeForFrame(qint64 frame) const;
+    Q_INVOKABLE qint64 frameForMediaTime(qint64 microseconds) const;
     Q_INVOKABLE bool
     applyAlignmentOffsets(qint64 sourceAFrames, qint64 sourceBFrames, qint64 sourceCFrames);
     Q_INVOKABLE bool applySourceOffsets(const QVariantList& offsets);

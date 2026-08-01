@@ -19,6 +19,7 @@
 #include <QQmlError>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QRectF>
 #include <QResource>
 #include <QStringList>
 #include <QThread>
@@ -211,6 +212,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(window, nullptr);
     QObject* const inspector =
         root->findChild<QObject*>(QStringLiteral("advancedAlignmentInspector"));
+    QObject* const tabbedInspector = root->findChild<QObject*>(QStringLiteral("tabbedInspector"));
     auto* const compareBar = root->findChild<QQuickItem*>(QStringLiteral("compareModeBar"));
     auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
     auto* const transportBar = root->findChild<QQuickItem*>(QStringLiteral("transportBar"));
@@ -221,9 +223,16 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         root->findChild<QObject*>(QStringLiteral("analysisControlsChrome"));
     QObject* const surfaceLabelRepeater =
         root->findChild<QObject*>(QStringLiteral("surfaceLabelRepeater"));
+    auto* const frameErrorBanner = root->findChild<QQuickItem*>(QStringLiteral("frameErrorBanner"));
     QObject* const activeSourceRepeater =
         root->findChild<QObject*>(QStringLiteral("activeSourceRepeater"));
     QObject* const timeline = root->findChild<QObject*>(QStringLiteral("timelineSlider"));
+    QObject* const setInButton = root->findChild<QObject*>(QStringLiteral("setInButton"));
+    QObject* const setOutButton = root->findChild<QObject*>(QStringLiteral("setOutButton"));
+    QObject* const clearRangeButton = root->findChild<QObject*>(QStringLiteral("clearRangeButton"));
+    QObject* const loopRangeButton = root->findChild<QObject*>(QStringLiteral("loopRangeButton"));
+    QObject* const mediaInfoRepeater =
+        root->findChild<QObject*>(QStringLiteral("mediaInfoRepeater"));
     QObject* const shortcutHelp = root->findChild<QObject*>(QStringLiteral("shortcutHelpOverlay"));
     QObject* const contextViewMenu = root->findChild<QObject*>(QStringLiteral("contextViewMenu"));
     QObject* const contextPairMenu = root->findChild<QObject*>(QStringLiteral("contextPairMenu"));
@@ -240,6 +249,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QObject* const analysisGridMenuItem =
         root->findChild<QObject*>(QStringLiteral("analysisGridMenuItem"));
     ASSERT_NE(inspector, nullptr);
+    ASSERT_NE(tabbedInspector, nullptr);
     ASSERT_NE(compareBar, nullptr);
     ASSERT_NE(transport, nullptr);
     ASSERT_NE(transportBar, nullptr);
@@ -248,8 +258,14 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(sideModeButton, nullptr);
     ASSERT_NE(analysisChrome, nullptr);
     ASSERT_NE(surfaceLabelRepeater, nullptr);
+    ASSERT_NE(frameErrorBanner, nullptr);
     ASSERT_NE(activeSourceRepeater, nullptr);
     ASSERT_NE(timeline, nullptr);
+    ASSERT_NE(setInButton, nullptr);
+    ASSERT_NE(setOutButton, nullptr);
+    ASSERT_NE(clearRangeButton, nullptr);
+    ASSERT_NE(loopRangeButton, nullptr);
+    ASSERT_NE(mediaInfoRepeater, nullptr);
     ASSERT_NE(shortcutHelp, nullptr);
     ASSERT_NE(contextViewMenu, nullptr);
     ASSERT_NE(contextPairMenu, nullptr);
@@ -268,11 +284,60 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_GT(transport->width(), 0.0);
     EXPECT_GT(firstButton->width(), 0.0);
     EXPECT_GT(lastButton->width(), 0.0);
-    EXPECT_TRUE(analysisChrome->property("visible").toBool());
+    EXPECT_FALSE(analysisChrome->property("visible").toBool());
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 2);
     EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 2);
     EXPECT_EQ(root->property("availableViewModes").toList().size(), 3);
     EXPECT_GE(viewport->height() / window->contentItem()->height(), 0.78);
+
+    snapshot->lastError = domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                 domain::MediaOperation::kMediaDecode,
+                                                 domain::SourceId{0U},
+                                                 true,
+                                                 "Synthetic frame read failure.");
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(frameErrorBanner->isVisible());
+    const QPointF bannerTopLeft = frameErrorBanner->mapToItem(viewport, QPointF{0.0, 0.0});
+    EXPECT_GE(bannerTopLeft.y(), 0.0);
+    EXPECT_LE(bannerTopLeft.y() + frameErrorBanner->height(), viewport->height());
+    snapshot->lastError.reset();
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::Wipe);
+    for (const double wipePosition : {0.05, 0.95}) {
+        root->setProperty("wipePosition", wipePosition);
+        QCoreApplication::processEvents();
+        QVariant firstBadgeResult;
+        QVariant secondBadgeResult;
+        ASSERT_TRUE(QMetaObject::invokeMethod(viewport,
+                                              "surfaceLabelGeometry",
+                                              Q_RETURN_ARG(QVariant, firstBadgeResult),
+                                              Q_ARG(QVariant, QVariant{0})));
+        ASSERT_TRUE(QMetaObject::invokeMethod(viewport,
+                                              "surfaceLabelGeometry",
+                                              Q_RETURN_ARG(QVariant, secondBadgeResult),
+                                              Q_ARG(QVariant, QVariant{1})));
+        const QVariantMap firstBadge = firstBadgeResult.toMap();
+        const QVariantMap secondBadge = secondBadgeResult.toMap();
+        ASSERT_FALSE(firstBadge.isEmpty());
+        ASSERT_FALSE(secondBadge.isEmpty());
+        const QVariantMap leftWipeBadge =
+            firstBadge.value(QStringLiteral("sourceSlot")).toInt() == 0 ? firstBadge : secondBadge;
+        const QVariantMap rightWipeBadge =
+            firstBadge.value(QStringLiteral("sourceSlot")).toInt() == 1 ? firstBadge : secondBadge;
+        EXPECT_TRUE(leftWipeBadge.value(QStringLiteral("visible")).toBool());
+        EXPECT_TRUE(rightWipeBadge.value(QStringLiteral("visible")).toBool());
+        EXPECT_LE(leftWipeBadge.value(QStringLiteral("x")).toDouble() +
+                      leftWipeBadge.value(QStringLiteral("width")).toDouble(),
+                  rightWipeBadge.value(QStringLiteral("x")).toDouble());
+        EXPECT_GE(leftWipeBadge.value(QStringLiteral("x")).toDouble(), 0.0);
+        EXPECT_LE(rightWipeBadge.value(QStringLiteral("x")).toDouble() +
+                      rightWipeBadge.value(QStringLiteral("width")).toDouble(),
+                  viewport->width());
+    }
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::SideBySide);
     QVariant zoomResult;
     ASSERT_TRUE(QMetaObject::invokeMethod(timeline,
                                           "setZoom",
@@ -383,6 +448,74 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_EQ(root->property("availableViewModes").toList().size(), 6);
     EXPECT_TRUE(analysisGridMenuItem->property("enabled").toBool());
 
+    // Three-up (3 sources): each source panel gets a divider outline.
+    QObject* const panelDividerRepeater =
+        root->findChild<QObject*>(QStringLiteral("panelDividerRepeater"));
+    ASSERT_NE(panelDividerRepeater, nullptr);
+    EXPECT_EQ(panelDividerRepeater->property("count").toInt(), 3);
+    // Analysis Grid (3 sources): same divider treatment; labels must stay inside the
+    // viewport and must not overlap the analysis chrome.
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(root->property("effectiveViewMode").toInt(), 4);
+    EXPECT_EQ(panelDividerRepeater->property("count").toInt(), 3);
+    EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 3);
+    EXPECT_TRUE(analysisChrome->property("visible").toBool());
+    auto* const chromeItem = qobject_cast<QQuickItem*>(analysisChrome);
+    ASSERT_NE(chromeItem, nullptr);
+    const QRectF chromeRectInViewport(chromeItem->mapToItem(viewport, QPointF{0, 0}),
+                                      chromeItem->size());
+    for (int slot = 0; slot < 3; ++slot) {
+        QVariant labelResult;
+        ASSERT_TRUE(QMetaObject::invokeMethod(viewport,
+                                              "surfaceLabelGeometry",
+                                              Q_RETURN_ARG(QVariant, labelResult),
+                                              Q_ARG(QVariant, QVariant{slot})));
+        const QVariantMap label = labelResult.toMap();
+        ASSERT_FALSE(label.isEmpty());
+        EXPECT_TRUE(label.value(QStringLiteral("visible")).toBool());
+        const qreal labelX = label.value(QStringLiteral("x")).toDouble();
+        const qreal labelW = label.value(QStringLiteral("width")).toDouble();
+        // surfaceLabelGeometry reports x/width/visible; pull the real y/height from the
+        // live label delegate so containment and chrome-overlap use actual geometry.
+        QQuickItem* labelDelegate = nullptr;
+        ASSERT_TRUE(QMetaObject::invokeMethod(surfaceLabelRepeater,
+                                              "itemAt",
+                                              Q_RETURN_ARG(QQuickItem*, labelDelegate),
+                                              Q_ARG(int, slot)));
+        ASSERT_NE(labelDelegate, nullptr);
+        const qreal labelY = labelDelegate->y();
+        const qreal labelH = labelDelegate->height();
+        EXPECT_GE(labelX, 0.0);
+        EXPECT_GE(labelY, 0.0);
+        EXPECT_LE(labelX + labelW, viewport->width());
+        EXPECT_LE(labelY + labelH, viewport->height());
+        EXPECT_TRUE(QRectF(labelX, labelY, labelW, labelH).intersects(chromeRectInViewport) == false)
+            << "source label slot " << slot << " overlaps analysis chrome";
+    }
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::ThreeUp);
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+
+    // In multi-source the TabbedInspector exposes all four tabs.
+    shell.setInspectorVisible(true);
+    QCoreApplication::processEvents();
+    QObject* const inspectorTabBar =
+        tabbedInspector->findChild<QObject*>(QStringLiteral("inspectorTabBar"));
+    ASSERT_NE(inspectorTabBar, nullptr);
+    EXPECT_EQ(inspectorTabBar->property("count").toInt(), 4);
+    for (const char* const tabName :
+         {"compareTabButton", "alignmentTabButton", "reviewTabButton", "infoTabButton"}) {
+        QObject* const tab = tabbedInspector->findChild<QObject*>(QString::fromLatin1(tabName));
+        ASSERT_NE(tab, nullptr);
+        EXPECT_TRUE(tab->property("visible").toBool());
+    }
+    // Restore the pre-existing hidden-inspector state so the following two-source and
+    // one-source sections observe the same chrome layout as before this check.
+    shell.setInspectorVisible(false);
+    QCoreApplication::processEvents();
+
     snapshot->sources.resize(2U);
     snapshot->presentedSources.resize(2U);
     controller.refreshProjection();
@@ -401,6 +534,47 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 1);
     EXPECT_EQ(root->property("availableViewModes").toList().size(), 1);
     EXPECT_FALSE(compareBar->isVisible());
+
+    shell.setInspectorVisible(true);
+    QCoreApplication::processEvents();
+    EXPECT_TRUE(tabbedInspector->property("visible").toBool());
+    EXPECT_EQ(tabbedInspector->property("effectiveTab").toInt(), 2);
+    EXPECT_TRUE(setInButton->property("visible").toBool());
+    EXPECT_TRUE(setOutButton->property("visible").toBool());
+
+    // In single mode the inspector keeps only the Review/Info tabs; Compare/Alignment
+    // tabs hide and the Review-tab range/export actions remain reachable.
+    QObject* const compareTab =
+        tabbedInspector->findChild<QObject*>(QStringLiteral("compareTabButton"));
+    QObject* const alignmentTab =
+        tabbedInspector->findChild<QObject*>(QStringLiteral("alignmentTabButton"));
+    QObject* const reviewTab = tabbedInspector->findChild<QObject*>(QStringLiteral("reviewTabButton"));
+    QObject* const infoTab = tabbedInspector->findChild<QObject*>(QStringLiteral("infoTabButton"));
+    QObject* const exportBadCase =
+        tabbedInspector->findChild<QObject*>(QStringLiteral("exportBadCaseButton"));
+    ASSERT_NE(compareTab, nullptr);
+    ASSERT_NE(alignmentTab, nullptr);
+    ASSERT_NE(reviewTab, nullptr);
+    ASSERT_NE(infoTab, nullptr);
+    ASSERT_NE(exportBadCase, nullptr);
+    EXPECT_FALSE(compareTab->property("visible").toBool());
+    EXPECT_FALSE(alignmentTab->property("visible").toBool());
+    EXPECT_TRUE(reviewTab->property("visible").toBool());
+    EXPECT_TRUE(infoTab->property("visible").toBool());
+    EXPECT_TRUE(exportBadCase->property("visible").toBool());
+    EXPECT_TRUE(loopRangeButton->property("visible").toBool());
+    EXPECT_TRUE(clearRangeButton->property("visible").toBool());
+
+    snapshot->sessionState = domain::SessionState::kEmpty;
+    snapshot->displayedFrame.reset();
+    snapshot->canonicalFrameCount = 0U;
+    snapshot->sources.clear();
+    snapshot->presentedSources.clear();
+    snapshot->validatedComparison.reset();
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    EXPECT_EQ(root->property("oscState").toInt(), 2);
+    EXPECT_FALSE(transport->isVisible());
 }
 
 } // namespace

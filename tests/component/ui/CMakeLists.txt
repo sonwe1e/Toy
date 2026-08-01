@@ -129,3 +129,21 @@ set_tests_properties(
         TIMEOUT 15
         RUN_SERIAL TRUE
 )
+
+foreach(dvs_review_shell_test IN ITEMS empty_review_view player_osc timeline_tracks)
+    add_test(
+        NAME "ui.${dvs_review_shell_test}"
+        COMMAND
+            "$<TARGET_FILE:Qt6::qmltestrunner>"
+            -input
+            "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_${dvs_review_shell_test}.qml"
+    )
+    set_tests_properties(
+        "ui.${dvs_review_shell_test}"
+        PROPERTIES
+            LABELS "component;ui_qml"
+            TIMEOUT 20
+            RUN_SERIAL TRUE
+            ENVIRONMENT "QT_QUICK_CONTROLS_STYLE=Basic;QSG_RENDER_LOOP=basic"
+    )
+endforeach()

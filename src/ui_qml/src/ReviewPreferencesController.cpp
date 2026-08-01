@@ -33,6 +33,7 @@ constexpr std::string_view kDifferenceMetricKey = "review.difference-metric";
 constexpr std::string_view kDifferenceGainKey = "review.difference-gain";
 constexpr std::string_view kDifferenceEdgeKey = "review.difference-edge";
 constexpr std::string_view kDifferenceFilterKey = "review.difference-filter";
+constexpr std::string_view kOscModeKey = "review.osc-mode";
 
 class SettingsEventQueue final : public application::IApplicationEventSink {
 public:
@@ -157,6 +158,10 @@ public:
         return differenceFilter_;
     }
 
+    [[nodiscard]] int oscMode() const noexcept {
+        return oscMode_;
+    }
+
     void setLargeStepFrames(const int value) {
         if ((value != 5 && value != 10) || value == largeStepFrames_) {
             return;
@@ -197,6 +202,14 @@ public:
             return;
         }
         differenceFilter_ = value;
+        changed();
+    }
+
+    void setOscMode(const int value) {
+        if (value < -1 || value > 2 || value == oscMode_) {
+            return;
+        }
+        oscMode_ = value;
         changed();
     }
 
@@ -410,16 +423,28 @@ private:
                                          {"bilinear", DifferenceFilter::Bilinear},
                                          {"bicubic", DifferenceFilter::Bicubic}})
                 .value_or(DifferenceFilter::Bilinear);
+        int nextOscMode = -1;
+        if (const auto iterator = values.find(kOscModeKey); iterator != values.end()) {
+            if (iterator->second == "pinned") {
+                nextOscMode = 0;
+            } else if (iterator->second == "auto") {
+                nextOscMode = 1;
+            } else if (iterator->second == "hidden") {
+                nextOscMode = 2;
+            }
+        }
 
         const bool changed = largeStepFrames_ != nextLargeStep || viewMode_ != nextViewMode ||
                              differenceMetric_ != nextMetric || differenceGain_ != nextGain ||
-                             differenceEdge_ != nextReference || differenceFilter_ != nextFilter;
+                             differenceEdge_ != nextReference || differenceFilter_ != nextFilter ||
+                             oscMode_ != nextOscMode;
         largeStepFrames_ = nextLargeStep;
         viewMode_ = nextViewMode;
         differenceMetric_ = nextMetric;
         differenceGain_ = nextGain;
         differenceEdge_ = nextReference;
         differenceFilter_ = nextFilter;
+        oscMode_ = nextOscMode;
         if (changed) {
             Q_EMIT owner_.preferencesChanged();
         }
@@ -470,6 +495,15 @@ private:
         values.insert_or_assign(std::string{kDifferenceEdgeKey}, std::string{edgeName});
         values.insert_or_assign(std::string{kDifferenceFilterKey},
                                 std::string{filters[static_cast<std::size_t>(differenceFilter_)]});
+        const char* oscModeName = "contextual";
+        if (oscMode_ == 0) {
+            oscModeName = "pinned";
+        } else if (oscMode_ == 1) {
+            oscModeName = "auto";
+        } else if (oscMode_ == 2) {
+            oscModeName = "hidden";
+        }
+        values.insert_or_assign(std::string{kOscModeKey}, std::string{oscModeName});
     }
 
     ReviewPreferencesController& owner_;
@@ -488,6 +522,7 @@ private:
     DifferenceGain differenceGain_ = DifferenceGain::Gain1x;
     DifferenceEdge differenceEdge_ = DifferenceEdge::Edge0And1;
     DifferenceFilter differenceFilter_ = DifferenceFilter::Bilinear;
+    int oscMode_ = -1;
     bool loadFinished_ = false;
     bool localChanges_ = false;
     bool dirty_ = false;
@@ -529,6 +564,10 @@ ReviewPreferencesController::differenceFilter() const noexcept {
     return impl_->differenceFilter();
 }
 
+int ReviewPreferencesController::oscMode() const noexcept {
+    return impl_->oscMode();
+}
+
 void ReviewPreferencesController::setLargeStepFrames(const int value) {
     impl_->setLargeStepFrames(value);
 }
@@ -551,6 +590,10 @@ void ReviewPreferencesController::setDifferenceEdge(const DifferenceEdge value) 
 
 void ReviewPreferencesController::setDifferenceFilter(const DifferenceFilter value) {
     impl_->setDifferenceFilter(value);
+}
+
+void ReviewPreferencesController::setOscMode(const int value) {
+    impl_->setOscMode(value);
 }
 
 void ReviewPreferencesController::stop() noexcept {

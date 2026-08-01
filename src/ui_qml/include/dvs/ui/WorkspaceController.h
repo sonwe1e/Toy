@@ -30,6 +30,8 @@ class WorkspaceController final : public QObject {
     Q_PROPERTY(
         QVariantMap restoredPresentationState READ restoredPresentationState NOTIFY stateChanged)
     Q_PROPERTY(qulonglong restoredViewSerial READ restoredViewSerial NOTIFY stateChanged)
+    Q_PROPERTY(int restoredInFrame READ restoredInFrame NOTIFY stateChanged)
+    Q_PROPERTY(int restoredOutFrame READ restoredOutFrame NOTIFY stateChanged)
 
 public:
     explicit WorkspaceController(application::WorkspaceCoordinator& workspace,
@@ -52,6 +54,8 @@ public:
     [[nodiscard]] QVariantList sourceDiagnostics() const;
     [[nodiscard]] QVariantMap restoredPresentationState() const;
     [[nodiscard]] qulonglong restoredViewSerial() const noexcept;
+    [[nodiscard]] int restoredInFrame() const noexcept;
+    [[nodiscard]] int restoredOutFrame() const noexcept;
 
     Q_INVOKABLE bool openProject(const QUrl& projectFile);
     Q_INVOKABLE bool closeReview();
@@ -59,6 +63,7 @@ public:
     Q_INVOKABLE bool saveAs(const QUrl& projectFile);
     Q_INVOKABLE bool relinkSource(int sourceId, const QUrl& sourceFile);
     Q_INVOKABLE bool updatePresentationState(const QVariantMap& state);
+    Q_INVOKABLE bool updateReviewMarks(int inFrame, int outFrame);
     Q_INVOKABLE void refreshProjection();
     Q_INVOKABLE void stop() noexcept;
 

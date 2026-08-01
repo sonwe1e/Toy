@@ -12,6 +12,25 @@ Rectangle {
 
     required property var host
     property alias surface: dualVideoSurface
+    property alias videoOutput: surfaceLayer
+    readonly property bool roiEnabled: dualVideoSurface.roiEnabled
+
+    function clearRoi() {
+        dualVideoSurface.clearRoi();
+    }
+
+    function surfaceLabelGeometry(index) {
+        const label = surfaceLabelRepeater.itemAt(index);
+        if (!label)
+            return {};
+        const panel = dualVideoSurface.sourcePanelRects[index];
+        return {
+            "sourceSlot": Number(panel.slot),
+            "x": label.x,
+            "width": label.width,
+            "visible": label.visible
+        };
+    }
 
     objectName: "mediaViewportFocusTarget"
     focus: true
@@ -24,42 +43,51 @@ Rectangle {
         onTapped: control.forceActiveFocus()
     }
 
-    // The type is runtime-registered; startup smoke coverage verifies the registration.
-    // qmllint disable import unqualified unresolved-type
-    ComparisonSurface {
-        id: dualVideoSurface
+    Item {
+        id: surfaceLayer
 
-        objectName: "dualVideoSurface"
-        Accessible.name: qsTr("VCStation synchronized comparison surface")
-        viewMode: control.host.effectiveViewMode
-        differenceMetric: control.host.preferences ? control.host.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
-        differenceGain: control.host.preferences ? control.host.preferences.differenceGain : ComparisonSurface.Gain1x
-        differenceEdge: control.host.preferences ? control.host.preferences.differenceEdge : ComparisonSurface.Edge0And1
-        differenceFilter: control.host.preferences ? control.host.preferences.differenceFilter : ComparisonSurface.Bilinear
-        wipePosition: control.host.wipePosition
-        exactPlaneAvailable: control.host.selectedDifferenceExactness === 0
-        thresholdEnabled: control.host.differenceThresholdEnabled
-        threshold: Number(control.host.differenceThresholdCode) / 255
-        thresholdPolicy: control.host.differenceThresholdPolicy
-        referenceSlot: control.host.referenceSourceIndex >= 0 ? control.host.referenceSourceIndex : 0
         anchors {
             fill: parent
             margins: control.host.chromeVisible ? 1 : 0
         }
+
+        // The type is runtime-registered; startup smoke coverage verifies the registration.
+        // qmllint disable import unqualified unresolved-type
+        ComparisonSurface {
+            id: dualVideoSurface
+
+            objectName: "dualVideoSurface"
+            Accessible.name: qsTr("VCStation synchronized comparison surface")
+            viewMode: control.host.effectiveViewMode
+            differenceMetric: control.host.preferences ? control.host.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
+            differenceGain: control.host.preferences ? control.host.preferences.differenceGain : ComparisonSurface.Gain1x
+            differenceEdge: control.host.preferences ? control.host.preferences.differenceEdge : ComparisonSurface.Edge0And1
+            differenceFilter: control.host.preferences ? control.host.preferences.differenceFilter : ComparisonSurface.Bilinear
+            wipePosition: control.host.wipePosition
+            exactPlaneAvailable: control.host.selectedDifferenceExactness === 0
+            thresholdEnabled: control.host.differenceThresholdEnabled
+            threshold: Number(control.host.differenceThresholdCode) / 255
+            thresholdPolicy: control.host.differenceThresholdPolicy
+            referenceSlot: control.host.referenceSourceIndex >= 0 ? control.host.referenceSourceIndex : 0
+            anchors.fill: parent
+        }
+        // qmllint enable import unqualified unresolved-type
     }
-    // qmllint enable import unqualified unresolved-type
 
     Repeater {
-        model: control.host.sideBySideMode ? 1 : (control.host.threeUpMode ? 2 : 0)
+        objectName: "panelDividerRepeater"
+        model: control.host.sourceCount > 1 && !control.host.wipeMode && (!control.host.differenceMode || control.host.analysisGridMode) ? dualVideoSurface.sourcePanelRects : []
 
         Rectangle {
-            required property int index
+            required property var modelData
 
-            x: Math.round(parent.width * (index + 1) / (control.host.sideBySideMode ? 2 : 3))
-            y: 1
-            width: 2
-            height: parent.height - 2
-            color: "#d8e2f2"
+            x: Math.round(Number(modelData.x))
+            y: Math.round(Number(modelData.y))
+            width: Math.round(Number(modelData.width))
+            height: Math.round(Number(modelData.height))
+            color: "transparent"
+            border.width: 1
+            border.color: "#d8e2f2"
             opacity: 0.75
             z: 8
         }
@@ -67,10 +95,35 @@ Rectangle {
 
     WipeHandle {
         visible: control.host.wipeMode
-        z: 30
+        z: 50
         surfaceItem: dualVideoSurface
         position: control.host.wipePosition
         onPositionRequested: position => control.host.wipePosition = position
+    }
+
+    Repeater {
+        model: !control.host.chromeVisible && control.host.sourceCount > 1 ? dualVideoSurface.sourcePanelRects : []
+
+        Rectangle {
+            required property var modelData
+
+            x: Math.max(8, Math.min(parent.width - width - 8, Number(modelData.x) + 8))
+            y: 8
+            width: 30
+            height: 26
+            radius: 4
+            color: "#b3243f68"
+            border.color: "#804b8df8"
+            z: 10
+
+            Text {
+                anchors.centerIn: parent
+                text: String.fromCharCode(65 + Number(parent.modelData.slot))
+                color: "white"
+                font.bold: true
+                font.pixelSize: 12
+            }
+        }
     }
 
     Rectangle {
@@ -233,77 +286,38 @@ Rectangle {
         border.width: 1
     }
 
-    Row {
+    Rectangle {
         id: analysisChrome
 
         objectName: "analysisControlsChrome"
-        visible: control.host.chromeVisible
-        spacing: 6
+        visible: control.host.chromeVisible && (control.host.differenceMode || dualVideoSurface.roiEnabled)
+        z: 30
+        width: analysisStatus.implicitWidth + 18
+        height: 28
+        radius: 5
+        color: "#dc171e2a"
+        border.color: control.host.borderColor
         anchors {
             right: parent.right
             rightMargin: 12
-            top: parent.top
-            topMargin: 12
+            bottom: parent.bottom
+            bottomMargin: 12
         }
 
-        Rectangle {
-            height: 32
-            width: analysisControls.implicitWidth + 16
-            radius: 5
-            color: "#dc171e2a"
-            border.color: control.host.borderColor
+        Label {
+            id: analysisStatus
 
-            Row {
-                id: analysisControls
-
-                spacing: 6
-                anchors.centerIn: parent
-
-                CheckBox {
-                    visible: control.host.differenceMode
-                    text: qsTr("Threshold")
-                    checked: control.host.differenceThresholdEnabled
-                    onToggled: control.host.differenceThresholdEnabled = checked
-                }
-
-                Label {
-                    visible: control.host.differenceMode
-                    text: control.host.comparisonExactnessLabel(control.host.selectedDifferenceExactness)
-                    color: control.host.selectedDifferenceExactness === 0 ? "#86efac" : "#facc15"
-                    font.pixelSize: 11
-                }
-
-                SpinBox {
-                    visible: control.host.differenceMode
-                    from: 0
-                    to: 255
-                    value: control.host.differenceThresholdCode
-                    editable: true
-                    implicitWidth: 72
-                    Accessible.name: qsTr("Difference threshold in 8-bit code values")
-                    onValueModified: control.host.differenceThresholdCode = value
-                }
-
-                ToolbarCombo {
-                    visible: control.host.differenceMode
-                    implicitWidth: 108
-                    model: [qsTr("Luma"), qsTr("Any channel"), qsTr("All channels")]
-                    currentIndex: control.host.differenceThresholdPolicy
-                    Accessible.name: qsTr("Difference threshold channel policy")
-                    onActivated: index => control.host.differenceThresholdPolicy = index
-                }
-
-                Button {
-                    text: qsTr("Reset zoom")
-                    onClicked: dualVideoSurface.resetViewport()
-                }
-
-                Button {
-                    visible: dualVideoSurface.roiEnabled
-                    text: qsTr("Clear ROI")
-                    onClicked: dualVideoSurface.clearRoi()
-                }
+            text: {
+                const parts = [];
+                if (control.host.differenceMode)
+                    parts.push(control.host.comparisonExactnessLabel(control.host.selectedDifferenceExactness));
+                if (dualVideoSurface.roiEnabled)
+                    parts.push(qsTr("ROI active"));
+                return parts.join(" · ");
             }
+            color: control.host.selectedDifferenceExactness === 0 ? "#86efac" : "#facc15"
+            font.pixelSize: 11
+            anchors.centerIn: parent
         }
     }
 
@@ -318,6 +332,7 @@ Rectangle {
         color: "#e6121822"
         border.color: control.host.errorColor
         border.width: 1
+        z: 40
         anchors.centerIn: parent
 
         Column {
@@ -348,12 +363,15 @@ Rectangle {
     }
 
     Rectangle {
+        id: alignmentStatus
+
         visible: control.host.chromeVisible && control.host.combinedAlignmentStatus.length > 0
         radius: 5
         color: "#d9232c3d"
         border.color: control.host.errorColor
         height: mappingStatusText.implicitHeight + 14
         width: Math.min(parent.width - 24, mappingStatusText.implicitWidth + 24)
+        z: 20
         anchors {
             top: parent.top
             topMargin: 12
@@ -375,36 +393,48 @@ Rectangle {
         id: surfaceLabels
 
         visible: control.host.chromeVisible
+        z: 10
         anchors {
             fill: parent
             margins: control.host.chromeVisible ? 1 : 0
         }
 
         Repeater {
+            id: surfaceLabelRepeater
+
             objectName: "surfaceLabelRepeater"
             model: dualVideoSurface.sourcePanelRects
 
             delegate: Rectangle {
                 id: surfaceLabel
 
+                required property int index
                 required property var modelData
+                objectName: "surfaceLabel"
+                property int sourceSlot: Number(modelData.slot)
 
-                x: Number(modelData.x) + 12
+                readonly property real panelWidth: Number(modelData.width)
+                readonly property bool wipeBadge: control.host.wipeMode
+                readonly property bool showFilename: !control.host.singleMode && !wipeBadge && panelWidth >= 160
+                readonly property bool compactBadge: control.host.singleMode || wipeBadge || panelWidth < 160
+
+                visible: wipeBadge || control.host.singleMode || panelWidth >= 80
+                x: wipeBadge ? (Number(modelData.slot) === control.host.differenceFirstSlot ? 12 : parent.width - width - 12) : Number(modelData.x) + 12
                 y: Number(modelData.y) + 12
-                width: Math.max(80, Number(modelData.width) - 24)
-                height: 46
+                width: compactBadge ? 44 : Math.min(280, Math.max(80, panelWidth - 24))
+                height: compactBadge ? 36 : 42
                 radius: 5
                 color: "#d9111721"
                 border.color: "#663a4a62"
 
                 Rectangle {
-                    width: 28
-                    height: 28
+                    width: 26
+                    height: 26
                     radius: 4
                     color: control.host.accentColor
                     anchors {
                         left: parent.left
-                        leftMargin: 9
+                        leftMargin: surfaceLabel.compactBadge ? 9 : 8
                         verticalCenter: parent.verticalCenter
                     }
 
@@ -418,6 +448,7 @@ Rectangle {
                 }
 
                 Text {
+                    visible: surfaceLabel.showFilename
                     text: control.host.sourceFilename(Number(surfaceLabel.modelData.slot))
                     color: control.host.primaryTextColor
                     font.pixelSize: 12
@@ -444,11 +475,11 @@ Rectangle {
         visible: control.host.frameErrorBannerVisible
         color: "#e6351f2a"
         border.color: "#b9503f4a"
-        z: 2
+        z: 40
         Accessible.name: qsTr("Frame unchanged. %1").arg(control.host.errorDetails())
         anchors {
-            top: surfaceLabels.bottom
-            topMargin: 8
+            top: parent.top
+            topMargin: alignmentStatus.visible ? alignmentStatus.height + 20 : 12
             horizontalCenter: parent.horizontalCenter
         }
 

@@ -22,6 +22,7 @@ class ReviewPreferencesController final : public QObject {
                    preferencesChanged)
     Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
                    NOTIFY preferencesChanged)
+    Q_PROPERTY(int oscMode READ oscMode WRITE setOscMode NOTIFY preferencesChanged)
 
 public:
     enum class ViewMode {
@@ -82,6 +83,7 @@ public:
     [[nodiscard]] DifferenceGain differenceGain() const noexcept;
     [[nodiscard]] DifferenceEdge differenceEdge() const noexcept;
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
+    [[nodiscard]] int oscMode() const noexcept;
 
     void setLargeStepFrames(int value);
     void setViewMode(ViewMode value);
@@ -89,6 +91,7 @@ public:
     void setDifferenceGain(DifferenceGain value);
     void setDifferenceEdge(DifferenceEdge value);
     void setDifferenceFilter(DifferenceFilter value);
+    void setOscMode(int value);
 
     Q_INVOKABLE void stop() noexcept;
 

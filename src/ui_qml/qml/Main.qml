@@ -28,6 +28,21 @@ ApplicationWindow {
     readonly property color mutedTextColor: "#93a2ba"
     readonly property color primaryTextColor: "#f3f6fb"
     readonly property color errorColor: "#f87171"
+
+    palette {
+        window: root.panelColor
+        windowText: root.primaryTextColor
+        base: root.raisedPanelColor
+        alternateBase: root.panelColor
+        text: root.primaryTextColor
+        button: root.raisedPanelColor
+        buttonText: root.primaryTextColor
+        highlight: root.accentColor
+        highlightedText: "#ffffff"
+        toolTipBase: root.raisedPanelColor
+        toolTipText: root.primaryTextColor
+    }
+
     // reviewController is provided by the C++ application context.
     // qmllint disable unqualified
     readonly property var controller: reviewController
@@ -64,10 +79,13 @@ ApplicationWindow {
     property bool dropRequestExternal: false
     property int inFrame: -1
     property int outFrame: -1
+    property real inMediaTime: -1
+    property real outMediaTime: -1
     property bool rangePlaybackActive: false
     property bool rangeStartPending: false
     property bool shortcutHelpVisible: false
     property int shortcutPreset: 0 // 0 Review, 1 Player
+    property bool dropFrameTimecode: false
 
     readonly property bool busy: Boolean((controller && controller.busy) || (workspace && workspace.busy))
     readonly property bool framePending: Boolean(controller && controller.framePending)
@@ -90,7 +108,8 @@ ApplicationWindow {
     readonly property bool sourceCMissing: Boolean(!controller || controller.sourceCMissing)
     readonly property int sourceCount: controller ? Number(controller.sourceCount) : 0
     readonly property bool singleMode: sourceCount === 1
-    readonly property int oscState: !chromeVisible ? 2 : (singleMode ? 1 : 0)
+    readonly property int preferredOscState: preferences ? Number(preferences.oscMode) : -1
+    readonly property int oscState: sourceCount === 0 || !chromeVisible ? 2 : (preferredOscState >= 0 ? preferredOscState : (singleMode ? 1 : 0))
     readonly property string pairErrorKey: controller ? controller.pairErrorKey : ""
     readonly property string frameMappingStatus: controller ? controller.frameMappingStatus : ""
     readonly property string alignmentEstimateStatus: controller ? controller.alignmentEstimateStatus : ""
@@ -251,8 +270,9 @@ ApplicationWindow {
     readonly property string overlayTitle: busy ? qsTr("Loading review...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open review") : qsTr("Drop one to three videos here")))
     readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Open one video for playback and frame review, or two to three videos for comparison.")))
     readonly property bool overlayVisible: (busy && currentFrame < 0) || !graphicsReady || (hasErrors && !frameErrorBannerVisible)
-    readonly property string currentTimecode: timecodeForFrame(currentFrame)
-    readonly property string previewTimecode: timecodeForFrame(Math.max(0, timelinePreviewFrame))
+    readonly property string currentTimecode: controller ? controller.timecodeForFrame(currentFrame, dropFrameTimecode) : "00:00:00:00"
+    readonly property string previewTimecode: controller ? controller.timecodeForFrame(Math.max(0, timelinePreviewFrame), dropFrameTimecode) : "00:00:00:00"
+    readonly property bool roiEnabled: Boolean(viewportFrame && viewportFrame.roiEnabled)
 
     onFramePendingChanged: {
         if (framePending)
@@ -284,7 +304,10 @@ ApplicationWindow {
 
     onSourceCountChanged: {
         normalizeViewMode();
+        Qt.callLater(remapReviewRange);
     }
+
+    onCanonicalSourceIndexChanged: Qt.callLater(remapReviewRange)
 
     onPlayingChanged: {
         if (!chromeVisible && currentFrame >= 0)
@@ -307,25 +330,13 @@ ApplicationWindow {
         return decodedUrl.substring(separator + 1);
     }
 
-    function timecodeForFrame(frame) {
-        if (frame < 0)
-            return "00:00:00:00";
-        const fps = Math.max(1, oneSecondStepFrames);
-        const value = Math.floor(Number(frame));
-        const frames = value % fps;
-        const totalSeconds = Math.floor(value / fps);
-        const seconds = totalSeconds % 60;
-        const minutes = Math.floor(totalSeconds / 60) % 60;
-        const hours = Math.floor(totalSeconds / 3600);
-        const pad = number => String(number).padStart(2, "0");
-        return pad(hours) + ":" + pad(minutes) + ":" + pad(seconds) + ":" + pad(frames);
-    }
-
     function setInPoint() {
         if (currentFrame >= 0) {
             inFrame = Number(currentFrame);
+            inMediaTime = controller ? Number(controller.mediaTimeForFrame(inFrame)) : -1;
             if (outFrame >= 0 && outFrame < inFrame)
-                outFrame = -1;
+                outFrame = outMediaTime = -1;
+            syncReviewMarks();
             showImmersiveHud(qsTr("In · Frame %1").arg(inFrame + 1));
         }
     }
@@ -333,8 +344,10 @@ ApplicationWindow {
     function setOutPoint() {
         if (currentFrame >= 0) {
             outFrame = Number(currentFrame);
+            outMediaTime = controller ? Number(controller.mediaTimeForFrame(outFrame)) : -1;
             if (inFrame >= 0 && outFrame < inFrame)
-                inFrame = -1;
+                inFrame = inMediaTime = -1;
+            syncReviewMarks();
             showImmersiveHud(qsTr("Out · Frame %1").arg(outFrame + 1));
         }
     }
@@ -356,9 +369,50 @@ ApplicationWindow {
         return true;
     }
 
+    function clearSelectedRange() {
+        inFrame = -1;
+        outFrame = -1;
+        inMediaTime = -1;
+        outMediaTime = -1;
+        rangePlaybackActive = false;
+        rangeStartPending = false;
+        syncReviewMarks();
+    }
+
+    function syncReviewMarks() {
+        if (workspace && sourceCount > 0)
+            workspace.updateReviewMarks(inFrame, outFrame);
+    }
+
+    function remapReviewRange() {
+        if (!controller || sourceCount === 0)
+            return;
+        if (inMediaTime >= 0)
+            inFrame = Number(controller.frameForMediaTime(inMediaTime));
+        if (outMediaTime >= 0)
+            outFrame = Number(controller.frameForMediaTime(outMediaTime));
+        if (inFrame >= 0 || outFrame >= 0)
+            syncReviewMarks();
+    }
+
+    function toggleRangeLoop() {
+        if (inFrame < 0 || outFrame < inFrame)
+            return false;
+        rangePlaybackActive = !rangePlaybackActive;
+        rangeStartPending = false;
+        if (!rangePlaybackActive && controller && controller.playing)
+            controller.pause();
+        return true;
+    }
+
     function resetViewport() {
         if (viewportFrame && viewportFrame.surface)
             viewportFrame.surface.resetViewport();
+    }
+
+    function clearRoi() {
+        if (viewportFrame)
+            viewportFrame.clearRoi();
     }
 
     function openBadCaseExport() {
@@ -425,6 +479,8 @@ ApplicationWindow {
         sourceOffsetValues = {};
         inFrame = -1;
         outFrame = -1;
+        inMediaTime = -1;
+        outMediaTime = -1;
         rangePlaybackActive = false;
         rangeStartPending = false;
         wipePosition = 0.5;
@@ -527,6 +583,7 @@ ApplicationWindow {
 
     function performVideoReview(normalizedUrls, externalRequest) {
         if (normalizedUrls.length === 1) {
+            clearSelectedRange();
             selectedSourceA = normalizedUrls[0];
             selectedSourceB = "";
             selectedSourceC = "";
@@ -601,6 +658,8 @@ ApplicationWindow {
     }
 
     function openDroppedComparison(referenceIndex) {
+        if (!pendingComparisonPreservesPosition)
+            clearSelectedRange();
         selectedSourceA = pendingDroppedVideos[0];
         selectedSourceB = pendingDroppedVideos[1];
         selectedSourceC = pendingDroppedVideos.length > 2 ? pendingDroppedVideos[2] : "";
@@ -732,6 +791,10 @@ ApplicationWindow {
         wipePosition = Number(state.wipePosition);
         differenceThresholdEnabled = Boolean(state.thresholdEnabled);
         differenceThresholdCode = Math.round(Number(state.threshold) * 255);
+        inFrame = Number(workspace.restoredInFrame);
+        outFrame = Number(workspace.restoredOutFrame);
+        inMediaTime = inFrame >= 0 && controller ? Number(controller.mediaTimeForFrame(inFrame)) : -1;
+        outMediaTime = outFrame >= 0 && controller ? Number(controller.mediaTimeForFrame(outFrame)) : -1;
         viewportFrame.surface.restoreViewport(Number(state.centerX), Number(state.centerY), Number(state.scale), Boolean(state.roiEnabled), Number(state.roiLeft || 0), Number(state.roiTop || 0), Number(state.roiRight || 1), Number(state.roiBottom || 1));
     }
 
@@ -1131,7 +1194,7 @@ ApplicationWindow {
             }
             MenuSeparator {}
             MenuItem {
-                text: root.inspectorOpen ? qsTr("Hide Advanced Alignment Inspector") : qsTr("Show Advanced Alignment Inspector")
+                text: root.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Show Inspector")
                 onTriggered: root.shell.inspectorVisible = !root.inspectorOpen
             }
         }
@@ -1817,9 +1880,9 @@ ApplicationWindow {
                 objectName: "advancedInspectorButton"
                 implicitWidth: 142
                 implicitHeight: 36
-                visible: !root.singleMode
+                visible: root.sourceCount > 0
                 text: root.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Advanced Inspector")
-                helpText: qsTr("Show frame offsets, automatic alignment, sequence analysis, and manual anchors.")
+                helpText: qsTr("Show Compare, Alignment, Review, and Info tools.")
                 enabled: root.graphicsReady
                 onClicked: root.shell.inspectorVisible = !root.inspectorOpen
             }
@@ -1857,6 +1920,7 @@ ApplicationWindow {
 
         sourcesModel: root.controller ? root.controller.sources : null
         sourceCount: root.sourceCount
+        singleMode: root.singleMode
         canonicalSourceIndex: root.canonicalSourceIndex
         busy: root.busy
         borderColor: root.borderColor
@@ -1897,7 +1961,7 @@ ApplicationWindow {
         id: alignmentBar
 
         host: root
-        visible: root.chromeVisible && root.inspectorOpen && !root.singleMode
+        visible: root.chromeVisible && root.inspectorOpen && root.sourceCount > 0
         z: 20
         anchors {
             top: parent.top
@@ -1935,7 +1999,7 @@ ApplicationWindow {
     TimelineThumbnailCache {
         id: thumbnailCache
 
-        sourceItem: viewportFrame
+        sourceItem: viewportFrame.videoOutput
         currentFrame: Number(root.currentFrame)
         totalFrames: Number(root.totalFrames)
         generation: root.shell ? root.shell.activeGeneration : 0
@@ -1975,6 +2039,7 @@ ApplicationWindow {
             root.timelinePreviewFrame = frame;
             root.controller.seekFrame(frame);
         }
+        onPreviewRequested: frame => root.timelinePreviewFrame = frame
     }
 
     Button {
