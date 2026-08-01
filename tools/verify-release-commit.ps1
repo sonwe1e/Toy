@@ -6,12 +6,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-& git fetch --no-tags origin main
-if ($LASTEXITCODE -ne 0) {
-    throw 'Unable to fetch origin/main for release ancestry validation.'
+if ($RemoteMain -notmatch '^(?<remote>[^/]+)/(?<branch>.+)$') {
+    throw "Remote main reference '$RemoteMain' must use the form '<remote>/<branch>'."
 }
-& git merge-base --is-ancestor $Commit $RemoteMain
+$remote = $Matches.remote
+$branch = $Matches.branch
+$remoteRef = "refs/remotes/$RemoteMain"
+& git fetch --no-tags --depth=1 $remote "+refs/heads/${branch}:$remoteRef"
 if ($LASTEXITCODE -ne 0) {
-    throw "Release commit '$Commit' is not an ancestor of '$RemoteMain'."
+    throw "Unable to fetch '$RemoteMain' for release identity validation."
 }
-Write-Host "Verified release commit '$Commit' is contained in '$RemoteMain'."
+
+$releaseCommit = (& git rev-parse "$Commit^{commit}").Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to resolve release commit '$Commit'."
+}
+$mainCommit = (& git rev-parse "$RemoteMain^{commit}").Trim()
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to resolve remote main commit '$RemoteMain'."
+}
+if ($releaseCommit -cne $mainCommit) {
+    throw "Release commit '$releaseCommit' does not match '$RemoteMain' at '$mainCommit'."
+}
+Write-Host "Verified release commit '$releaseCommit' matches '$RemoteMain'."
