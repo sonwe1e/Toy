@@ -15,7 +15,6 @@
 *.cmake text eol=lf
 CMakeLists.txt text eol=lf
 *.json text eol=lf
-*.dvsproj text eol=lf
 *.md text eol=lf
 *.qml text eol=lf
 *.qrc text eol=lf

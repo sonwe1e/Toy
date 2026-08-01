@@ -193,18 +193,6 @@ try {
         throw 'The MSI did not create the VCStation Start Menu shortcut.'
     }
 
-    $extension = Get-ItemPropertyValue `
-        -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\.dvsproj' `
-        -Name '(default)'
-    if ($extension -ne 'VCStation.Project') {
-        throw "Unexpected .dvsproj association: $extension"
-    }
-    $openCommand = Get-ItemPropertyValue `
-        -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\VCStation.Project\shell\open\command' `
-        -Name '(default)'
-    if ($openCommand -notmatch 'VCStation\.exe.+%1') {
-        throw "Unexpected .dvsproj open command: $openCommand"
-    }
     $shellClsid = '{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}'
     $shellServer = Get-ItemPropertyValue `
         -LiteralPath "Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\$shellClsid\InprocServer32" `
@@ -300,9 +288,6 @@ if ($remainingProducts) {
         'An ARP entry remained after uninstall: ' +
         (($remainingProducts | ForEach-Object DisplayName) -join ', ')
     )
-}
-if (Test-Path -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\.dvsproj') {
-    throw 'The .dvsproj association remained after uninstall.'
 }
 $shellClsidPath = (
     'Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\' +

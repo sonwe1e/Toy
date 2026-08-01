@@ -469,7 +469,10 @@ ToolTip.text
 显示同一个顺序 / Reference 确认界面
 ```
 
-当前 MSI 只注册了 `.dvsproj` 文件关联，并没有注册视频文件的 Shell verb；GUI 启动参数也只支持单个 `.dvsproj`，其他普通视频参数会被拒绝。
+> **已废弃（superseded by `USERPLAN_Refine.md`）**：VCStation 不再管理 Project，`.dvsproj` 文件关联、
+> Project 打开/保存/Relink 与启动协议中的 `OpenProject` 均已移除；MSI 只保留视频文件 Shell verb。
+
+当前 MSI 注册了视频文件的 Shell verb；GUI 启动参数只支持 `--play`/`--compare`，不再接受项目文件。
 
 Windows 的 `MultiSelectModel=Player` 专门用于支持多文件选择的 Shell verb；`IExplorerCommand::Invoke()` 可以直接接收包含所有选中文件的 `IShellItemArray`。([Microsoft Learn][2])
 
@@ -673,6 +676,9 @@ TransportBar.qml
 
 ## 4. 项目持久化模型落后于现有视图能力
 
+> **已废弃（superseded by `USERPLAN_Refine.md`）**：Project Schema 与 Project 持久化整体移除，
+> 视图状态（Wipe/ROI/Zoom/In-Out）只存在于当前运行 Session，不再保存。
+
 当前 `ProjectViewLayout` 只有：
 
 ```text
@@ -851,6 +857,8 @@ v1.1.1 或 v1.2.0 必须恢复：
 
 ### B1. 1～3 路统一模型
 
+> **已废弃（superseded by `USERPLAN_Refine.md`）**：`Project`/`ProjectJson`/Project 持久化已从该列表中移除。
+
 依次修改：
 
 ```text
@@ -862,8 +870,6 @@ PlaybackCoordinator
 ReviewController
 ComparisonSurface
 D3d11ComparisonRenderer
-Project
-ProjectJson
 WorkspaceCoordinator
 ```
 
@@ -977,7 +983,7 @@ StartupRequestBroker
 * 播放、暂停、seek、逐帧正常；
 * 单视频占满 viewport；
 * 对比和对齐按钮隐藏；
-* 单视频项目可保存和恢复。
+* ~~单视频项目可保存和恢复。~~（已废弃：项目持久化整体移除，见 `USERPLAN_Refine.md`）
 
 ## Wipe
 

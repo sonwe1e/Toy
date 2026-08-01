@@ -13,11 +13,11 @@ canonical frame position 上，支持任意两路 Wipe/Diff、显式对齐以及
 ## 主要工作流
 
 启动后可直接拖入 1～3 个视频：单个视频直接以暂停的首帧铺满审查视口，两路或三路
-素材会先确认 A/B/C 顺序和 Reference。也可以拖入 `.dvsproj` 或从 File 菜单打开项目。
-File 菜单将 “Open new review…” 与 “Add source…” 分开，避免把新建单路审查误解为向
-当前会话追加视频。
-Schema v4 项目文件保存视频路径、Reference、Offset、锚点、Wipe、阈值、滤镜、
-viewport 和 ROI，不会导出新视频。
+素材会先确认 A/B/C 顺序和 Reference。也可以从 File 菜单选择 Open videos… 打开视频，
+或用 Add video… 向当前会话追加。
+VCStation 只管理当前打开的 1～3 个视频（会话），不保存项目、没有 `.dvsproj`，
+关闭窗口时不会提示保存；OSC 模式、快捷键方案和默认 Diff Filter 等偏好自动保存到
+Settings。
 
 常用审查能力包括：
 

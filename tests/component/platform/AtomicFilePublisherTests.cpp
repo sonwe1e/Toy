@@ -52,8 +52,8 @@ void writeTextFile(const std::filesystem::path& path, const std::string& text) {
 
 [[nodiscard]] TemporaryFileIdentity testIdentity() {
     return TemporaryFileIdentity{
-        .operation = "project",
-        .ownerId = "test-project",
+        .operation = "artifact",
+        .ownerId = "test-output",
         .revision = 7,
     };
 }
@@ -87,7 +87,7 @@ BOOL WINAPI failTargetRecovery(const LPCWSTR, const LPCWSTR, const DWORD) {
 
 TEST(AtomicFilePublisherTests, ReplacesAnExistingFileOnlyAfterFlush) {
     ScopedTemporaryDirectory directory;
-    const std::filesystem::path destination = directory.path() / "project.dvsproj";
+    const std::filesystem::path destination = directory.path() / "output.dat";
     writeTextFile(destination, "old");
 
     const std::string replacement = "new";
@@ -113,7 +113,7 @@ TEST(AtomicFilePublisherTests, ReplacesAnExistingFileOnlyAfterFlush) {
 
 TEST(AtomicFilePublisherTests, RequiresFlushBeforePublishing) {
     ScopedTemporaryDirectory directory;
-    const std::filesystem::path destination = directory.path() / "project.dvsproj";
+    const std::filesystem::path destination = directory.path() / "output.dat";
     writeTextFile(destination, "old");
 
     auto transaction = AtomicFilePublisher::begin(destination, testIdentity());
@@ -167,7 +167,7 @@ TEST(AtomicFilePublisherTests, DestroysUnpublishedPartialFiles) {
 
 TEST(AtomicFilePublisherTests, RetainsExistingTargetWhenReplacementCannotMove) {
     ScopedTemporaryDirectory directory;
-    const std::filesystem::path destination = directory.path() / "project.dvsproj";
+    const std::filesystem::path destination = directory.path() / "output.dat";
     writeTextFile(destination, "old");
     injectedBackupPath.clear();
 
@@ -200,7 +200,7 @@ TEST(AtomicFilePublisherTests, RetainsExistingTargetWhenReplacementCannotMove) {
 
 TEST(AtomicFilePublisherTests, RestoresExistingTargetAfterPartialReplacementMove) {
     ScopedTemporaryDirectory directory;
-    const std::filesystem::path destination = directory.path() / "project.dvsproj";
+    const std::filesystem::path destination = directory.path() / "output.dat";
     writeTextFile(destination, "old");
     injectedBackupPath.clear();
 
@@ -233,7 +233,7 @@ TEST(AtomicFilePublisherTests, RestoresExistingTargetAfterPartialReplacementMove
 
 TEST(AtomicFilePublisherTests, PreservesBothCopiesWhenPartialReplacementRecoveryFails) {
     ScopedTemporaryDirectory directory;
-    const std::filesystem::path destination = directory.path() / "project.dvsproj";
+    const std::filesystem::path destination = directory.path() / "output.dat";
     writeTextFile(destination, "old");
     injectedBackupPath.clear();
 

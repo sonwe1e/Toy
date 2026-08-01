@@ -4,8 +4,9 @@ Status: **phases 0–6 implemented and locally validated**. The FrameSet model,
 1–3 source validation with compatibility reports, missing-frame semantics, parallel
 multi-source decode/render pipeline, three-up/reference-focus layouts, selectable
 difference edges, confidence-gated global/sequence alignment, manual anchors, and
-timeline diagnostics are in the codebase today. Phase 5 includes the GUI project
-open/save/relink loop and schema v4. Phase 6 now includes synchronized pan/zoom, ROI,
+timeline diagnostics are in the codebase today. The GUI project open/save/relink loop and
+schema v4 were removed — VCStation manages only the current open 1–3 video session and does
+not persist projects (see USERPLAN_Refine.md). Phase 6 includes synchronized pan/zoom, ROI,
 threshold masks, the four-panel analysis grid, exact-plane difference with a persistent
 exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
 transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
@@ -77,9 +78,9 @@ actors. A replacement open stops active cadence, captures the displayed canonica
 advances session epoch and playback generation, opens the new 1–3 source topology, maps the saved
 time through the new canonical timeline, and presents that complete FrameSet while paused.
 
-When the rebuilt session belongs to a saved project, `Project::replaceReviewState()` validates the
-new source set, view layout, alignment payload, and displayed frame as one aggregate. No transient
-Single-with-two-sources or comparison-without-an-edge state is observable by persistence.
+A rebuilt session is validated as a running session only; no persistence layer observes
+intermediate topology. The session holds the source set, view layout, alignment payload, and
+displayed frame, and ends when the app closes.
 
 The per-user startup broker begins listening before QML loads. Valid requests arriving during that
 window enter a bounded eight-request FIFO and are acknowledged only after they are either queued or
@@ -88,7 +89,7 @@ delivered; registering the handler drains the queue in order exactly once.
 The QML shell is canvas-first: the viewport owns the window and menu/source/comparison/inspector/
 transport chrome only contributes margins while visible. `ReviewActions` remains instantiated when
 chrome is hidden, so transport controls, menus, and shortcuts share one command path. Full screen
-and chrome visibility are independent transient window states and are not persisted in projects.
+and chrome visibility are independent transient window states and are not persisted.
 Entering pure-canvas mode explicitly returns keyboard focus to the viewport and removes its border,
 corner radius, surface margin, labels, and analysis controls.
 

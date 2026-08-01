@@ -47,43 +47,6 @@
 
         <DirectoryRef Id="INSTALL_ROOT">
             <Component
-                Id="VCStationProjectAssociation"
-                Guid="1C0E89D8-18D6-4C29-87E5-D67A4205E0B9">
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\.dvsproj"
-                    Value="VCStation.Project"
-                    Type="string"
-                    KeyPath="yes"/>
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\.dvsproj"
-                    Name="Content Type"
-                    Value="application/x-vcstation-project"
-                    Type="string"/>
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\VCStation.Project"
-                    Value="VCStation review project"
-                    Type="string"/>
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\VCStation.Project\DefaultIcon"
-                    Value="&quot;[INSTALL_ROOT]VCStation.exe&quot;,0"
-                    Type="string"/>
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\VCStation.Project\shell\open\command"
-                    Value="&quot;[INSTALL_ROOT]VCStation.exe&quot; &quot;%1&quot;"
-                    Type="string"/>
-                <RegistryValue
-                    Root="HKLM"
-                    Key="Software\Classes\Applications\VCStation.exe\SupportedTypes"
-                    Name=".dvsproj"
-                    Value=""
-                    Type="string"/>
-            </Component>
-            <Component
                 Id="VCStationExplorerCommand"
                 Guid="D20DA233-4317-45D8-B878-00BF4486F1C4"
                 Bitness="always64">
@@ -249,7 +212,6 @@
         </StandardDirectory>
 
         <FeatureRef Id="ProductFeature">
-            <ComponentRef Id="VCStationProjectAssociation"/>
             <ComponentRef Id="VCStationExplorerCommand"/>
             <ComponentRef Id="VCStationStartMenuShortcut"/>
         </FeatureRef>
