@@ -31,17 +31,7 @@
             <line number="1" hits="1"/>
           </lines>
         </class>
-        <class name="Project" filename="src/domain/src/Project.cpp">
-          <lines>
-            <line number="1" hits="1"/>
-          </lines>
-        </class>
         <class name="RationalRate" filename="src/domain/src/RationalRate.cpp">
-          <lines>
-            <line number="1" hits="1"/>
-          </lines>
-        </class>
-        <class name="SourceRelinkCandidate" filename="src/domain/src/SourceRelinkCandidate.cpp">
           <lines>
             <line number="1" hits="1"/>
           </lines>

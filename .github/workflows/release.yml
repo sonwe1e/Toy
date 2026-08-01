@@ -96,7 +96,7 @@ jobs:
       - name: Debug build, tests, and quality
         shell: pwsh
         run: |
-          cmake --preset dev
+          cmake --preset dev --fresh
           cmake --build --preset dev
           ctest --preset dev --output-on-failure
           cmake --build --preset dev --target format-check
@@ -105,7 +105,7 @@ jobs:
       - name: Release build and tests
         shell: pwsh
         run: |
-          cmake --preset release
+          cmake --preset release --fresh
           cmake --build --preset release
           ctest --preset release --output-on-failure
 
@@ -197,7 +197,7 @@ jobs:
       - name: Build and test Release
         shell: pwsh
         run: |
-          cmake --preset release "-DDVS_PREVIOUS_RELEASE_MSI=$env:DVS_PREVIOUS_RELEASE_MSI"
+          cmake --preset release --fresh "-DDVS_PREVIOUS_RELEASE_MSI=$env:DVS_PREVIOUS_RELEASE_MSI"
           cmake --build --preset release
           ctest --preset release --output-on-failure
           $metadata = Get-Content '.\out\build\release\release-metadata.json' -Raw |

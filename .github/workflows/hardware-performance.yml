@@ -103,7 +103,7 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset release
+        run: cmake --preset release --fresh
 
       - name: Build
         shell: pwsh

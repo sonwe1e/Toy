@@ -90,7 +90,7 @@ jobs:
 
       - name: Configure development preset
         shell: pwsh
-        run: cmake --preset dev
+        run: cmake --preset dev --fresh
 
       - name: Check formatting
         shell: pwsh
