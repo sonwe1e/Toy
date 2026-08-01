@@ -2887,7 +2887,7 @@ TEST(PlaybackCoordinatorTests, ProbeAdmissionFailureCancelsAcceptedSiblingExactl
     EXPECT_EQ(coordinator->snapshot()->sessionState, domain::SessionState::kError);
 }
 
-TEST(PlaybackCoordinatorTests, PostValidationOpenFailureKeepsPriorPixelsButIsNotReady) {
+TEST(PlaybackCoordinatorTests, PostValidationOpenFailureRestoresPriorReadySession) {
     const auto probe = std::make_shared<FakeMediaProbe>();
     const auto provider = std::make_shared<FakeFrameProvider>();
     const auto render = std::make_shared<FakeRenderChannel>();
@@ -2938,13 +2938,41 @@ TEST(PlaybackCoordinatorTests, PostValidationOpenFailureKeepsPriorPixelsButIsNot
                                true,
                                "The replacement decoder could not be opened.");
     ASSERT_TRUE(provider->postOpenFailed(*replacementOpen, openFailure));
+
+    ASSERT_TRUE(provider->waitForOpenRequestCount(3U));
+    const auto rollbackOpen = provider->openRequest(2U);
+    ASSERT_TRUE(rollbackOpen.has_value());
+    ASSERT_EQ(rollbackOpen->sources.size(), 2U);
+    EXPECT_EQ(rollbackOpen->sources[0].descriptor.normalizedPath, "a.mp4");
+    EXPECT_EQ(rollbackOpen->sources[1].descriptor.normalizedPath, "b.mp4");
+    ASSERT_TRUE(provider->postOpenSucceeded(*rollbackOpen));
+
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const auto rollbackFrame = provider->frameRequest(1U);
+    ASSERT_TRUE(rollbackFrame.has_value());
+    EXPECT_EQ(rollbackFrame->frameId, domain::FrameId{0});
+    ASSERT_TRUE(provider->postFrameReady(*rollbackFrame, makeFrameSet(rollbackFrame->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*rollbackFrame));
+    presentPublished(coordinator, render, 1U);
+
     const auto terminals = waitForTerminals(coordinator, 1U);
     ASSERT_EQ(terminals.size(), 1U);
     EXPECT_EQ(terminals.front().outcome, CommandOutcome::Failed);
-    EXPECT_EQ(coordinator->snapshot()->sessionState, domain::SessionState::kError);
-    EXPECT_FALSE(coordinator->snapshot()->displayedFrame.has_value());
-    EXPECT_EQ(render->publishedCount(), 1U);
-    EXPECT_TRUE(render->clearContexts().empty());
+    ASSERT_TRUE(terminals.front().error.has_value());
+    EXPECT_EQ(terminals.front().error->technicalDetail, openFailure.technicalDetail);
+
+    const auto restored = coordinator->snapshot();
+    ASSERT_EQ(restored->sessionState, domain::SessionState::kReady);
+    ASSERT_TRUE(restored->displayedFrame.has_value());
+    EXPECT_EQ(*restored->displayedFrame, domain::FrameId{0});
+    ASSERT_TRUE(restored->validatedComparison);
+    ASSERT_EQ(restored->validatedComparison->sourceCount(), 2U);
+    EXPECT_EQ(restored->validatedComparison->sources()[0].descriptor.normalizedPath, "a.mp4");
+    EXPECT_EQ(restored->validatedComparison->sources()[1].descriptor.normalizedPath, "b.mp4");
+    ASSERT_TRUE(restored->lastError.has_value());
+    EXPECT_EQ(restored->lastError->technicalDetail, openFailure.technicalDetail);
+    EXPECT_EQ(render->publishedCount(), 2U);
 }
 
 TEST(PlaybackCoordinatorTests, RequiresProviderTerminalAndPresentationInEitherOrder) {

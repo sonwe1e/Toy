@@ -44,16 +44,12 @@ Rectangle {
 
                 objectName: "referenceSourceCombo"
                 implicitWidth: 112
-                model: [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None")]
-                currentIndex: control.host.referenceSourceIndex >= 0 ? control.host.referenceSourceIndex : 3
+                model: control.host.sourceCount >= 3 ? [qsTr("Source A"), qsTr("Source B"), qsTr("Source C")] : [qsTr("Source A"), qsTr("Source B")]
+                currentIndex: Math.max(0, control.host.canonicalSourceIndex)
                 Accessible.name: qsTr("Canonical reference source")
                 onActivated: index => {
-                    if (index === 2 && !control.host.hasSelectedSourceC) {
-                        currentIndex = control.host.referenceSourceIndex >= 0 ? control.host.referenceSourceIndex : 3;
-                        return;
-                    }
-                    control.host.referenceSourceIndex = index === 3 ? -1 : index;
-                    control.host.resetCanonicalSourceOffset();
+                    if (!control.host.controller.changeReference(index))
+                        currentIndex = Math.max(0, control.host.canonicalSourceIndex);
                 }
             }
 

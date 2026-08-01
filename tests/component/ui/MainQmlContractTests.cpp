@@ -4,6 +4,7 @@
 #include "dvs/ui/GraphicsBackend.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
+#include "dvs/ui/ReviewShellController.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -138,6 +139,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         },
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
+    ReviewShellController shell{controller};
     QObject workspace;
     workspace.setProperty("busy", false);
     workspace.setProperty("dirty", false);
@@ -153,6 +155,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
     engine.rootContext()->setContextProperty(QStringLiteral("workspaceController"), &workspace);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewShell"), &shell);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -162,8 +165,9 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QCoreApplication::processEvents();
     ASSERT_EQ(controller.sources()->rowCount(), 2);
 
-    root->setProperty("activeStartupRequest", QVariantMap{{QStringLiteral("kind"), 2}});
     const QVariant requestUrls = QVariantList{QUrl::fromLocalFile(QStringLiteral("C:/a.mp4"))};
+    ASSERT_TRUE(shell.enqueueStartupRequest(2, requestUrls.toList()));
+    EXPECT_FALSE(shell.takeNextStartupRequest().isEmpty());
     for (int requestIndex = 0; requestIndex < 8; ++requestIndex) {
         QVariant accepted;
         ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
@@ -180,9 +184,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
                                           Q_ARG(QVariant, QVariant{2}),
                                           Q_ARG(QVariant, requestUrls)));
     EXPECT_FALSE(overflowAccepted.toBool());
-    EXPECT_EQ(root->property("startupRequestQueue").toList().size(), 8);
-    root->setProperty("startupRequestQueue", QVariantList{});
-    root->setProperty("activeStartupRequest", QVariant{});
+    EXPECT_EQ(shell.queuedStartupRequestCount(), 8);
+    shell.completeStartupRequest();
 
     EXPECT_TRUE(root->property("manualAnchorActive").toBool());
     EXPECT_FALSE(root->property("manualOffsetActive").toBool());
@@ -208,16 +211,28 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(window, nullptr);
     QObject* const inspector =
         root->findChild<QObject*>(QStringLiteral("advancedAlignmentInspector"));
-    auto* const scroller = root->findChild<QQuickItem*>(QStringLiteral("comparisonScroller"));
+    auto* const compareBar = root->findChild<QQuickItem*>(QStringLiteral("compareModeBar"));
     auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
     auto* const transportBar = root->findChild<QQuickItem*>(QStringLiteral("transportBar"));
     auto* const viewport = root->findChild<QQuickItem*>(QStringLiteral("mediaViewportFocusTarget"));
     auto* const surface = root->findChild<QQuickItem*>(QStringLiteral("dualVideoSurface"));
-    auto* const viewModeCombo = root->findChild<QQuickItem*>(QStringLiteral("viewModeCombo"));
+    auto* const sideModeButton = root->findChild<QQuickItem*>(QStringLiteral("sideModeButton"));
     QObject* const analysisChrome =
         root->findChild<QObject*>(QStringLiteral("analysisControlsChrome"));
     QObject* const surfaceLabelRepeater =
         root->findChild<QObject*>(QStringLiteral("surfaceLabelRepeater"));
+    QObject* const activeSourceRepeater =
+        root->findChild<QObject*>(QStringLiteral("activeSourceRepeater"));
+    QObject* const timeline = root->findChild<QObject*>(QStringLiteral("timelineSlider"));
+    QObject* const shortcutHelp = root->findChild<QObject*>(QStringLiteral("shortcutHelpOverlay"));
+    QObject* const contextViewMenu = root->findChild<QObject*>(QStringLiteral("contextViewMenu"));
+    QObject* const contextPairMenu = root->findChild<QObject*>(QStringLiteral("contextPairMenu"));
+    QObject* const contextReferenceMenu =
+        root->findChild<QObject*>(QStringLiteral("contextReferenceMenu"));
+    QObject* const contextBadCaseAction =
+        root->findChild<QObject*>(QStringLiteral("contextBadCaseAction"));
+    QObject* const contextInfoAction =
+        root->findChild<QObject*>(QStringLiteral("contextInfoAction"));
     QObject* const immersiveHud = root->findChild<QObject*>(QStringLiteral("immersiveReviewHud"));
     auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
     auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
@@ -225,14 +240,22 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QObject* const analysisGridMenuItem =
         root->findChild<QObject*>(QStringLiteral("analysisGridMenuItem"));
     ASSERT_NE(inspector, nullptr);
-    ASSERT_NE(scroller, nullptr);
+    ASSERT_NE(compareBar, nullptr);
     ASSERT_NE(transport, nullptr);
     ASSERT_NE(transportBar, nullptr);
     ASSERT_NE(viewport, nullptr);
     ASSERT_NE(surface, nullptr);
-    ASSERT_NE(viewModeCombo, nullptr);
+    ASSERT_NE(sideModeButton, nullptr);
     ASSERT_NE(analysisChrome, nullptr);
     ASSERT_NE(surfaceLabelRepeater, nullptr);
+    ASSERT_NE(activeSourceRepeater, nullptr);
+    ASSERT_NE(timeline, nullptr);
+    ASSERT_NE(shortcutHelp, nullptr);
+    ASSERT_NE(contextViewMenu, nullptr);
+    ASSERT_NE(contextPairMenu, nullptr);
+    ASSERT_NE(contextReferenceMenu, nullptr);
+    ASSERT_NE(contextBadCaseAction, nullptr);
+    ASSERT_NE(contextInfoAction, nullptr);
     ASSERT_NE(immersiveHud, nullptr);
     ASSERT_NE(firstButton, nullptr);
     ASSERT_NE(lastButton, nullptr);
@@ -241,14 +264,22 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());
     EXPECT_FALSE(inspector->property("visible").toBool());
     EXPECT_EQ(root->property("minimumWidth").toDouble(), 960.0);
-    EXPECT_TRUE(scroller->clip());
-    EXPECT_TRUE(scroller->property("interactive").toBool());
+    EXPECT_TRUE(compareBar->isVisible());
     EXPECT_GT(transport->width(), 0.0);
     EXPECT_GT(firstButton->width(), 0.0);
     EXPECT_GT(lastButton->width(), 0.0);
     EXPECT_TRUE(analysisChrome->property("visible").toBool());
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 2);
-    EXPECT_EQ(viewModeCombo->property("count").toInt(), 3);
+    EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 2);
+    EXPECT_EQ(root->property("availableViewModes").toList().size(), 3);
+    EXPECT_GE(viewport->height() / window->contentItem()->height(), 0.78);
+    QVariant zoomResult;
+    ASSERT_TRUE(QMetaObject::invokeMethod(timeline,
+                                          "setZoom",
+                                          Q_RETURN_ARG(QVariant, zoomResult),
+                                          Q_ARG(QVariant, QVariant{2.0}),
+                                          Q_ARG(QVariant, QVariant{0.5})));
+    EXPECT_GT(timeline->property("zoomFactor").toDouble(), 1.0);
 
     window->resize(960, 640);
     window->show();
@@ -263,8 +294,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         << "left=" << transportTopLeft.x() << " barWidth=" << transportBar->width()
         << " contentWidth=" << window->contentItem()->width();
 
-    viewModeCombo->forceActiveFocus();
-    ASSERT_TRUE(viewModeCombo->hasActiveFocus());
+    sideModeButton->forceActiveFocus();
+    ASSERT_TRUE(sideModeButton->hasActiveFocus());
     EXPECT_FALSE(root->property("globalMediaShortcutsEnabled").toBool());
     sendKey(*window, Qt::Key_Tab);
     QCoreApplication::processEvents();
@@ -297,19 +328,33 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         .context = application::commandContext(submitted.back()),
         .outcome = application::CommandOutcome::Succeeded,
     });
+    snapshot->displayedFrame = domain::FrameId{2};
     controller.refreshProjection();
     QCoreApplication::processEvents();
     EXPECT_TRUE(immersiveHud->property("visible").toBool());
+
+    root->setProperty("shortcutPreset", 1);
+    sendKey(*window, Qt::Key_Right);
+    ASSERT_FALSE(submitted.empty());
+    const auto* const playerStep = std::get_if<application::StepFramesCommand>(&submitted.back());
+    ASSERT_NE(playerStep, nullptr);
+    EXPECT_EQ(playerStep->delta, 5 * 30);
+    terminals.push_back(application::CommandTerminal{
+        .context = application::commandContext(submitted.back()),
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    root->setProperty("shortcutPreset", 0);
+
+    sendKey(*window, Qt::Key_Question);
+    EXPECT_TRUE(shortcutHelp->property("visible").toBool());
+    shortcutHelp->setProperty("visible", false);
     QElapsedTimer hudWait;
     hudWait.start();
     while (hudWait.elapsed() < 900) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QThread::msleep(5U);
     }
-    EXPECT_FALSE(immersiveHud->property("visible").toBool());
-    snapshot->displayedFrame = domain::FrameId{2};
-    controller.refreshProjection();
-    QCoreApplication::processEvents();
     EXPECT_FALSE(immersiveHud->property("visible").toBool());
     sendKey(*window, Qt::Key_Space);
     ASSERT_FALSE(submitted.empty());
@@ -334,7 +379,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     controller.refreshProjection();
     QCoreApplication::processEvents();
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 3);
-    EXPECT_EQ(viewModeCombo->property("count").toInt(), 6);
+    EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 3);
+    EXPECT_EQ(root->property("availableViewModes").toList().size(), 6);
     EXPECT_TRUE(analysisGridMenuItem->property("enabled").toBool());
 
     snapshot->sources.resize(2U);
@@ -343,7 +389,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     preferences.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
     QCoreApplication::processEvents();
     EXPECT_EQ(preferences.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
-    EXPECT_EQ(viewModeCombo->property("count").toInt(), 3);
+    EXPECT_EQ(root->property("availableViewModes").toList().size(), 3);
+    EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 2);
     EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());
 
     snapshot->sources.resize(1U);
@@ -351,8 +398,9 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     controller.refreshProjection();
     QCoreApplication::processEvents();
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 1);
-    EXPECT_EQ(viewModeCombo->property("count").toInt(), 1);
-    EXPECT_FALSE(viewModeCombo->isEnabled());
+    EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 1);
+    EXPECT_EQ(root->property("availableViewModes").toList().size(), 1);
+    EXPECT_FALSE(compareBar->isVisible());
 }
 
 } // namespace

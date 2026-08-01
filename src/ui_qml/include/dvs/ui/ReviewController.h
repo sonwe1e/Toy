@@ -31,8 +31,11 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QString sourceBFilename READ sourceBFilename NOTIFY stateChanged)
     Q_PROPERTY(QString sourceCFilename READ sourceCFilename NOTIFY stateChanged)
     Q_PROPERTY(QVariantList sourceUrls READ sourceUrls NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList activeSources READ activeSources NOTIFY stateChanged)
     Q_PROPERTY(QAbstractItemModel* sources READ sources CONSTANT)
     Q_PROPERTY(int sourceCount READ sourceCount NOTIFY stateChanged)
+    Q_PROPERTY(int canonicalSourceIndex READ canonicalSourceIndex NOTIFY stateChanged)
+    Q_PROPERTY(int referenceSourceIndex READ referenceSourceIndex NOTIFY stateChanged)
     Q_PROPERTY(ReviewDisplayState displayState READ displayState NOTIFY stateChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY stateChanged)
     Q_PROPERTY(bool framePending READ framePending NOTIFY stateChanged)
@@ -103,8 +106,11 @@ public:
     [[nodiscard]] QString sourceBFilename() const;
     [[nodiscard]] QString sourceCFilename() const;
     [[nodiscard]] QVariantList sourceUrls() const;
+    [[nodiscard]] QVariantList activeSources() const;
     [[nodiscard]] QAbstractItemModel* sources() const noexcept;
     [[nodiscard]] int sourceCount() const noexcept;
+    [[nodiscard]] int canonicalSourceIndex() const noexcept;
+    [[nodiscard]] int referenceSourceIndex() const noexcept;
     [[nodiscard]] ReviewDisplayState displayState() const noexcept;
     [[nodiscard]] bool busy() const noexcept;
     [[nodiscard]] bool framePending() const noexcept;
@@ -151,6 +157,9 @@ public:
     // Rebuilds a ready session with a new 1-3 source topology while mapping the current
     // canonical MediaTime onto the replacement timeline. The rebuilt session stays paused.
     Q_INVOKABLE bool reopenSources(const QVariantList& urls, int referenceSourceIndex);
+    // Rebuilds the active review with a new canonical/reference source. The active source list
+    // remains unchanged until the rebuild succeeds.
+    Q_INVOKABLE bool changeReference(int sourceIndex);
     // Opens two required sources plus one optional third source. referenceSourceIndex is -1 for
     // prediction-only comparison or the zero-based canonical source. General 1-3 source opening
     // uses openSources().

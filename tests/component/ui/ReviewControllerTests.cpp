@@ -1,4 +1,6 @@
+#include "dvs/domain/ComparisonValidator.h"
 #include "dvs/ui/ReviewController.h"
+#include "dvs/ui/ReviewShellController.h"
 #include "dvs/ui/SourceListModel.h"
 
 #include <QCoreApplication>
@@ -79,6 +81,66 @@ template <typename Predicate>
             .displayName = "B",
         },
     };
+    return snapshot;
+}
+
+[[nodiscard]] application::SessionSnapshot
+readySnapshotWithSources(const std::vector<std::filesystem::path>& paths,
+                         const std::size_t referenceIndex = 0U) {
+    application::SessionSnapshot snapshot = readySnapshot(2, 12);
+    const auto rate = domain::RationalRate::create(30, 1);
+    EXPECT_TRUE(rate);
+    std::vector<domain::ComparisonSource> sources;
+    sources.reserve(paths.size());
+    for (std::size_t index = 0U; index < paths.size(); ++index) {
+        sources.push_back(domain::ComparisonSource{
+            .id = static_cast<domain::SourceId>(index),
+            .role = index == referenceIndex ? domain::ComparisonRole::kReference
+                                            : domain::ComparisonRole::kPrediction,
+            .descriptor =
+                domain::MediaDescriptor{
+                    .normalizedPath = paths[index],
+                    .extent = domain::MediaExtent{.width = 1'920U, .height = 1'080U},
+                    .frameRate = rate.value(),
+                    .frameCount =
+                        domain::FrameCountInfo{
+                            .value = 12,
+                            .origin = domain::FrameCountOrigin::kReported,
+                        },
+                    .duration = domain::MediaTime{400'000},
+                    .codecId = "h264",
+                    .pixelFormatId = "nv12",
+                    .bitDepth = 8U,
+                    .decodeCapabilities =
+                        domain::DecodeCapabilities{
+                            .softwareDecode = true,
+                            .d3d11VaDecode = true,
+                        },
+                    .timingConfidence = domain::TimingConfidence::kVerifiedCfr,
+                    .sourceIdentity =
+                        domain::SourceFileIdentity{
+                            .byteSize = 7U,
+                            .modifiedUtcMilliseconds = 1'234,
+                            .fingerprintSha256 = std::string(64U, static_cast<char>('a' + index)),
+                        },
+                },
+            .displayName = std::string{"Source "} + static_cast<char>('A' + index),
+        });
+    }
+    auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    EXPECT_TRUE(validated);
+    snapshot.validatedComparison =
+        std::make_shared<const domain::ValidatedComparisonSet>(std::move(validated).value().set);
+    snapshot.sources.clear();
+    for (const auto& source : snapshot.validatedComparison->sources()) {
+        snapshot.sources.push_back(application::SessionSourceView{
+            .sourceId = source.id,
+            .role = source.role,
+            .displayName = source.displayName,
+        });
+    }
+    snapshot.canonicalFrameCount =
+        static_cast<std::uint64_t>(snapshot.validatedComparison->canonicalFrameCount());
     return snapshot;
 }
 
@@ -238,8 +300,9 @@ TEST_F(ReviewControllerTests, CanonicalizesUnicodeLocalFilesAndDispatchesScopedO
                 std::filesystem::path{QFileInfo{sourceAPath}.canonicalFilePath().toStdWString()});
     EXPECT_TRUE(command->sources[1].path ==
                 std::filesystem::path{QFileInfo{sourceBPath}.canonicalFilePath().toStdWString()});
-    EXPECT_EQ(controller.sourceAFilename(), QStringLiteral("source_\u7532.mp4"));
-    EXPECT_EQ(controller.sourceBFilename(), QStringLiteral("source_\u4e59.mp4"));
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::NewReview);
+    EXPECT_TRUE(controller.sourceAFilename().isEmpty());
+    EXPECT_TRUE(controller.sourceBFilename().isEmpty());
     EXPECT_TRUE(controller.busy());
     EXPECT_FALSE(controller.canOpen());
     EXPECT_EQ(backend->lastAccessThread, std::this_thread::get_id());
@@ -272,7 +335,7 @@ TEST_F(ReviewControllerTests, DispatchesThreeSourcesWithTheSelectedReferenceRole
     EXPECT_EQ(command->sources[0].role, domain::ComparisonRole::kReference);
     EXPECT_EQ(command->sources[1].role, domain::ComparisonRole::kPrediction);
     EXPECT_EQ(command->sources[2].role, domain::ComparisonRole::kPrediction);
-    EXPECT_EQ(controller.sourceCFilename(), QStringLiteral("prediction_2.mp4"));
+    EXPECT_TRUE(controller.sourceCFilename().isEmpty());
     EXPECT_TRUE(controller.sourceCErrorKey().isEmpty());
     controller.stop();
 }
@@ -295,6 +358,204 @@ TEST_F(ReviewControllerTests, ReopenSourcesRequestsMediaTimePreservingSessionReb
         std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
     ASSERT_NE(command, nullptr);
     EXPECT_TRUE(command->preserveDisplayedTime);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceProjectSources);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, FailedCandidateOpenLeavesActiveSourcesAndReferenceUnchanged) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("active_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("active_b.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}},
+                                 1U);
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_EQ(controller.sourceCount(), 2);
+    ASSERT_EQ(controller.canonicalSourceIndex(), 1);
+    const QVariantList activeSources = controller.sourceUrls();
+    ASSERT_EQ(activeSources.size(), 2);
+
+    EXPECT_FALSE(controller.openSources(
+        {QUrl::fromLocalFile(sourceAPath),
+         QUrl::fromLocalFile(directory.filePath(QStringLiteral("missing.mp4")))},
+        0));
+    EXPECT_EQ(controller.sourceUrls(), activeSources);
+    EXPECT_EQ(controller.sourceCount(), 2);
+    EXPECT_EQ(controller.canonicalSourceIndex(), 1);
+    EXPECT_EQ(controller.sourceBErrorKey(), QStringLiteral("source-missing"));
+    EXPECT_TRUE(backend->submitted.empty());
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ChangeReferenceRebuildsTheCanonicalTimelineFromActiveSources) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("active_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("active_b.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_TRUE(controller.changeReference(1));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::ChangeReference);
+    EXPECT_TRUE(command->preserveDisplayedTime);
+    ASSERT_EQ(command->sources.size(), 2U);
+    EXPECT_EQ(command->sources[0].role, domain::ComparisonRole::kPrediction);
+    EXPECT_EQ(command->sources[1].role, domain::ComparisonRole::kReference);
+    EXPECT_EQ(controller.canonicalSourceIndex(), 0);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellKeepsActiveAndStagedSourcesSeparateDuringARebuild) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("active_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("active_b.mp4"));
+    const QString sourceCPath = createFile(directory, QStringLiteral("candidate_c.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+    ASSERT_FALSE(sourceCPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    ASSERT_EQ(shell.activeSources().size(), 2);
+    ASSERT_EQ(shell.stagedSources(), shell.activeSources());
+    const QVariantList staged{
+        QUrl::fromLocalFile(sourceAPath),
+        QUrl::fromLocalFile(sourceBPath),
+        QUrl::fromLocalFile(sourceCPath),
+    };
+    ASSERT_TRUE(shell.stageSources(staged, 2));
+    EXPECT_EQ(shell.activeSources().size(), 2);
+    EXPECT_EQ(shell.stagedSources().size(), 3);
+    EXPECT_EQ(shell.stagedReferenceIndex(), 2);
+
+    ASSERT_TRUE(shell.openStagedSources(true));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+
+    backend->currentSnapshot = emptySnapshot();
+    backend->currentSnapshot.sessionState = domain::SessionState::kLoading;
+    controller.refreshProjection();
+    EXPECT_TRUE(controller.busy());
+    EXPECT_EQ(shell.activeSources().size(), 2);
+
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()},
+                                  std::filesystem::path{sourceCPath.toStdWString()}},
+                                 2U);
+    backend->terminals.push_back(application::CommandTerminal{
+        .context = command->context,
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    EXPECT_FALSE(controller.busy());
+    EXPECT_EQ(shell.activeSources().size(), 3);
+    EXPECT_EQ(shell.canonicalSourceIndex(), 2);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellCanRemoveAnyActiveSourceAndPreservesTheReferenceRole) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("active_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("active_b.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}},
+                                 1U);
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    ASSERT_TRUE(shell.removeActiveSource(0));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+    ASSERT_EQ(command->sources.size(), 1U);
+    EXPECT_EQ(command->sources.front().role, domain::ComparisonRole::kReference);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceProjectSources);
+    EXPECT_TRUE(command->preserveDisplayedTime);
+    EXPECT_EQ(shell.openIntent(), ReviewShellController::ReplaceProjectSources);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellBoundsAndSerializesStartupRequests) {
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+    const QVariantList files{QUrl::fromLocalFile(QStringLiteral("C:/media/a.mp4"))};
+
+    ASSERT_TRUE(shell.enqueueStartupRequest(2, files));
+    const QVariantMap active = shell.takeNextStartupRequest();
+    EXPECT_EQ(active.value(QStringLiteral("kind")).toInt(), 2);
+    EXPECT_TRUE(shell.startupRequestActive());
+    EXPECT_TRUE(shell.takeNextStartupRequest().isEmpty());
+    for (int index = 0; index < 8; ++index) {
+        EXPECT_TRUE(shell.enqueueStartupRequest(2, files));
+    }
+    EXPECT_FALSE(shell.enqueueStartupRequest(2, files));
+    EXPECT_EQ(shell.queuedStartupRequestCount(), 8);
+    shell.completeStartupRequest();
+    EXPECT_FALSE(shell.startupRequestActive());
+    EXPECT_EQ(shell.takeNextStartupRequest().value(QStringLiteral("kind")).toInt(), 2);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellOwnsChromeInspectorAndDirtyGuardState) {
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    shell.setInspectorVisible(true);
+    EXPECT_TRUE(shell.inspectorVisible());
+    shell.setChromeVisible(false);
+    EXPECT_FALSE(shell.chromeVisible());
+    EXPECT_FALSE(shell.inspectorVisible());
+    shell.setInspectorVisible(true);
+    EXPECT_FALSE(shell.inspectorVisible());
+    shell.setChromeVisible(true);
+
+    const QVariantMap action{
+        {QStringLiteral("kind"), QStringLiteral("openProject")},
+        {QStringLiteral("url"), QUrl::fromLocalFile(QStringLiteral("C:/review.dvsproj"))},
+    };
+    ASSERT_TRUE(shell.beginPendingAction(action, true));
+    EXPECT_TRUE(shell.hasPendingAction());
+    EXPECT_TRUE(shell.dirtyGuardActive());
+    EXPECT_TRUE(shell.takePendingAction().isEmpty());
+    shell.releaseDirtyGuard();
+    EXPECT_FALSE(shell.dirtyGuardActive());
+    EXPECT_EQ(shell.takePendingAction(), action);
+    EXPECT_FALSE(shell.hasPendingAction());
     controller.stop();
 }
 
@@ -326,7 +587,7 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
                                            QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("invalid-argument"));
     EXPECT_TRUE(controller.sourceAFilename().isEmpty());
-    EXPECT_EQ(controller.sourceBFilename(), QStringLiteral("valid.mp4"));
+    EXPECT_TRUE(controller.sourceBFilename().isEmpty());
     EXPECT_TRUE(backend->submitted.empty());
 
     const QString missingPath = directory.filePath(QStringLiteral("missing.mp4"));

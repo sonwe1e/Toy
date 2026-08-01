@@ -25,11 +25,23 @@ struct OpenComparisonSource final {
     std::string displayName;
 };
 
+// Describes why an existing review is being opened again. Workspace persistence uses this
+// intent to distinguish a genuinely new review from a topology/reference mutation of the
+// current project. Only NewReview is allowed to discard the current project identity.
+enum class OpenReviewIntent : std::uint8_t {
+    NewReview,
+    ReplaceProjectSources,
+    RestoreProject,
+    RelinkProject,
+    ChangeReference,
+};
+
 // Opens 1-3 sources in one atomic session operation. Source ids are assigned in submission
 // order (0, 1, 2).
 struct OpenComparisonCommand final {
     CommandContext context;
     std::vector<OpenComparisonSource> sources;
+    OpenReviewIntent intent = OpenReviewIntent::NewReview;
     // Rebuilding a live 1-3 source review session may retain the current canonical media time.
     // The coordinator captures the old timeline position before advancing the session epoch and
     // maps it onto the new canonical timeline after probing completes.

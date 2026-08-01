@@ -14,6 +14,17 @@
         <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>
         <file alias="TransportBar.qml">qml/TransportBar.qml</file>
         <file alias="WipeHandle.qml">qml/WipeHandle.qml</file>
+        <file alias="EmptyReviewView.qml">qml/EmptyReviewView.qml</file>
+        <file alias="ActiveSourceStrip.qml">qml/ActiveSourceStrip.qml</file>
+        <file alias="CompareModeBar.qml">qml/CompareModeBar.qml</file>
+        <file alias="PlayerOsc.qml">qml/PlayerOsc.qml</file>
+        <!-- Viewer-native commands and timeline chrome. -->
+        <file alias="ReviewContextMenu.qml">qml/ReviewContextMenu.qml</file>
+        <file alias="ShortcutHelpOverlay.qml">qml/ShortcutHelpOverlay.qml</file>
+        <file alias="TabbedInspector.qml">qml/TabbedInspector.qml</file>
+        <file alias="TimelineTracks.qml">qml/TimelineTracks.qml</file>
+        <file alias="TimelineThumbnailPopup.qml">qml/TimelineThumbnailPopup.qml</file>
+        <file alias="TimelineThumbnailCache.qml">qml/TimelineThumbnailCache.qml</file>
     </qresource>
     <qresource prefix="/icons">
         <file alias="first.svg">../../assets/icons/first.svg</file>

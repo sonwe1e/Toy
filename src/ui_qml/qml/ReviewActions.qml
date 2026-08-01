@@ -76,6 +76,13 @@ QtObject {
         }
     }
 
+    function stepSeconds(seconds) {
+        if ((seconds < 0 && canPrevious) || (seconds > 0 && canNext)) {
+            manualNavigationRequested();
+            controller.stepFrames(seconds * Math.max(1, oneSecondStepFrames));
+        }
+    }
+
     function togglePlayback() {
         if (canTogglePlayback)
             controller.togglePlayback();

@@ -172,7 +172,7 @@ Rectangle {
 
         anchors.fill: parent
         anchors.margins: 1
-        acceptedButtons: Qt.LeftButton
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
         hoverEnabled: true
 
         onWheel: wheel => {
@@ -181,6 +181,10 @@ Rectangle {
             wheel.accepted = true;
         }
         onPressed: mouse => {
+            if (mouse.button === Qt.RightButton) {
+                control.host.openViewerContextMenu();
+                return;
+            }
             const point = control.host.panelPoint(mouse.x, mouse.y);
             control.host.roiPanel = point.panel;
             control.host.panLastX = point.x;
@@ -215,7 +219,7 @@ Rectangle {
             control.host.roiSelecting = false;
             control.host.roiPanel = -1;
         }
-        onDoubleClicked: dualVideoSurface.resetViewport()
+        onDoubleClicked: control.host.toggleFullScreen()
     }
 
     Rectangle {

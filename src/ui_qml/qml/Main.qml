@@ -33,15 +33,19 @@ ApplicationWindow {
     readonly property var controller: reviewController
     readonly property var preferences: reviewPreferences
     readonly property var workspace: workspaceController
+    readonly property var shell: reviewShell
     // qmllint enable unqualified
 
     property url selectedSourceA: ""
     property url selectedSourceB: ""
     property url selectedSourceC: ""
-    // -1 means prediction-only; otherwise the selected source defines the canonical timeline.
-    property int referenceSourceIndex: 0
-    property bool inspectorOpen: false
-    property bool chromeVisible: true
+    // Active truth comes from the successfully opened backend session. Selection dialogs use a
+    // separate staged value so a failed rebuild cannot repaint the active review.
+    readonly property int referenceSourceIndex: controller ? Number(controller.referenceSourceIndex) : -1
+    readonly property int canonicalSourceIndex: controller ? Number(controller.canonicalSourceIndex) : -1
+    property int stagedReferenceSourceIndex: 0
+    readonly property bool inspectorOpen: shell ? Boolean(shell.inspectorVisible) : false
+    readonly property bool chromeVisible: shell ? Boolean(shell.chromeVisible) : true
     property int visibilityBeforeFullScreen: Window.Windowed
     property string immersiveHudText: ""
     property bool immersiveHudVisible: false
@@ -53,13 +57,17 @@ ApplicationWindow {
     property string dropError: ""
     property string exportMessage: ""
     property var appliedRestoredViewSerial: 0
-    property var startupRequestQueue: []
-    property var activeStartupRequest: null
-    property var pendingDestructiveAction: null
+    readonly property var pendingDestructiveAction: shell && shell.hasPendingAction ? shell.pendingAction : null
     property bool awaitingGuardSave: false
     property bool guardSaveAs: false
     property bool allowWindowClose: false
     property bool dropRequestExternal: false
+    property int inFrame: -1
+    property int outFrame: -1
+    property bool rangePlaybackActive: false
+    property bool rangeStartPending: false
+    property bool shortcutHelpVisible: false
+    property int shortcutPreset: 0 // 0 Review, 1 Player
 
     readonly property bool busy: Boolean((controller && controller.busy) || (workspace && workspace.busy))
     readonly property bool framePending: Boolean(controller && controller.framePending)
@@ -82,6 +90,7 @@ ApplicationWindow {
     readonly property bool sourceCMissing: Boolean(!controller || controller.sourceCMissing)
     readonly property int sourceCount: controller ? Number(controller.sourceCount) : 0
     readonly property bool singleMode: sourceCount === 1
+    readonly property int oscState: !chromeVisible ? 2 : (singleMode ? 1 : 0)
     readonly property string pairErrorKey: controller ? controller.pairErrorKey : ""
     readonly property string frameMappingStatus: controller ? controller.frameMappingStatus : ""
     readonly property string alignmentEstimateStatus: controller ? controller.alignmentEstimateStatus : ""
@@ -116,9 +125,9 @@ ApplicationWindow {
     readonly property bool hasSelectedSourceA: selectedSourceA.toString().length > 0
     readonly property bool hasSelectedSourceB: selectedSourceB.toString().length > 0
     readonly property bool hasSelectedSourceC: selectedSourceC.toString().length > 0
-    readonly property string sourceAName: hasSelectedSourceA ? fileName(selectedSourceA) : (controller && controller.sourceAFilename.length > 0 ? controller.sourceAFilename : qsTr("No file selected"))
-    readonly property string sourceBName: hasSelectedSourceB ? fileName(selectedSourceB) : (controller && controller.sourceBFilename.length > 0 ? controller.sourceBFilename : qsTr("No file selected"))
-    readonly property string sourceCName: hasSelectedSourceC ? fileName(selectedSourceC) : (controller && controller.sourceCFilename.length > 0 ? controller.sourceCFilename : qsTr("Optional third source"))
+    readonly property string sourceAName: sourceCount > 0 ? controller.sourceAFilename : (hasSelectedSourceA ? fileName(selectedSourceA) : qsTr("No file selected"))
+    readonly property string sourceBName: sourceCount > 1 ? controller.sourceBFilename : (hasSelectedSourceB ? fileName(selectedSourceB) : qsTr("No file selected"))
+    readonly property string sourceCName: sourceCount > 2 ? controller.sourceCFilename : (hasSelectedSourceC ? fileName(selectedSourceC) : qsTr("Optional third source"))
     readonly property bool canFirstAction: graphicsReady && !busy && Boolean(controller && controller.canFirst)
     readonly property bool canPreviousAction: graphicsReady && !busy && Boolean(controller && controller.canPrevious)
     readonly property bool canNextAction: graphicsReady && !busy && Boolean(controller && controller.canNext)
@@ -241,7 +250,9 @@ ApplicationWindow {
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
     readonly property string overlayTitle: busy ? qsTr("Loading review...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open review") : qsTr("Drop one to three videos here")))
     readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Open one video for playback and frame review, or two to three videos for comparison.")))
-    readonly property bool overlayVisible: (busy && currentFrame < 0) || !graphicsReady || currentFrame < 0 || (hasErrors && !frameErrorBannerVisible)
+    readonly property bool overlayVisible: (busy && currentFrame < 0) || !graphicsReady || (hasErrors && !frameErrorBannerVisible)
+    readonly property string currentTimecode: timecodeForFrame(currentFrame)
+    readonly property string previewTimecode: timecodeForFrame(Math.max(0, timelinePreviewFrame))
 
     onFramePendingChanged: {
         if (framePending)
@@ -256,6 +267,18 @@ ApplicationWindow {
         if (!chromeVisible && manualHudPending && currentFrame >= 0) {
             manualHudPending = false;
             showImmersiveHud(frameText);
+        }
+        if (rangeStartPending && Number(currentFrame) === inFrame && !busy) {
+            rangeStartPending = false;
+            Qt.callLater(() => {
+                if (rangePlaybackActive && controller && !controller.playing)
+                    controller.play();
+            });
+            return;
+        }
+        if (rangePlaybackActive && playing && outFrame >= inFrame && Number(currentFrame) >= outFrame) {
+            rangeStartPending = true;
+            controller.seekFrame(inFrame);
         }
     }
 
@@ -282,6 +305,68 @@ ApplicationWindow {
         const decodedUrl = decodeURIComponent(fileUrl.toString());
         const separator = Math.max(decodedUrl.lastIndexOf("/"), decodedUrl.lastIndexOf("\\"));
         return decodedUrl.substring(separator + 1);
+    }
+
+    function timecodeForFrame(frame) {
+        if (frame < 0)
+            return "00:00:00:00";
+        const fps = Math.max(1, oneSecondStepFrames);
+        const value = Math.floor(Number(frame));
+        const frames = value % fps;
+        const totalSeconds = Math.floor(value / fps);
+        const seconds = totalSeconds % 60;
+        const minutes = Math.floor(totalSeconds / 60) % 60;
+        const hours = Math.floor(totalSeconds / 3600);
+        const pad = number => String(number).padStart(2, "0");
+        return pad(hours) + ":" + pad(minutes) + ":" + pad(seconds) + ":" + pad(frames);
+    }
+
+    function setInPoint() {
+        if (currentFrame >= 0) {
+            inFrame = Number(currentFrame);
+            if (outFrame >= 0 && outFrame < inFrame)
+                outFrame = -1;
+            showImmersiveHud(qsTr("In · Frame %1").arg(inFrame + 1));
+        }
+    }
+
+    function setOutPoint() {
+        if (currentFrame >= 0) {
+            outFrame = Number(currentFrame);
+            if (inFrame >= 0 && outFrame < inFrame)
+                inFrame = -1;
+            showImmersiveHud(qsTr("Out · Frame %1").arg(outFrame + 1));
+        }
+    }
+
+    function playSelectedRange() {
+        if (inFrame < 0 || outFrame < inFrame || !controller)
+            return false;
+        rangePlaybackActive = true;
+        if (Number(currentFrame) !== inFrame) {
+            rangeStartPending = true;
+            if (!controller.seekFrame(inFrame)) {
+                rangeStartPending = false;
+                rangePlaybackActive = false;
+                return false;
+            }
+        } else {
+            controller.play();
+        }
+        return true;
+    }
+
+    function resetViewport() {
+        if (viewportFrame && viewportFrame.surface)
+            viewportFrame.surface.resetViewport();
+    }
+
+    function openBadCaseExport() {
+        badCaseFolderDialog.open();
+    }
+
+    function openViewerContextMenu() {
+        viewerContextMenu.popup();
     }
 
     // ComparisonSurface is runtime-registered by the host.
@@ -336,8 +421,12 @@ ApplicationWindow {
         selectedSourceA = "";
         selectedSourceB = "";
         selectedSourceC = "";
-        referenceSourceIndex = 0;
+        stagedReferenceSourceIndex = 0;
         sourceOffsetValues = {};
+        inFrame = -1;
+        outFrame = -1;
+        rangePlaybackActive = false;
+        rangeStartPending = false;
         wipePosition = 0.5;
         differenceThresholdEnabled = false;
         differenceThresholdCode = 0;
@@ -346,10 +435,12 @@ ApplicationWindow {
     }
 
     function requestDestructiveAction(action) {
-        if (pendingDestructiveAction !== null)
+        if (!shell || shell.hasPendingAction)
             return false;
-        pendingDestructiveAction = action;
-        if (hasUnsavedReview())
+        const requiresGuard = hasUnsavedReview();
+        if (!shell.beginPendingAction(action, requiresGuard))
+            return false;
+        if (requiresGuard)
             workspaceDialogs.openUnsaved();
         else
             executePendingDestructiveAction();
@@ -357,9 +448,11 @@ ApplicationWindow {
     }
 
     function executePendingDestructiveAction() {
-        const action = pendingDestructiveAction;
-        pendingDestructiveAction = null;
-        if (!action)
+        if (!shell)
+            return;
+        shell.releaseDirtyGuard();
+        const action = shell.takePendingAction();
+        if (!action || !action.kind)
             return;
         if (action.kind === "openVideos") {
             performVideoReview(action.urls, Boolean(action.external));
@@ -385,7 +478,8 @@ ApplicationWindow {
     }
 
     function cancelPendingDestructiveAction() {
-        pendingDestructiveAction = null;
+        if (shell)
+            shell.cancelPendingAction();
         awaitingGuardSave = false;
         guardSaveAs = false;
         finishActiveStartupRequest();
@@ -393,49 +487,41 @@ ApplicationWindow {
 
     function continueAfterGuardSave() {
         awaitingGuardSave = false;
-        if (!projectDirty && hasProject && workspaceError.length === 0)
+        if (!projectDirty && hasProject && workspaceError.length === 0) {
+            shell.releaseDirtyGuard();
             executePendingDestructiveAction();
-        else
+        } else {
             workspaceDialogs.openUnsaved();
+        }
     }
 
     function enqueueStartupRequest(kind, urls) {
-        if (kind === 0)
-            return true;
-        const pendingCount = startupRequestQueue.length + (activeStartupRequest ? 1 : 0);
-        if (pendingCount >= 9)
-            return false;
-        const next = startupRequestQueue.slice(0);
-        next.push({
-            "kind": Number(kind),
-            "urls": Array.from(urls)
-        });
-        startupRequestQueue = next;
-        Qt.callLater(drainStartupRequestQueue);
-        return true;
+        return shell && shell.enqueueStartupRequest(Number(kind), Array.from(urls));
     }
 
     function drainStartupRequestQueue() {
-        if (activeStartupRequest || startupRequestQueue.length === 0 || busy || pendingDestructiveAction || dropReviewDialog.visible || workspaceDialogs.unsavedVisible)
+        if (!shell || shell.startupRequestActive || shell.queuedStartupRequestCount === 0 || busy || shell.hasPendingAction || dropReviewDialog.visible || workspaceDialogs.unsavedVisible)
             return;
-        activeStartupRequest = startupRequestQueue[0];
-        startupRequestQueue = startupRequestQueue.slice(1);
-        if (activeStartupRequest.kind === 1)
+        const request = shell.takeNextStartupRequest();
+        if (!request || !request.kind)
+            return;
+        if (request.kind === 1)
             requestDestructiveAction({
                 "kind": "openProject",
-                "url": activeStartupRequest.urls[0],
+                "url": request.urls[0],
                 "external": true
             });
         else
             requestDestructiveAction({
                 "kind": "openVideos",
-                "urls": activeStartupRequest.urls,
+                "urls": request.urls,
                 "external": true
             });
     }
 
     function finishActiveStartupRequest() {
-        activeStartupRequest = null;
+        if (shell)
+            shell.completeStartupRequest();
         Qt.callLater(drainStartupRequestQueue);
     }
 
@@ -445,9 +531,10 @@ ApplicationWindow {
             selectedSourceB = "";
             selectedSourceC = "";
             sourceOffsetValues = {};
-            referenceSourceIndex = 0;
+            stagedReferenceSourceIndex = 0;
             dropError = "";
-            controller.openSources([selectedSourceA], 0);
+            if (shell && shell.stageSources([selectedSourceA], 0))
+                shell.openStagedSources(false);
             finishActiveStartupRequest();
             return;
         }
@@ -518,14 +605,12 @@ ApplicationWindow {
         selectedSourceB = pendingDroppedVideos[1];
         selectedSourceC = pendingDroppedVideos.length > 2 ? pendingDroppedVideos[2] : "";
         sourceOffsetValues = {};
-        referenceSourceIndex = referenceIndex;
+        stagedReferenceSourceIndex = referenceIndex;
         if (preferences && pendingDroppedVideos.length === 3)
             preferences.viewMode = 1;
         const urls = selectedSourceUrls();
-        if (pendingComparisonPreservesPosition && sourceCount > 0)
-            controller.reopenSources(urls, referenceSourceIndex);
-        else
-            controller.openSources(urls, referenceSourceIndex);
+        if (shell && shell.stageSources(urls, stagedReferenceSourceIndex))
+            shell.openStagedSources(pendingComparisonPreservesPosition && sourceCount > 0);
     }
 
     function selectedSourceUrls() {
@@ -550,24 +635,24 @@ ApplicationWindow {
         const urls = selectedSourceUrls();
         if (urls.length === 0)
             return false;
-        const canonical = referenceSourceIndex >= 0 && referenceSourceIndex < urls.length ? referenceSourceIndex : 0;
+        const canonical = stagedReferenceSourceIndex >= 0 && stagedReferenceSourceIndex < urls.length ? stagedReferenceSourceIndex : 0;
         sourceOffsetValues = {};
-        return preservePosition && sourceCount > 0 ? controller.reopenSources(urls, canonical) : controller.openSources(urls, canonical);
+        return shell && shell.stageSources(urls, canonical) && shell.openStagedSources(preservePosition && sourceCount > 0);
     }
 
     function removeSelectedSource(index) {
         const urls = selectedSourceUrls();
-        if (index <= 0 || index >= urls.length)
+        if (index < 0 || index >= urls.length || urls.length <= 1)
             return false;
         urls.splice(index, 1);
         selectedSourceA = urls.length > 0 ? urls[0] : "";
         selectedSourceB = urls.length > 1 ? urls[1] : "";
         selectedSourceC = urls.length > 2 ? urls[2] : "";
-        if (referenceSourceIndex === index)
-            referenceSourceIndex = 0;
-        else if (referenceSourceIndex > index)
-            referenceSourceIndex -= 1;
-        return controller.reopenSources(urls, referenceSourceIndex);
+        if (stagedReferenceSourceIndex === index)
+            stagedReferenceSourceIndex = 0;
+        else if (stagedReferenceSourceIndex > index)
+            stagedReferenceSourceIndex -= 1;
+        return shell ? shell.removeActiveSource(index) : controller.reopenSources(urls, stagedReferenceSourceIndex);
     }
 
     function showImmersiveHud(message) {
@@ -577,9 +662,10 @@ ApplicationWindow {
     }
 
     function toggleChrome() {
-        chromeVisible = !chromeVisible;
-        if (!chromeVisible) {
-            inspectorOpen = false;
+        if (!shell)
+            return;
+        shell.chromeVisible = !chromeVisible;
+        if (!shell.chromeVisible) {
             viewportFrame.forceActiveFocus();
             Qt.callLater(() => viewportFrame.forceActiveFocus());
             showImmersiveHud(frameText);
@@ -602,7 +688,7 @@ ApplicationWindow {
         if (fullScreen)
             toggleFullScreen();
         else if (!chromeVisible)
-            chromeVisible = true;
+            shell.chromeVisible = true;
     }
 
     // The surface alias points at the runtime-registered ComparisonSurface.
@@ -753,7 +839,7 @@ ApplicationWindow {
     }
 
     function resetCanonicalSourceOffset() {
-        const canonicalSourceId = referenceSourceIndex >= 0 ? referenceSourceIndex : 0;
+        const canonicalSourceId = canonicalSourceIndex >= 0 ? canonicalSourceIndex : 0;
         updateSourceOffset(canonicalSourceId, 0);
     }
 
@@ -1046,7 +1132,7 @@ ApplicationWindow {
             MenuSeparator {}
             MenuItem {
                 text: root.inspectorOpen ? qsTr("Hide Advanced Alignment Inspector") : qsTr("Show Advanced Alignment Inspector")
-                onTriggered: root.inspectorOpen = !root.inspectorOpen
+                onTriggered: root.shell.inspectorVisible = !root.inspectorOpen
             }
         }
 
@@ -1076,6 +1162,23 @@ ApplicationWindow {
             MenuItem {
                 text: root.fullScreen ? qsTr("Exit full screen · F11") : qsTr("Enter full screen · F11")
                 onTriggered: root.toggleFullScreen()
+            }
+            MenuSeparator {}
+            Menu {
+                title: qsTr("Shortcut preset")
+
+                MenuItem {
+                    text: qsTr("Review")
+                    checkable: true
+                    checked: root.shortcutPreset === 0
+                    onTriggered: root.shortcutPreset = 0
+                }
+                MenuItem {
+                    text: qsTr("Player")
+                    checkable: true
+                    checked: root.shortcutPreset === 1
+                    onTriggered: root.shortcutPreset = 1
+                }
             }
         }
     }
@@ -1118,16 +1221,28 @@ ApplicationWindow {
         onActivated: reviewActions.lastFrame()
     }
     Shortcut {
-        sequences: ["Left", "A"]
+        sequence: "A"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
         onActivated: reviewActions.previousFrame()
     }
     Shortcut {
-        sequences: ["Right", "D"]
+        sequence: "D"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
         onActivated: reviewActions.nextFrame()
+    }
+    Shortcut {
+        sequence: "Left"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: root.shortcutPreset === 1 ? reviewActions.stepSeconds(-5) : reviewActions.previousFrame()
+    }
+    Shortcut {
+        sequence: "Right"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: root.shortcutPreset === 1 ? reviewActions.stepSeconds(5) : reviewActions.nextFrame()
     }
     Shortcut {
         sequences: ["Down", "Shift+Left", "Shift+A"]
@@ -1142,16 +1257,40 @@ ApplicationWindow {
         onActivated: reviewActions.stepForwardFive()
     }
     Shortcut {
-        sequences: ["Ctrl+Left", "Ctrl+A"]
+        sequence: "Ctrl+A"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
         onActivated: reviewActions.stepBackwardSecond()
     }
     Shortcut {
-        sequences: ["Ctrl+Right", "Ctrl+D"]
+        sequence: "Ctrl+D"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
         onActivated: reviewActions.stepForwardSecond()
+    }
+    Shortcut {
+        sequence: "Ctrl+Left"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: root.shortcutPreset === 1 ? reviewActions.stepSeconds(-30) : reviewActions.stepBackwardSecond()
+    }
+    Shortcut {
+        sequence: "Ctrl+Right"
+        context: Qt.ApplicationShortcut
+        enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: root.shortcutPreset === 1 ? reviewActions.stepSeconds(30) : reviewActions.stepForwardSecond()
+    }
+    Shortcut {
+        sequence: ","
+        context: Qt.ApplicationShortcut
+        enabled: root.shortcutPreset === 1 && reviewActions.shortcutsEnabled && reviewActions.canPrevious
+        onActivated: reviewActions.previousFrame()
+    }
+    Shortcut {
+        sequence: "."
+        context: Qt.ApplicationShortcut
+        enabled: root.shortcutPreset === 1 && reviewActions.shortcutsEnabled && reviewActions.canNext
+        onActivated: reviewActions.nextFrame()
     }
     Shortcut {
         sequence: "Alt+Left"
@@ -1193,6 +1332,29 @@ ApplicationWindow {
         enabled: root.fullScreen || !root.chromeVisible
         onActivated: root.escapePresentationMode()
     }
+    Shortcut {
+        sequence: "?"
+        context: Qt.ApplicationShortcut
+        onActivated: shortcutHelp.open()
+    }
+    Shortcut {
+        sequence: "I"
+        context: Qt.ApplicationShortcut
+        enabled: root.globalMediaShortcutsEnabled && root.currentFrame >= 0
+        onActivated: root.setInPoint()
+    }
+    Shortcut {
+        sequence: "O"
+        context: Qt.ApplicationShortcut
+        enabled: root.globalMediaShortcutsEnabled && root.currentFrame >= 0
+        onActivated: root.setOutPoint()
+    }
+    Shortcut {
+        sequence: "\\"
+        context: Qt.ApplicationShortcut
+        enabled: root.globalMediaShortcutsEnabled && root.inFrame >= 0 && root.outFrame >= root.inFrame
+        onActivated: root.playSelectedRange()
+    }
 
     Timer {
         id: framePendingDelay
@@ -1220,6 +1382,18 @@ ApplicationWindow {
 
     Connections {
         target: root.controller
+
+        function onStateChanged() {
+            if (!root.controller || root.controller.busy)
+                return;
+            const urls = root.controller.sourceUrls;
+            if (urls.length !== root.sourceCount)
+                return;
+            root.selectedSourceA = urls.length > 0 ? urls[0] : "";
+            root.selectedSourceB = urls.length > 1 ? urls[1] : "";
+            root.selectedSourceC = urls.length > 2 ? urls[2] : "";
+            root.stagedReferenceSourceIndex = Math.max(0, root.canonicalSourceIndex);
+        }
 
         function onBadCaseExported(folder) {
             root.exportMessage = qsTr("Bad Case exported to %1").arg(folder);
@@ -1249,6 +1423,14 @@ ApplicationWindow {
             if (root.awaitingGuardSave && !root.workspace.busy)
                 root.continueAfterGuardSave();
             root.drainStartupRequestQueue();
+        }
+    }
+
+    Connections {
+        target: root.shell
+
+        function onStartupRequestAvailable() {
+            Qt.callLater(root.drainStartupRequestQueue);
         }
     }
 
@@ -1309,7 +1491,7 @@ ApplicationWindow {
 
         pendingVideos: root.pendingDroppedVideos
         fileNameFunction: root.fileName
-        initialReferenceIndex: root.pendingComparisonPreservesPosition ? root.referenceSourceIndex : 0
+        initialReferenceIndex: root.pendingComparisonPreservesPosition ? root.canonicalSourceIndex : 0
         onMoveRequested: (fromIndex, toIndex) => root.swapDroppedVideos(fromIndex, toIndex)
         onAccepted: {
             root.openDroppedComparison(referenceIndex);
@@ -1418,9 +1600,9 @@ ApplicationWindow {
 
         property var sourceChoices: {
             const choices = [];
-            const count = root.hasSelectedSourceC ? 3 : 2;
+            const count = root.sourceCount;
             for (let index = 0; index < count; ++index) {
-                if (index !== root.referenceSourceIndex)
+                if (index !== root.canonicalSourceIndex)
                     choices.push({
                         "label": String.fromCharCode(65 + index),
                         "sourceIndex": index
@@ -1639,18 +1821,19 @@ ApplicationWindow {
                 text: root.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Advanced Inspector")
                 helpText: qsTr("Show frame offsets, automatic alignment, sequence analysis, and manual anchors.")
                 enabled: root.graphicsReady
-                onClicked: root.inspectorOpen = !root.inspectorOpen
+                onClicked: root.shell.inspectorVisible = !root.inspectorOpen
             }
         }
 
         Rectangle {
             id: graphicsStatusBadge
 
+            visible: !root.graphicsReady
             implicitWidth: graphicsStatus.implicitWidth + 20
             implicitHeight: 28
             radius: 14
-            color: root.graphicsReady ? "#173c31" : "#3d2c1e"
-            border.color: root.graphicsReady ? "#2c7a61" : "#79522d"
+            color: "#3d2c1e"
+            border.color: "#79522d"
             anchors {
                 right: parent.right
                 rightMargin: 12
@@ -1661,59 +1844,56 @@ ApplicationWindow {
                 id: graphicsStatus
 
                 anchors.centerIn: parent
-                color: root.graphicsReady ? "#8ce2c2" : "#efbf83"
+                color: "#efbf83"
                 font.pixelSize: 12
                 font.weight: Font.DemiBold
-                text: root.graphicsReady ? qsTr("Graphics ready") : qsTr("Graphics unavailable")
+                text: qsTr("Graphics unavailable")
             }
         }
     }
 
-    SourceBar {
+    ActiveSourceStrip {
         id: sourceBar
 
-        height: root.chromeVisible ? 68 : 0
-        visible: root.chromeVisible
-        sourceNames: [root.sourceAName, root.sourceBName, root.sourceCName]
-        sourceSelected: [root.hasSelectedSourceA, root.hasSelectedSourceB, root.hasSelectedSourceC]
-        sourceErrors: [root.sourceAErrorKey.length > 0, root.sourceBErrorKey.length > 0, root.sourceCErrorKey.length > 0]
-        referenceSourceIndex: root.referenceSourceIndex
+        sourcesModel: root.controller ? root.controller.sources : null
         sourceCount: root.sourceCount
-        graphicsReady: root.graphicsReady
+        canonicalSourceIndex: root.canonicalSourceIndex
         busy: root.busy
-        canOpen: Boolean(root.controller && root.controller.canOpen)
         borderColor: root.borderColor
         accentColor: root.accentColor
         textColor: root.primaryTextColor
         mutedTextColor: root.mutedTextColor
-        errorColor: root.errorColor
         anchors {
             top: commandBar.bottom
             left: parent.left
             right: parent.right
         }
-        onBrowseRequested: sourceIndex => {
-            if (sourceIndex === 0)
-                sourceAFileDialog.open();
-            else if (sourceIndex === 1)
-                sourceBFileDialog.open();
-            else
-                sourceCFileDialog.open();
-        }
+        onAddRequested: addSourceFileDialog.open()
         onRemoveRequested: sourceIndex => root.removeSelectedSource(sourceIndex)
-        onOpenRequested: root.openSelectedSources(root.sourceCount > 0)
+        onReferenceRequested: sourceIndex => root.shell ? root.shell.changeReference(sourceIndex) : root.controller.changeReference(sourceIndex)
     }
-    ComparisonToolbar {
+    CompareModeBar {
         id: comparisonBar
 
-        host: root
+        sourceCount: root.sourceCount
+        currentMode: root.effectiveViewMode
+        differenceEdges: root.differenceEdges
+        currentEdgeIndex: root.differenceEdgeIndex(root.differenceEdge)
+        inspectorOpen: root.inspectorOpen
+        busy: root.busy
+        borderColor: root.borderColor
+        accentColor: root.accentColor
+        textColor: root.primaryTextColor
         anchors {
             top: sourceBar.bottom
             left: parent.left
             right: parent.right
         }
+        onModeRequested: mode => root.preferences.viewMode = mode
+        onEdgeRequested: edge => root.preferences.differenceEdge = edge
+        onInspectorRequested: root.shell.inspectorVisible = !root.inspectorOpen
     }
-    AlignmentInspector {
+    TabbedInspector {
         id: alignmentBar
 
         host: root
@@ -1724,7 +1904,7 @@ ApplicationWindow {
             topMargin: commandBar.height + sourceBar.height + comparisonBar.height
             right: parent.right
             bottom: parent.bottom
-            bottomMargin: transport.height
+            bottomMargin: 0
         }
     }
     ComparisonViewport {
@@ -1733,21 +1913,101 @@ ApplicationWindow {
         host: root
         anchors {
             top: parent.top
-            topMargin: root.chromeVisible ? commandBar.height + sourceBar.height + comparisonBar.height + 10 : 0
+            topMargin: root.chromeVisible ? commandBar.height + sourceBar.height + comparisonBar.height + 6 : 0
             bottom: parent.bottom
-            bottomMargin: root.chromeVisible ? transport.height + 12 : 0
+            bottomMargin: 0
             left: parent.left
             leftMargin: root.chromeVisible ? 14 : 0
             right: alignmentBar.visible ? alignmentBar.left : parent.right
             rightMargin: root.chromeVisible ? 14 : 0
         }
     }
-    TimelineBar {
+    EmptyReviewView {
+        visible: root.sourceCount === 0 && !root.busy && root.graphicsReady && !root.hasErrors
+        z: 35
+        accentColor: root.accentColor
+        textColor: root.primaryTextColor
+        mutedTextColor: root.mutedTextColor
+        anchors.fill: viewportFrame
+        onOpenVideosRequested: videoFilesDialog.open()
+        onOpenProjectRequested: openProjectDialog.open()
+    }
+    TimelineThumbnailCache {
+        id: thumbnailCache
+
+        sourceItem: viewportFrame
+        currentFrame: Number(root.currentFrame)
+        totalFrames: Number(root.totalFrames)
+        generation: root.shell ? root.shell.activeGeneration : 0
+    }
+    PlayerOsc {
         id: transport
 
-        host: root
+        z: 50
+        controllerState: root.oscState
+        playing: root.playing
+        timelineEnabled: root.timelineEnabled
+        currentFrame: Number(root.currentFrame)
+        totalFrames: Number(root.totalFrames)
+        progress: root.timelineProgress
+        timecodeText: root.currentTimecode
+        markers: root.alignmentTimelineMarkers
         actions: reviewActions
         focusTarget: viewportFrame
+        canFirst: root.canFirstAction
+        canPrevious: root.canPreviousAction
+        canPlay: root.canPlayAction
+        canPause: root.canPauseAction
+        canNext: root.canNextAction
+        canLast: root.canLastAction
+        inFrame: root.inFrame
+        outFrame: root.outFrame
+        loopRangeActive: root.rangePlaybackActive
+        previewFrame: root.timelinePreviewFrame
+        previewTimecode: root.previewTimecode
+        previewThumbnailSource: thumbnailCache.urlForFrame(root.timelinePreviewFrame)
+        anchors {
+            left: viewportFrame.left
+            right: viewportFrame.right
+            bottom: viewportFrame.bottom
+        }
+        onSeekRequested: frame => {
+            root.timelinePreviewFrame = frame;
+            root.controller.seekFrame(frame);
+        }
+    }
+
+    Button {
+        objectName: "openPairButton"
+        visible: false
+        enabled: root.graphicsReady && !root.busy && Boolean(root.controller && root.controller.canOpen)
+        onClicked: root.openSelectedSources(root.sourceCount > 0)
+    }
+
+    ShortcutHelpOverlay {
+        id: shortcutHelp
+
+        playerPreset: root.shortcutPreset === 1
+    }
+
+    ReviewContextMenu {
+        id: viewerContextMenu
+
+        sourceCount: root.sourceCount
+        canonicalSourceIndex: root.canonicalSourceIndex
+        canExport: root.currentFrame >= 0 && !root.framePending
+        differenceEdges: root.differenceEdges
+        currentEdgeIndex: root.differenceEdgeIndex(root.differenceEdge)
+        // qmllint disable unqualified
+        onSideRequested: root.preferences.viewMode = ComparisonSurface.SideBySide
+        onWipeRequested: root.preferences.viewMode = ComparisonSurface.Wipe
+        onDiffRequested: root.preferences.viewMode = ComparisonSurface.Difference
+        // qmllint enable unqualified
+        onEdgeRequested: edge => root.preferences.differenceEdge = edge
+        onReferenceRequested: sourceIndex => root.shell ? root.shell.changeReference(sourceIndex) : root.controller.changeReference(sourceIndex)
+        onBadCaseRequested: badCaseFolderDialog.open()
+        onInspectorRequested: root.shell.inspectorVisible = true
+        onFullScreenRequested: root.toggleFullScreen()
     }
     DropArea {
         id: workspaceDropArea

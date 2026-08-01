@@ -3,6 +3,7 @@
 #include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
+#include "dvs/ui/ReviewShellController.h"
 #include "dvs/ui/WorkspaceController.h"
 
 #include <QCoreApplication>
@@ -85,6 +86,9 @@ public:
                                                   &preferences);
         engine->rootContext()->setContextProperty(QStringLiteral("workspaceController"),
                                                   &workspace);
+        shellController_ = std::make_unique<ReviewShellController>(controller);
+        engine->rootContext()->setContextProperty(QStringLiteral("reviewShell"),
+                                                  shellController_.get());
         const QMetaObject::Connection warningConnection = QObject::connect(
             engine.get(),
             &QQmlEngine::warnings,
@@ -184,7 +188,7 @@ public:
     }
 
     [[nodiscard]] bool enqueueStartupRequest(const int kind, const QList<QUrl>& files) {
-        if (window_ == nullptr || kind < 0) {
+        if (window_ == nullptr || shellController_ == nullptr || kind < 0) {
             return false;
         }
         QVariantList values;
@@ -192,14 +196,7 @@ public:
         for (const QUrl& file : files) {
             values.push_back(file);
         }
-        QVariant accepted;
-        const bool invoked =
-            QMetaObject::invokeMethod(window_,
-                                      "enqueueStartupRequest",
-                                      Q_RETURN_ARG(QVariant, accepted),
-                                      Q_ARG(QVariant, QVariant::fromValue(kind)),
-                                      Q_ARG(QVariant, QVariant::fromValue(values)));
-        return invoked && accepted.toBool();
+        return shellController_->enqueueStartupRequest(kind, values);
     }
 
     void activateWindow() noexcept {
@@ -329,6 +326,7 @@ public:
         surface_ = nullptr;
         window_ = nullptr;
         engine_.reset();
+        shellController_.reset();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
 
@@ -342,6 +340,7 @@ private:
     DesktopApplicationOptions options_;
     QGuiApplication application_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
+    std::unique_ptr<ReviewShellController> shellController_;
     QQuickWindow* window_ = nullptr;
     ComparisonSurface* surface_ = nullptr;
     double activeScreenRefreshRate_ = 0.0;

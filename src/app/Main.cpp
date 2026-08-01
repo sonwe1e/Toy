@@ -383,7 +383,7 @@ runDesktop(int& argc,
                     smokeStage = SmokeStage::WaitingForShortcutLast;
                     return;
                 }
-                if (!desktop.focusControlForAutomation("viewModeCombo") ||
+                if (!desktop.focusControlForAutomation("sideModeButton") ||
                     !desktop.sendKeyForAutomation(Qt::Key_Space) ||
                     !desktop.sendKeyForAutomation(Qt::Key_Up)) {
                     std::cerr << "DVS_UI_SMOKE_FOCUSED_COMBO_KEYS_REJECTED\n";

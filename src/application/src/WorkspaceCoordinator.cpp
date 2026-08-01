@@ -116,6 +116,9 @@ public:
         const CommandContext context = commandContext(command);
         const bool opensComparison = std::holds_alternative<OpenComparisonCommand>(command) ||
                                      std::holds_alternative<OpenDirectComparisonCommand>(command);
+        const OpenReviewIntent openIntent = std::holds_alternative<OpenComparisonCommand>(command)
+                                                ? std::get<OpenComparisonCommand>(command).intent
+                                                : OpenReviewIntent::NewReview;
         const bool changesProject =
             opensComparison || std::holds_alternative<SetAlignmentOffsetsCommand>(command) ||
             std::holds_alternative<SetManualAlignmentAnchorCommand>(command) ||
@@ -128,8 +131,11 @@ public:
             std::holds_alternative<LastFrameCommand>(command);
         const PortSubmitResult result = dependencies_.submitPlayback(std::move(command));
         if (result == PortSubmitResult::Accepted && (opensComparison || changesProject)) {
-            observedReviewCommands_.push_back(
-                ObservedReviewCommand{.context = context, .opensComparison = opensComparison});
+            observedReviewCommands_.push_back(ObservedReviewCommand{
+                .context = context,
+                .opensComparison = opensComparison,
+                .openIntent = openIntent,
+            });
         }
         return result;
     }
@@ -374,6 +380,7 @@ private:
     struct ObservedReviewCommand final {
         CommandContext context;
         bool opensComparison = false;
+        OpenReviewIntent openIntent = OpenReviewIntent::NewReview;
     };
 
     [[nodiscard]] RequestContext nextRequestContext() {
@@ -545,6 +552,8 @@ private:
         submitInternal(PlaybackCommand{OpenComparisonCommand{
             .context = nextCommandContext(),
             .sources = std::move(sources),
+            .intent = nextPhase == Phase::OpeningProject ? OpenReviewIntent::RestoreProject
+                                                         : OpenReviewIntent::RelinkProject,
         }});
     }
 
@@ -591,7 +600,8 @@ private:
         if (observed != observedReviewCommands_.end()) {
             if (terminal.outcome == CommandOutcome::Succeeded) {
                 state_.dirty = true;
-                if (observed->opensComparison) {
+                if (observed->opensComparison &&
+                    observed->openIntent == OpenReviewIntent::NewReview) {
                     currentProject_.reset();
                     currentProjectPath_.clear();
                     state_.sourceDiagnostics.clear();

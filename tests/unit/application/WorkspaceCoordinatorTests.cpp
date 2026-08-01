@@ -111,6 +111,25 @@ makeSet(const std::filesystem::path& first = "C:/media/a.mp4",
     return std::move(validated).value().set;
 }
 
+[[nodiscard]] domain::ValidatedComparisonSet makeThreeSet() {
+    const domain::ValidatedComparisonSet pair = makeSet();
+    std::vector<domain::ComparisonSource> sources{pair.sources().begin(), pair.sources().end()};
+    domain::ComparisonSource third = sources.back();
+    third.id = 2U;
+    third.role = domain::ComparisonRole::kPrediction;
+    third.descriptor.normalizedPath = "C:/media/c.mp4";
+    EXPECT_TRUE(third.descriptor.sourceIdentity.has_value());
+    third.descriptor.sourceIdentity->fingerprintSha256 = std::string(64U, 'c');
+    third.displayName = "C";
+    sources[0].role = domain::ComparisonRole::kPrediction;
+    sources[1].role = domain::ComparisonRole::kReference;
+    sources.push_back(std::move(third));
+    auto validated = domain::ComparisonValidator::validate(std::move(sources));
+    EXPECT_TRUE(validated);
+    EXPECT_EQ(validated.value().set.canonicalSourceId(), 1U);
+    return std::move(validated).value().set;
+}
+
 [[nodiscard]] std::vector<SequenceAlignmentResult> makeSequenceResults() {
     SequenceAlignmentResult result{
         .sourceId = 1U,
@@ -347,6 +366,72 @@ TEST(WorkspaceCoordinatorTests, LoadsAndRestoresOffsetsAnchorsAndLastFrameInOrde
     EXPECT_TRUE(workspace->takeCompletedPlaybackCommands().empty());
 }
 
+TEST(WorkspaceCoordinatorTests, RestoresThirdSourceReferenceAndItsManualAnchorConsistently) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    const domain::ValidatedComparisonSet comparison = makeThreeSet();
+    auto created =
+        domain::Project::create(domain::ProjectId{"three-source"}, "Three source", comparison);
+    ASSERT_TRUE(created);
+    domain::Project project = std::move(created).value();
+    ASSERT_EQ(project.sources().canonicalSourceId(), 1U);
+    const domain::ComparisonSource* const thirdSource = project.sources().find(2U);
+    ASSERT_NE(thirdSource, nullptr);
+    ASSERT_EQ(thirdSource->descriptor.frameCount.value, 10);
+    ASSERT_EQ(project.sources().canonicalFrameCount(), 10);
+    ASSERT_TRUE(domain::FrameId{4}.isValid());
+    ASSERT_TRUE(domain::FrameId{5}.isValid());
+    const domain::Status alignmentStatus = project.setAlignmentState(domain::ProjectAlignmentState{
+        .mode = domain::ProjectAlignmentMode::kManualAnchors,
+        .anchors =
+            {
+                domain::PersistedAlignmentAnchor{
+                    .sourceId = 2U,
+                    .canonicalFrame = domain::FrameId{4},
+                    .sourceFrame = domain::FrameId{5},
+                },
+            },
+    });
+    ASSERT_TRUE(alignmentStatus) << alignmentStatus.error().technicalDetail;
+
+    ASSERT_EQ(workspace->openProject("C:/projects/three-source.dvsproj"),
+              PortSubmitResult::Accepted);
+    repository->post(ApplicationEvent{ProjectLoaded{
+        .context = repository->loadRequest->context,
+        .project = project,
+        .sourceDiagnostics = {},
+    }});
+    postSucceeded(*repository, repository->loadRequest->context);
+    static_cast<void>(workspace->snapshot());
+
+    ASSERT_EQ(playback->commands.size(), 1U);
+    const auto* open = std::get_if<OpenComparisonCommand>(&playback->commands.front());
+    ASSERT_NE(open, nullptr);
+    ASSERT_EQ(open->sources.size(), 3U);
+    EXPECT_EQ(open->intent, OpenReviewIntent::RestoreProject);
+    EXPECT_EQ(open->sources[0].role, domain::ComparisonRole::kPrediction);
+    EXPECT_EQ(open->sources[1].role, domain::ComparisonRole::kReference);
+    EXPECT_EQ(open->sources[2].role, domain::ComparisonRole::kPrediction);
+
+    playback->makeReady(comparison);
+    playback->succeedLastCommand();
+    static_cast<void>(workspace->snapshot());
+    ASSERT_EQ(playback->commands.size(), 2U);
+    const auto* anchor = std::get_if<SetManualAlignmentAnchorCommand>(&playback->commands.back());
+    ASSERT_NE(anchor, nullptr);
+    EXPECT_EQ(anchor->sourceId, 2U);
+    EXPECT_EQ(anchor->anchor.canonicalFrameId, domain::FrameId{4});
+    EXPECT_EQ(anchor->anchor.sourceFrameId, domain::FrameId{5});
+
+    playback->succeedLastCommand();
+    const auto restored = workspace->snapshot();
+    EXPECT_TRUE(restored->hasProject);
+    EXPECT_FALSE(restored->busy);
+}
+
 TEST(WorkspaceCoordinatorTests, ClosesReadyReviewAndClearsWorkspaceProjection) {
     auto repository = std::make_shared<FakeProjectRepository>();
     auto playback = std::make_shared<FakePlayback>();
@@ -442,6 +527,110 @@ TEST(WorkspaceCoordinatorTests, SavesTopologyChangesAsOneSourceAndViewTransactio
     ASSERT_TRUE(repository->saveRequest.has_value());
     EXPECT_EQ(repository->saveRequest->project.sources().sourceCount(), 1U);
     EXPECT_EQ(repository->saveRequest->project.viewState(), singleView);
+}
+
+TEST(WorkspaceCoordinatorTests, ProjectSourceAndReferenceRebuildsPreserveDirectSaveIdentity) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSet(), domain::FrameId{2});
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    const std::filesystem::path projectPath = "C:/projects/preserved.dvsproj";
+    ASSERT_EQ(workspace->saveProject(projectPath, "Preserved", domain::ProjectViewState{}),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(repository->saveRequest.has_value());
+    repository->post(ApplicationEvent{ProjectSaved{
+        .context = repository->saveRequest->context,
+    }});
+    postSucceeded(*repository, repository->saveRequest->context.request);
+    ASSERT_FALSE(workspace->snapshot()->dirty);
+
+    const auto submitRebuild = [&](const OpenReviewIntent intent,
+                                   const domain::CommandId commandId) {
+        return workspace->submitPlayback(PlaybackCommand{OpenComparisonCommand{
+            .context =
+                CommandContext{
+                    .sessionId = domain::SessionId{1U},
+                    .sessionEpoch = domain::SessionEpoch{2U},
+                    .commandId = commandId,
+                },
+            .sources =
+                {
+                    OpenComparisonSource{
+                        .path = "C:/media/a.mp4",
+                        .role = domain::ComparisonRole::kPrediction,
+                        .displayName = "A",
+                    },
+                    OpenComparisonSource{
+                        .path = "C:/media/b.mp4",
+                        .role = domain::ComparisonRole::kReference,
+                        .displayName = "B",
+                    },
+                },
+            .intent = intent,
+            .preserveDisplayedTime = true,
+        }});
+    };
+
+    ASSERT_EQ(submitRebuild(OpenReviewIntent::ReplaceProjectSources, domain::CommandId{41U}),
+              PortSubmitResult::Accepted);
+    playback->makeReady(makeSet());
+    playback->succeedLastCommand();
+    auto changed = workspace->snapshot();
+    EXPECT_TRUE(changed->hasProject);
+    EXPECT_TRUE(changed->dirty);
+    EXPECT_EQ(changed->projectPath, projectPath);
+
+    ASSERT_EQ(submitRebuild(OpenReviewIntent::ChangeReference, domain::CommandId{42U}),
+              PortSubmitResult::Accepted);
+    playback->makeReady(makeSet("C:/media/b.mp4", "C:/media/a.mp4"));
+    playback->succeedLastCommand();
+    changed = workspace->snapshot();
+    EXPECT_TRUE(changed->hasProject);
+    EXPECT_EQ(changed->projectPath, projectPath);
+}
+
+TEST(WorkspaceCoordinatorTests, NewReviewExplicitlyDetachesTheCurrentProject) {
+    auto repository = std::make_shared<FakeProjectRepository>();
+    auto playback = std::make_shared<FakePlayback>();
+    playback->makeReady(makeSet());
+    auto workspace = makeCoordinator(repository, playback);
+    ASSERT_NE(workspace, nullptr);
+
+    ASSERT_EQ(workspace->saveProject(
+                  "C:/projects/original.dvsproj", "Original", domain::ProjectViewState{}),
+              PortSubmitResult::Accepted);
+    repository->post(ApplicationEvent{ProjectSaved{
+        .context = repository->saveRequest->context,
+    }});
+    postSucceeded(*repository, repository->saveRequest->context.request);
+    ASSERT_TRUE(workspace->snapshot()->hasProject);
+
+    ASSERT_EQ(workspace->submitPlayback(PlaybackCommand{OpenComparisonCommand{
+                  .context =
+                      CommandContext{
+                          .sessionId = domain::SessionId{1U},
+                          .sessionEpoch = domain::SessionEpoch{2U},
+                          .commandId = domain::CommandId{43U},
+                      },
+                  .sources =
+                      {
+                          OpenComparisonSource{
+                              .path = "C:/media/new.mp4",
+                              .role = domain::ComparisonRole::kReference,
+                              .displayName = "New",
+                          },
+                      },
+                  .intent = OpenReviewIntent::NewReview,
+              }}),
+              PortSubmitResult::Accepted);
+    playback->makeReady(makeSingleSet());
+    playback->succeedLastCommand();
+    const auto review = workspace->snapshot();
+    EXPECT_FALSE(review->hasProject);
+    EXPECT_TRUE(review->projectPath.empty());
+    EXPECT_TRUE(review->dirty);
 }
 
 TEST(WorkspaceCoordinatorTests, KeepsInvalidProjectAvailableForExplicitRelinkThenReopensFresh) {

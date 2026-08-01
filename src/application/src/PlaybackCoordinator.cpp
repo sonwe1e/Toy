@@ -414,6 +414,9 @@ private:
         bool framePublished = false;
         bool providerSucceeded = false;
         bool framePresented = false;
+        bool rollbackAttempt = false;
+        std::optional<CommandOutcome> terminalOutcomeOverride;
+        std::optional<domain::MediaError> terminalErrorOverride;
     };
 
     struct BackgroundAnalysis final {
@@ -436,6 +439,18 @@ private:
         std::vector<SourceFrameOffset> offsets;
         std::vector<SequenceAlignmentResult> sequenceMaps;
         bool alignmentRequired = false;
+    };
+
+    struct ReadySessionBackup final {
+        SessionSnapshot snapshot;
+        domain::ValidatedComparisonSet sources;
+        domain::CompatibilityReport compatibilityReport;
+        std::vector<SourceFrameOffset> alignmentOffsets;
+        std::vector<SequenceAlignmentResult> sequenceAlignmentMaps;
+        domain::CanonicalTimeline canonicalTimeline;
+        std::optional<AutomaticAlignmentProposal> automaticAlignmentProposal;
+        std::optional<AutomaticAlignmentUndoState> automaticAlignmentUndo;
+        PrefetchScheduler prefetchScheduler;
     };
 
     struct PendingProbeSlot final {
@@ -779,6 +794,26 @@ private:
         prefetchScheduler_.reset();
     }
 
+    void captureReadySessionForOpenRollback() {
+        if (state_.sessionState != domain::SessionState::kReady || !sources_.has_value() ||
+            !compatibilityReport_.has_value() || !canonicalTimeline_.has_value() ||
+            !state_.displayedFrame.has_value()) {
+            openRollback_.reset();
+            return;
+        }
+        openRollback_ = ReadySessionBackup{
+            .snapshot = state_,
+            .sources = *sources_,
+            .compatibilityReport = *compatibilityReport_,
+            .alignmentOffsets = alignmentOffsets_,
+            .sequenceAlignmentMaps = sequenceAlignmentMaps_,
+            .canonicalTimeline = *canonicalTimeline_,
+            .automaticAlignmentProposal = automaticAlignmentProposal_,
+            .automaticAlignmentUndo = automaticAlignmentUndo_,
+            .prefetchScheduler = prefetchScheduler_,
+        };
+    }
+
     void failPending(domain::MediaError error, const CommandOutcome outcome) {
         if (!pending_.has_value()) {
             return;
@@ -796,6 +831,32 @@ private:
             dependencies_.renderChannel->clear(failed.providerContext);
             state_.playbackGeneration = increment(state_.playbackGeneration);
         }
+
+        const bool failedOpen = failed.phase == PendingPhase::kOpeningProvider ||
+                                failed.phase == PendingPhase::kOpeningFirstFrame;
+        if (failedOpen && !failed.rollbackAttempt && openRollback_.has_value()) {
+            std::optional<domain::MediaTime> resumeTime;
+            if (openRollback_->snapshot.displayedFrame.has_value()) {
+                auto time = domain::canonicalFrameStartTime(
+                    openRollback_->canonicalTimeline, *openRollback_->snapshot.displayedFrame);
+                if (time) {
+                    resumeTime = time.value();
+                }
+            }
+            beginOpenValidated(failed.command,
+                               openRollback_->sources,
+                               openRollback_->compatibilityReport,
+                               openRollback_->canonicalTimeline,
+                               resumeTime,
+                               true,
+                               outcome,
+                               error);
+            return;
+        }
+
+        const CommandOutcome terminalOutcome = failed.terminalOutcomeOverride.value_or(outcome);
+        domain::MediaError terminalError = failed.terminalErrorOverride.value_or(std::move(error));
+        openRollback_.reset();
 
         if (failed.phase == PendingPhase::kOpeningProvider ||
             failed.phase == PendingPhase::kOpeningFirstFrame ||
@@ -825,9 +886,9 @@ private:
             state_.playbackState = domain::PlaybackState::kPaused;
             state_.requestedFrame.reset();
         }
-        state_.lastError = error;
+        state_.lastError = terminalError;
         publishSnapshot();
-        completeCommand(failed.command, outcome, std::move(error));
+        completeCommand(failed.command, terminalOutcome, std::move(terminalError));
     }
 
     [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
@@ -1220,11 +1281,15 @@ private:
     // Shared post-validation open path. Stores the validated set and compatibility report, builds
     // the provider request from the canonical timeline, and submits the open to the frame
     // provider. Both the direct-descriptor and probed-paths entry points funnel through here.
-    void beginOpenValidated(CommandContext commandContext,
-                            domain::ValidatedComparisonSet set,
-                            domain::CompatibilityReport report,
-                            domain::CanonicalTimeline timeline,
-                            const std::optional<domain::MediaTime> resumeTime = std::nullopt) {
+    void beginOpenValidated(
+        CommandContext commandContext,
+        domain::ValidatedComparisonSet set,
+        domain::CompatibilityReport report,
+        domain::CanonicalTimeline timeline,
+        const std::optional<domain::MediaTime> resumeTime = std::nullopt,
+        const bool rollbackAttempt = false,
+        const std::optional<CommandOutcome> terminalOutcomeOverride = std::nullopt,
+        const std::optional<domain::MediaError> terminalErrorOverride = std::nullopt) {
         domain::FrameId initialFrame{0};
         if (resumeTime.has_value()) {
             auto mapped = domain::canonicalFrameAtOrBefore(timeline, *resumeTime);
@@ -1294,6 +1359,9 @@ private:
             .frameContext = std::nullopt,
             .set = std::nullopt,
             .expectedFrame = initialFrame,
+            .rollbackAttempt = rollbackAttempt,
+            .terminalOutcomeOverride = terminalOutcomeOverride,
+            .terminalErrorOverride = terminalErrorOverride,
         };
         publishSnapshot();
 
@@ -1350,6 +1418,7 @@ private:
             return;
         }
 
+        captureReadySessionForOpenRollback();
         beginOpenValidated(command.context,
                            std::move(validation.value().set),
                            std::move(validation.value().report),
@@ -1545,6 +1614,9 @@ private:
             activeTimeline = domain::CanonicalTimeline{*set.canonicalRate()};
         }
 
+        if (completed.preservesReadySession) {
+            captureReadySessionForOpenRollback();
+        }
         beginOpenValidated(completed.command,
                            std::move(validation.value().set),
                            std::move(validation.value().report),
@@ -2260,6 +2332,11 @@ private:
 
         static_cast<void>(dependencies_.deadlineScheduler->cancel(*pending_->presentationTimerId));
         const CommandContext command = pending_->command;
+        const bool rollbackAttempt = pending_->rollbackAttempt;
+        const std::optional<CommandOutcome> terminalOutcomeOverride =
+            pending_->terminalOutcomeOverride;
+        const std::optional<domain::MediaError> terminalErrorOverride =
+            pending_->terminalErrorOverride;
         const domain::FrameId displayedFrame = pending_->set->canonicalFrameId();
         state_.presentedSources.clear();
         state_.presentedSources.reserve(pending_->set->sources().size());
@@ -2273,6 +2350,40 @@ private:
             });
         }
         pending_.reset();
+        if (rollbackAttempt && openRollback_.has_value()) {
+            const domain::SessionEpoch sessionEpoch = state_.sessionEpoch;
+            const domain::PlaybackGeneration playbackGeneration = state_.playbackGeneration;
+            const domain::DeviceGeneration deviceGeneration = state_.deviceGeneration;
+            const bool graphicsReady = state_.graphicsReady;
+            std::vector<PresentedSourceState> presentedSources = std::move(state_.presentedSources);
+
+            state_ = std::move(openRollback_->snapshot);
+            state_.sessionEpoch = sessionEpoch;
+            state_.playbackGeneration = playbackGeneration;
+            state_.deviceGeneration = deviceGeneration;
+            state_.graphicsReady = graphicsReady;
+            state_.sessionState = domain::SessionState::kReady;
+            state_.playbackState = domain::PlaybackState::kPaused;
+            state_.displayedFrame = displayedFrame;
+            state_.requestedFrame.reset();
+            state_.presentedSources = std::move(presentedSources);
+            alignmentOffsets_ = std::move(openRollback_->alignmentOffsets);
+            sequenceAlignmentMaps_ = std::move(openRollback_->sequenceAlignmentMaps);
+            automaticAlignmentProposal_ = std::move(openRollback_->automaticAlignmentProposal);
+            automaticAlignmentUndo_ = std::move(openRollback_->automaticAlignmentUndo);
+            prefetchScheduler_ = std::move(openRollback_->prefetchScheduler);
+            openRollback_.reset();
+            state_.lastError = terminalErrorOverride;
+            publishSnapshot();
+            completeCommand(command,
+                            terminalOutcomeOverride.value_or(CommandOutcome::Failed),
+                            terminalErrorOverride);
+            const ExactPrefetchWindow window = exactPrefetchWindow();
+            submitPrefetch(prefetchScheduler_.afterExact(
+                displayedFrame, state_.canonicalFrameCount, window.ahead, window.behind));
+            return;
+        }
+        openRollback_.reset();
         if (!state_.validatedComparison && sources_) {
             state_.validatedComparison =
                 std::make_shared<const domain::ValidatedComparisonSet>(*sources_);
@@ -3229,6 +3340,7 @@ private:
     std::vector<SequenceAlignmentResult> sequenceAlignmentMaps_;
     std::optional<domain::CanonicalTimeline> canonicalTimeline_;
     std::optional<PendingCommand> pending_;
+    std::optional<ReadySessionBackup> openRollback_;
     std::optional<PendingProbe> pendingProbe_;
     std::optional<PlaybackRun> playbackRun_;
     std::optional<std::chrono::steady_clock::time_point> lastPlaybackProjectionAt_;

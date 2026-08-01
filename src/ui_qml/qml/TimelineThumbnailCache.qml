@@ -1,0 +1,84 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+
+QtObject {
+    id: cache
+
+    objectName: "timelineThumbnailCache"
+
+    required property Item sourceItem
+    required property int currentFrame
+    required property int totalFrames
+    required property var generation
+    property int targetWidth: 176
+    property int targetHeight: 99
+    property int maximumBytes: 8 * 1024 * 1024
+    readonly property int sampleInterval: Math.max(1, Math.ceil(Math.max(1, totalFrames) / 120))
+    property var urls: ({})
+    property var handles: ({})
+    property var lruFrames: []
+    property int accountedBytes: 0
+
+    function reset() {
+        urls = {};
+        handles = {};
+        lruFrames = [];
+        accountedBytes = 0;
+    }
+
+    function nearestSample(frame) {
+        return Math.max(0, Math.min(Math.max(0, totalFrames - 1), Math.round(Number(frame) / sampleInterval) * sampleInterval));
+    }
+
+    function touch(frame) {
+        const next = lruFrames.filter(value => Number(value) !== Number(frame));
+        next.push(frame);
+        lruFrames = next;
+    }
+
+    function capture(frame) {
+        if (!sourceItem || sourceItem.width <= 0 || sourceItem.height <= 0 || frame < 0)
+            return;
+        const sample = nearestSample(frame);
+        if (sample !== Number(frame) || urls[sample] !== undefined)
+            return;
+        const requestedGeneration = generation;
+        sourceItem.grabToImage(result => {
+            if (requestedGeneration !== cache.generation || !result || !result.url)
+                return;
+            const nextUrls = Object.assign({}, cache.urls);
+            const nextHandles = Object.assign({}, cache.handles);
+            nextUrls[sample] = result.url;
+            nextHandles[sample] = result;
+            cache.urls = nextUrls;
+            cache.handles = nextHandles;
+            cache.accountedBytes += cache.targetWidth * cache.targetHeight * 4;
+            cache.touch(sample);
+            while (cache.accountedBytes > cache.maximumBytes && cache.lruFrames.length > 1) {
+                const evicted = cache.lruFrames[0];
+                cache.lruFrames = cache.lruFrames.slice(1);
+                const prunedUrls = Object.assign({}, cache.urls);
+                const prunedHandles = Object.assign({}, cache.handles);
+                delete prunedUrls[evicted];
+                delete prunedHandles[evicted];
+                cache.urls = prunedUrls;
+                cache.handles = prunedHandles;
+                cache.accountedBytes -= cache.targetWidth * cache.targetHeight * 4;
+            }
+        }, Qt.size(targetWidth, targetHeight));
+    }
+
+    function urlForFrame(frame) {
+        const sample = nearestSample(frame);
+        const value = urls[sample];
+        if (value !== undefined) {
+            touch(sample);
+            return value;
+        }
+        return "";
+    }
+
+    onCurrentFrameChanged: capture(currentFrame)
+    onGenerationChanged: reset()
+}

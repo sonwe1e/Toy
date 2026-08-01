@@ -94,6 +94,8 @@ struct ReviewView final {
     QString sourceCFilename;
     QVariantList sourceUrls;
     int sourceCount = 0;
+    int canonicalSourceIndex = -1;
+    int referenceSourceIndex = -1;
     ReviewController::ReviewDisplayState displayState = ReviewController::ReviewDisplayState::Empty;
     bool busy = false;
     bool framePending = false;
@@ -210,12 +212,14 @@ public:
         if (!third.isEmpty()) {
             urls.push_back(third);
         }
-        return openSources(urls, referenceSourceIndex, false);
+        return openSources(
+            urls, referenceSourceIndex, false, application::OpenReviewIntent::NewReview);
     }
 
     [[nodiscard]] bool openSources(const QVariantList& urls,
                                    const int referenceSourceIndex,
-                                   const bool preserveDisplayedTime) {
+                                   const bool preserveDisplayedTime,
+                                   const application::OpenReviewIntent intent) {
         if (!onOwnerThread() || stopped_) {
             return false;
         }
@@ -241,17 +245,14 @@ public:
             }
         }
 
-        sourceA_ = std::move(validated[0U].candidate);
-        sourceB_ = urls.size() > 1 ? std::move(validated[1U].candidate) : std::nullopt;
-        sourceC_ = urls.size() > 2 ? std::move(validated[2U].candidate) : std::nullopt;
-        localSourceAErrorKey_ = std::move(validated[0U].errorKey);
-        localSourceBErrorKey_ = urls.size() > 1 ? std::move(validated[1U].errorKey) : QString{};
-        localSourceCErrorKey_ = urls.size() > 2 ? std::move(validated[2U].errorKey) : QString{};
-        publishProjection();
-
         const int sourceCount = static_cast<int>(urls.size());
-        if (!sourceA_.has_value() || (sourceCount > 1 && !sourceB_.has_value()) ||
-            (sourceCount > 2 && !sourceC_.has_value()) || !view_.canOpen) {
+        candidateSourceAErrorKey_ = validated[0U].errorKey;
+        candidateSourceBErrorKey_ = sourceCount > 1 ? validated[1U].errorKey : QString{};
+        candidateSourceCErrorKey_ = sourceCount > 2 ? validated[2U].errorKey : QString{};
+        if (!validated[0U].candidate.has_value() ||
+            (sourceCount > 1 && !validated[1U].candidate.has_value()) ||
+            (sourceCount > 2 && !validated[2U].candidate.has_value()) || !view_.canOpen) {
+            publishProjection();
             return false;
         }
         const std::optional<application::CommandContext> context = allocateCommandContext();
@@ -270,18 +271,29 @@ public:
                 .displayName = source.filename.toStdString(),
             });
         };
-        appendSource(*sourceA_, 0);
-        if (sourceB_.has_value()) {
-            appendSource(*sourceB_, 1);
+        appendSource(*validated[0U].candidate, 0);
+        if (sourceCount > 1) {
+            appendSource(*validated[1U].candidate, 1);
         }
-        if (sourceC_.has_value()) {
-            appendSource(*sourceC_, 2);
+        if (sourceCount > 2) {
+            appendSource(*validated[2U].candidate, 2);
         }
         return dispatch(application::OpenComparisonCommand{
             .context = *context,
             .sources = std::move(sources),
+            .intent = intent,
             .preserveDisplayedTime = preserveDisplayedTime,
         });
+    }
+
+    [[nodiscard]] bool changeReference(const int sourceIndex) {
+        refresh();
+        if (sourceIndex < 0 || sourceIndex >= view_.sourceCount ||
+            sourceIndex == view_.canonicalSourceIndex || view_.sourceUrls.isEmpty()) {
+            return false;
+        }
+        return openSources(
+            view_.sourceUrls, sourceIndex, true, application::OpenReviewIntent::ChangeReference);
     }
 
     [[nodiscard]] bool first() {
@@ -454,8 +466,8 @@ public:
     [[nodiscard]] bool setManualAlignmentAnchor(const int sourceIndex,
                                                 const qint64 canonicalFrame,
                                                 const qint64 sourceFrame) {
-        if (sourceIndex < 0 || sourceIndex >= (sourceC_.has_value() ? 3 : 2) ||
-            canonicalFrame < 0 || sourceFrame < 0) {
+        if (sourceIndex < 0 || sourceIndex >= view_.sourceCount || canonicalFrame < 0 ||
+            sourceFrame < 0) {
             return false;
         }
         return dispatchStateChange(
@@ -611,13 +623,9 @@ private:
 
     void publishProjection() noexcept {
         ReviewView next;
-        next.sourceAFilename = sourceA_.has_value() ? sourceA_->filename : QString{};
-        next.sourceBFilename = sourceB_.has_value() ? sourceB_->filename : QString{};
-        next.sourceCFilename = sourceC_.has_value() ? sourceC_->filename : QString{};
-        next.sourceAErrorKey = localSourceAErrorKey_;
-        next.sourceBErrorKey = localSourceBErrorKey_;
-        next.sourceCErrorKey = localSourceCErrorKey_;
-
+        next.sourceAErrorKey = candidateSourceAErrorKey_;
+        next.sourceBErrorKey = candidateSourceBErrorKey_;
+        next.sourceCErrorKey = candidateSourceCErrorKey_;
         if (snapshot_) {
             next.displayState = mapDisplayState(snapshot_->sessionState);
             next.graphicsReady = snapshot_->graphicsReady && !stopped_;
@@ -631,17 +639,22 @@ private:
                     qRound(snapshot_->validatedComparison->canonicalRate()->displayFps()), 1, 1000);
             }
             if (snapshot_->validatedComparison) {
+                next.canonicalSourceIndex =
+                    static_cast<int>(snapshot_->validatedComparison->canonicalSourceId());
                 for (const domain::ComparisonSource& source :
                      snapshot_->validatedComparison->sources()) {
                     const QString sourcePath =
                         QString::fromStdWString(source.descriptor.normalizedPath.wstring());
                     next.sourceUrls.push_back(QUrl::fromLocalFile(sourcePath));
                     const QString filename = QFileInfo{sourcePath}.fileName();
-                    if (source.id == 0U && next.sourceAFilename.isEmpty()) {
+                    if (source.role == domain::ComparisonRole::kReference) {
+                        next.referenceSourceIndex = static_cast<int>(source.id);
+                    }
+                    if (source.id == 0U) {
                         next.sourceAFilename = filename;
-                    } else if (source.id == 1U && next.sourceBFilename.isEmpty()) {
+                    } else if (source.id == 1U) {
                         next.sourceBFilename = filename;
-                    } else if (source.id == 2U && next.sourceCFilename.isEmpty()) {
+                    } else if (source.id == 2U) {
                         next.sourceCFilename = filename;
                     }
                 }
@@ -1153,12 +1166,9 @@ private:
     SourceListModel sourceModel_;
     QTimer projectionTimer_;
     std::shared_ptr<const application::SessionSnapshot> snapshot_;
-    std::optional<LocalFileCandidate> sourceA_;
-    std::optional<LocalFileCandidate> sourceB_;
-    std::optional<LocalFileCandidate> sourceC_;
-    QString localSourceAErrorKey_;
-    QString localSourceBErrorKey_;
-    QString localSourceCErrorKey_;
+    QString candidateSourceAErrorKey_;
+    QString candidateSourceBErrorKey_;
+    QString candidateSourceCErrorKey_;
     std::optional<application::CommandContext> pendingCommand_;
     std::optional<application::CommandContext> pendingNavigationCommand_;
     std::optional<application::CommandContext> pendingTransportCommand_;
@@ -1189,12 +1199,24 @@ QVariantList ReviewController::sourceUrls() const {
     return impl_->view().sourceUrls;
 }
 
+QVariantList ReviewController::activeSources() const {
+    return impl_->view().sourceUrls;
+}
+
 QAbstractItemModel* ReviewController::sources() const noexcept {
     return impl_->sources();
 }
 
 int ReviewController::sourceCount() const noexcept {
     return impl_->sources()->rowCount();
+}
+
+int ReviewController::canonicalSourceIndex() const noexcept {
+    return impl_->view().canonicalSourceIndex;
+}
+
+int ReviewController::referenceSourceIndex() const noexcept {
+    return impl_->view().referenceSourceIndex;
 }
 
 ReviewController::ReviewDisplayState ReviewController::displayState() const noexcept {
@@ -1358,11 +1380,17 @@ bool ReviewController::openComparison(const QUrl& first, const QUrl& second) {
 }
 
 bool ReviewController::openSources(const QVariantList& urls, const int referenceSourceIndex) {
-    return impl_->openSources(urls, referenceSourceIndex, false);
+    return impl_->openSources(
+        urls, referenceSourceIndex, false, application::OpenReviewIntent::NewReview);
 }
 
 bool ReviewController::reopenSources(const QVariantList& urls, const int referenceSourceIndex) {
-    return impl_->openSources(urls, referenceSourceIndex, true);
+    return impl_->openSources(
+        urls, referenceSourceIndex, true, application::OpenReviewIntent::ReplaceProjectSources);
+}
+
+bool ReviewController::changeReference(const int sourceIndex) {
+    return impl_->changeReference(sourceIndex);
 }
 
 bool ReviewController::openComparisonSet(const QUrl& first,
