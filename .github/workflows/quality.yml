@@ -92,6 +92,10 @@ jobs:
         shell: pwsh
         run: cmake --preset dev --fresh
 
+      - name: Build development preset
+        shell: pwsh
+        run: cmake --build --preset dev
+
       - name: Check formatting
         shell: pwsh
         run: cmake --build --preset dev --target format-check
