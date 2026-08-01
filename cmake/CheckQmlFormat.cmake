@@ -9,6 +9,7 @@ foreach(qmlFile IN LISTS qmlFiles)
         RESULT_VARIABLE result
         OUTPUT_VARIABLE formatted
         ERROR_VARIABLE diagnostics
+        ENCODING UTF-8
     )
     if(NOT result EQUAL 0)
         message(FATAL_ERROR "qmlformat failed for ${qmlFile}: ${diagnostics}")
