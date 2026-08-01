@@ -66,57 +66,22 @@ Item {
     }
 
     Rectangle {
-        height: 4
-        radius: 2
-        color: "#253144"
-        anchors {
-            left: parent.left
-            right: parent.right
-            top: parent.top
-            topMargin: 2
-        }
-    }
-
-    Rectangle {
-        height: 4
-        radius: 2
-        color: "#253144"
-        anchors {
-            left: parent.left
-            right: parent.right
-            top: parent.top
-            topMargin: 11
-        }
-    }
-
-    Rectangle {
-        height: 4
-        radius: 2
-        color: "#253144"
-        anchors {
-            left: parent.left
-            right: parent.right
-            top: parent.top
-            topMargin: 20
-        }
-    }
-
-    Rectangle {
         objectName: "rangeHighlight"
         visible: control.inFrame >= 0 && control.outFrame >= control.inFrame && control.totalFrames > 1 && control.outFrame >= control.windowStartFrame && control.inFrame <= control.windowStartFrame + control.visibleFrameCount - 1
         readonly property real visibleIn: Math.max(control.windowStartFrame, Math.min(control.windowStartFrame + control.visibleFrameCount - 1, control.inFrame))
         readonly property real visibleOut: Math.max(control.windowStartFrame, Math.min(control.windowStartFrame + control.visibleFrameCount - 1, control.outFrame))
         x: Math.max(0, control.positionForFrame(visibleIn) * control.width)
         width: visibleOut < visibleIn ? 0 : Math.max(2, (visibleOut - visibleIn) / Math.max(1, control.visibleFrameCount - 1) * control.width)
-        height: 4
+        height: 9
         radius: 2
         color: "#536dfe"
-        opacity: 0.75
-        y: 2
+        opacity: 0.3
+        y: mainRail.y - 2
     }
 
     Repeater {
         model: control.markers
+        z: 2
 
         delegate: Rectangle {
             id: marker
@@ -126,9 +91,9 @@ Item {
             readonly property real trackPosition: control.positionForFrame(Number(modelData.frame))
             visible: trackPosition >= 0 && trackPosition <= 1
             width: kind === "anchor" ? 6 : 4
-            height: 6
+            height: 11
             x: Math.max(0, Math.min(control.width - width, trackPosition * control.width - width / 2))
-            y: kind === "missing" ? 10 : (kind === "duplicate" || kind === "extra" ? 19 : 28)
+            y: mainRail.y - (height - mainRail.height) / 2
             radius: 2
             color: kind === "missing" ? "#f87171" : (kind === "duplicate" ? "#fb923c" : (kind === "extra" ? "#c084fc" : (kind === "anchor" ? "#22d3ee" : "#facc15")))
 

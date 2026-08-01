@@ -70,6 +70,13 @@ Item {
             verify(footer.standardButton(DialogButtonBox.Cancel).visible);
             verify(footer.height * Screen.devicePixelRatio >= 40);
 
+            // The standard Ok/Cancel buttons must come from the custom dark delegate
+            // (implicitHeight 30), not the 40px-tall default Basic button.
+            const okButton = footer.standardButton(DialogButtonBox.Ok);
+            verify(okButton !== null);
+            verify(okButton.implicitHeight < 40);
+            compare(okButton.background.color.a, 1.0);
+
             const opened = grabImage(windowContent);
             const scaleX = opened.width / windowContent.width;
             const scaleY = opened.height / windowContent.height;

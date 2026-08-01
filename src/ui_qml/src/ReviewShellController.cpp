@@ -97,7 +97,7 @@ void ReviewShellController::setInspectorVisible(const bool visible) {
 }
 
 bool ReviewShellController::stageSources(const QVariantList& sources, const int referenceIndex) {
-    if (sources.isEmpty() || sources.size() > 3 || referenceIndex < 0 ||
+    if (sources.isEmpty() || sources.size() > 3 || referenceIndex < -1 ||
         referenceIndex >= sources.size()) {
         return false;
     }

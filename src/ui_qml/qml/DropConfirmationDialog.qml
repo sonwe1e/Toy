@@ -13,6 +13,30 @@ Dialog {
 
     signal moveRequested(int fromIndex, int toIndex)
 
+    component CompactMoveButton: Button {
+        id: button
+
+        implicitWidth: 52
+        implicitHeight: 30
+        padding: 0
+
+        contentItem: Text {
+            text: button.text
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            color: button.enabled ? "#f3f6fb" : "#637086"
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+        }
+
+        background: Rectangle {
+            radius: 5
+            color: !button.enabled ? "#202938" : (button.down ? "#285da9" : (button.hovered ? "#2d69bf" : "#253247"))
+            border.width: button.activeFocus ? 2 : 1
+            border.color: button.activeFocus ? "#4b8df8" : "#3b4d67"
+        }
+    }
+
     objectName: "dropReviewDialog"
     parent: Overlay.overlay
     anchors.centerIn: Overlay.overlay
@@ -90,6 +114,7 @@ Dialog {
 
         Repeater {
             model: control.pendingVideos
+            width: parent.width
 
             delegate: Row {
                 id: droppedRow
@@ -114,17 +139,13 @@ Dialog {
                     elide: Text.ElideMiddle
                     anchors.verticalCenter: parent.verticalCenter
                 }
-                Button {
-                    implicitWidth: 52
-                    implicitHeight: 30
+                CompactMoveButton {
                     text: "↑"
                     enabled: droppedRow.index > 0
                     Accessible.name: qsTr("Move source earlier")
                     onClicked: control.requestMove(droppedRow.index, droppedRow.index - 1)
                 }
-                Button {
-                    implicitWidth: 52
-                    implicitHeight: 30
+                CompactMoveButton {
                     text: "↓"
                     enabled: droppedRow.index + 1 < control.pendingVideos.length
                     Accessible.name: qsTr("Move source later")
@@ -141,7 +162,7 @@ Dialog {
                 color: "#fff3f6fb"
                 anchors.verticalCenter: parent.verticalCenter
             }
-            ComboBox {
+            ToolbarCombo {
                 id: referenceCombo
 
                 objectName: "dropReferenceCombo"
@@ -154,7 +175,34 @@ Dialog {
     footer: DialogButtonBox {
         objectName: "dropDialogFooter"
         standardButtons: DialogButtonBox.Ok | DialogButtonBox.Cancel
+        spacing: 8
+        alignment: Qt.AlignRight
         padding: 12
+
+        delegate: Button {
+            id: footerButton
+
+            objectName: "dropFooterStandardButton"
+            implicitWidth: 88
+            implicitHeight: 30
+            padding: 0
+
+            contentItem: Text {
+                text: footerButton.text
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                color: footerButton.enabled ? "#f3f6fb" : "#637086"
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
+
+            background: Rectangle {
+                radius: 5
+                color: !footerButton.enabled ? "#202938" : (footerButton.down ? "#285da9" : (footerButton.hovered ? "#2d69bf" : "#253247"))
+                border.width: footerButton.activeFocus ? 2 : 1
+                border.color: footerButton.activeFocus ? "#4b8df8" : "#3b4d67"
+            }
+        }
 
         background: Rectangle {
             color: "#ff111823"

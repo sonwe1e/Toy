@@ -543,6 +543,41 @@ TEST_F(ReviewControllerTests, ShellKeepsActiveAndStagedSourcesSeparateDuringAReb
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests,
+       ShellAcceptsPredictionOnlyReferenceIndexAndOpensAllPredictionSources) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("prediction_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("prediction_b.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    // The drop-confirmation dialog exposes "None (prediction-only)", which maps to a
+    // reference index of -1. The shell must accept it and forward it to the review
+    // controller, which interprets -1 as "no reference source" (all-prediction).
+    ASSERT_TRUE(shell.stageSources(
+        {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, -1));
+    EXPECT_EQ(shell.stagedReferenceIndex(), -1);
+
+    ASSERT_TRUE(shell.openStagedSources(false));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const auto* command =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
+    ASSERT_NE(command, nullptr);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::NewReview);
+    ASSERT_EQ(command->sources.size(), 2U);
+    EXPECT_EQ(command->sources[0].role, domain::ComparisonRole::kPrediction);
+    EXPECT_EQ(command->sources[1].role, domain::ComparisonRole::kPrediction);
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, ShellCanRemoveAnyActiveSourceAndPreservesTheReferenceRole) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
