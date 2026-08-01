@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: .\tools\check-repository-guide.ps1
 
+      - name: Check resource limit policy
+        shell: pwsh
+        run: .\tools\check-resource-limits.ps1
+
       - name: Check coverage gate behavior
         shell: pwsh
         run: >-
@@ -90,16 +94,24 @@ jobs:
 
       - name: Configure development preset
         shell: pwsh
-        run: cmake --preset dev --fresh
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --preset dev --fresh
 
       - name: Build development preset
         shell: pwsh
-        run: cmake --build --preset dev
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --build --preset dev
 
       - name: Check formatting
         shell: pwsh
-        run: cmake --build --preset dev --target format-check
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --build --preset dev --target format-check
 
       - name: Run static analysis
         shell: pwsh
-        run: cmake --build --preset dev --target lint
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --build --preset dev --target lint

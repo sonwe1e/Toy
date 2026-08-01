@@ -103,19 +103,27 @@ jobs:
 
       - name: Configure
         shell: pwsh
-        run: cmake --preset release --fresh
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --preset release --fresh
 
       - name: Build
         shell: pwsh
-        run: cmake --build --preset release
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          --build --preset release
 
       - name: D3D11VA and zero-copy tests
         shell: pwsh
-        run: ctest --preset hardware-d3d11 --output-on-failure
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          --preset hardware-d3d11 --output-on-failure
 
       - name: Release-blocking performance gates
         shell: pwsh
-        run: ctest --preset performance-d3d11 --output-on-failure
+        run: >-
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          --preset performance-d3d11 --output-on-failure
 
       - name: Collect performance logs
         if: always()
@@ -127,6 +135,7 @@ jobs:
             Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
           @(
             'Release-blocking profiles:',
+            '- resource profile: background-4-cpu (BelowNormal priority)',
             '- 1080p60-1source',
             '- 1080p60',
             '- 1080p120-1source',

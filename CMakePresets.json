@@ -32,7 +32,10 @@
         "VCPKG_TARGET_TRIPLET": "x64-windows"
       },
       "environment": {
-        "VCPKG_FEATURE_FLAGS": "manifests,versions,binarycaching"
+        "CMAKE_BUILD_PARALLEL_LEVEL": "4",
+        "CTEST_PARALLEL_LEVEL": "1",
+        "VCPKG_FEATURE_FLAGS": "manifests,versions,binarycaching",
+        "VCPKG_MAX_CONCURRENCY": "4"
       }
     },
     {
@@ -79,19 +82,23 @@
   "buildPresets": [
     {
       "name": "dev",
-      "configurePreset": "dev"
+      "configurePreset": "dev",
+      "jobs": 4
     },
     {
       "name": "dev-coverage",
-      "configurePreset": "dev-coverage"
+      "configurePreset": "dev-coverage",
+      "jobs": 4
     },
     {
       "name": "asan",
-      "configurePreset": "asan"
+      "configurePreset": "asan",
+      "jobs": 4
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "jobs": 4
     }
   ],
   "testPresets": [
@@ -107,6 +114,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 1,
         "noTestsAction": "error"
       }
     },
@@ -137,6 +145,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 1,
         "noTestsAction": "error"
       }
     },
@@ -152,6 +161,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 1,
         "noTestsAction": "error"
       }
     },
@@ -167,6 +177,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 1,
         "noTestsAction": "error"
       }
     },
@@ -182,6 +193,7 @@
         "outputOnFailure": true
       },
       "execution": {
+        "jobs": 1,
         "noTestsAction": "error"
       }
     }

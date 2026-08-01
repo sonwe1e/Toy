@@ -63,8 +63,24 @@ $process = Start-Process `
     -ArgumentList $arguments `
     -RedirectStandardError $stderrPath `
     -RedirectStandardOutput $stdoutPath `
-    -PassThru `
-    -Wait
+    -PassThru
+$gateProcess = Get-Process -Id $PID
+try {
+    $process.ProcessorAffinity = $gateProcess.ProcessorAffinity
+    $process.PriorityClass = $gateProcess.PriorityClass
+} catch [System.InvalidOperationException] {
+    if (-not $process.HasExited) {
+        throw
+    }
+}
+$process.WaitForExit()
+
+if ($env:DVS_GATE_RESOURCE_PROFILE) {
+    Add-Content `
+        -LiteralPath $stdoutPath `
+        -Value "DVS_GATE_RESOURCE_PROFILE $env:DVS_GATE_RESOURCE_PROFILE" `
+        -Encoding ascii
+}
 
 $stderr = Get-Content -LiteralPath $stderrPath
 $stderr | Write-Output
