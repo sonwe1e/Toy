@@ -139,30 +139,14 @@ jobs:
         with:
           arch: x64
 
-      - name: Materialize release signing certificate
+      - name: Verify approved unsigned release scope
         shell: pwsh
-        env:
-          DVS_SIGNING_PFX_BASE64: ${{ secrets.DVS_SIGNING_PFX_BASE64 }}
-          DVS_SIGNING_PFX_PASSWORD: ${{ secrets.DVS_SIGNING_PFX_PASSWORD }}
         run: |
-          if (-not $env:DVS_SIGNING_PFX_BASE64 -or -not $env:DVS_SIGNING_PFX_PASSWORD) {
-            throw 'Release signing secrets are required.'
-          }
-          $certificatePath = Join-Path $env:RUNNER_TEMP "vcstation-signing-${{ github.run_id }}.pfx"
-          [IO.File]::WriteAllBytes(
-            $certificatePath,
-            [Convert]::FromBase64String($env:DVS_SIGNING_PFX_BASE64)
-          )
-          try {
-            $password = ConvertTo-SecureString $env:DVS_SIGNING_PFX_PASSWORD -AsPlainText -Force
-            $thumbprint = .\tools\import-release-certificate.ps1 `
-              -PfxPath $certificatePath `
-              -Password $password
-            "DVS_SIGNING_CERTIFICATE_THUMBPRINT=$thumbprint" |
-              Out-File $env:GITHUB_ENV -Encoding utf8 -Append
-          }
-          finally {
-            Remove-Item -LiteralPath $certificatePath -Force -ErrorAction SilentlyContinue
+          if ($env:GITHUB_REF_NAME -cne 'v1.2.0') {
+            throw (
+              'The unsigned release exception is approved only for v1.2.0. ' +
+              'Restore Authenticode signing before publishing another version.'
+            )
           }
 
       - name: Resolve toolchain and previous release
@@ -221,17 +205,6 @@ jobs:
           "DVS_SHELL_BINARY_NAME=$($metadata.shellBinaryName)" |
             Out-File $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Sign application binaries
-        shell: pwsh
-        run: |
-          .\tools\sign-release.ps1 `
-            -Path @(
-              '.\out\build\release\bin\VCStation.exe',
-              '.\out\build\release\bin\VCStationCli.exe',
-              ".\out\build\release\bin\$env:DVS_SHELL_BINARY_NAME"
-            ) `
-            -CertificateThumbprint $env:DVS_SIGNING_CERTIFICATE_THUMBPRINT
-
       - name: Package and validate release identity
         shell: pwsh
         run: |
@@ -241,9 +214,6 @@ jobs:
           $zip = Resolve-Path ".\out\package\zip\VCStation-$version-windows-x64.zip"
           $msi = Resolve-Path ".\out\package\msi\VCStation-$version-windows-x64.msi"
           wix msi validate $msi.Path
-          .\tools\sign-release.ps1 `
-            -Path $msi.Path `
-            -CertificateThumbprint $env:DVS_SIGNING_CERTIFICATE_THUMBPRINT
           .\tools\verify-release-version.ps1 `
             -Tag $env:GITHUB_REF_NAME `
             -Executable '.\out\build\release\bin\VCStation.exe' `
@@ -266,17 +236,6 @@ jobs:
             "$hash  $([IO.Path]::GetFileName($artifact))"
           }
           $lines | Set-Content '.\out\package\SHA256SUMS.txt' -Encoding ascii
-
-      - name: Remove release signing certificate
-        if: always()
-        shell: pwsh
-        run: |
-          if ($env:DVS_SIGNING_CERTIFICATE_THUMBPRINT) {
-            $certificate = "Cert:\CurrentUser\My\$env:DVS_SIGNING_CERTIFICATE_THUMBPRINT"
-            if (Test-Path -LiteralPath $certificate) {
-              Remove-Item -LiteralPath $certificate -Force
-            }
-          }
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@6da8fa9354ddfdc4aeace5fc48d7f679b5214090 # v2.4.1
