@@ -30,13 +30,6 @@ struct FrameRequestContext final {
     [[nodiscard]] constexpr bool operator==(const FrameRequestContext&) const = default;
 };
 
-struct SaveRequestContext final {
-    RequestContext request;
-    domain::ProjectRevision projectRevision;
-
-    [[nodiscard]] constexpr bool operator==(const SaveRequestContext&) const = default;
-};
-
 struct CommandContext final {
     domain::SessionId sessionId;
     domain::SessionEpoch sessionEpoch;

@@ -8,7 +8,6 @@ add_executable(
      VfrMediaDescriptorConsistencyTests.cpp
     MediaDescriptorAndErrorTests.cpp
     ModuleNameTests.cpp
-    ProjectTests.cpp
     RationalRateTests.cpp
 )
 target_link_libraries(

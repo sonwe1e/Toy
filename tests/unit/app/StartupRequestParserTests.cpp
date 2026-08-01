@@ -50,14 +50,6 @@ TEST(StartupRequestParserTests, ParsesTwoAndThreeSourceComparison) {
     EXPECT_EQ(three.request->sources.size(), 3U);
 }
 
-TEST(StartupRequestParserTests, ParsesProjectCaseInsensitively) {
-    const StartupRequestParseResult result = parseStartupRequest(
-        {QStringLiteral("VCStation.exe"), QStringLiteral(R"(C:\审查\演示.DVSPROJ)")});
-
-    ASSERT_TRUE(result);
-    EXPECT_EQ(result.request->kind, StartupRequest::Kind::OpenProject);
-}
-
 TEST(StartupRequestParserTests, RejectsAmbiguousOrOutOfRangeArguments) {
     EXPECT_FALSE(parseStartupRequest(
         {QStringLiteral("VCStation.exe"), QStringLiteral("--compare"), QStringLiteral("one.mp4")}));
@@ -65,8 +57,11 @@ TEST(StartupRequestParserTests, RejectsAmbiguousOrOutOfRangeArguments) {
                                       QStringLiteral("--play"),
                                       QStringLiteral("one.mp4"),
                                       QStringLiteral("two.mp4")}));
-    EXPECT_FALSE(parseStartupRequest(
-        {QStringLiteral("VCStation.exe"), QStringLiteral("ordinary-video.mp4")}));
+    const StartupRequestParseResult bare = parseStartupRequest(
+        {QStringLiteral("VCStation.exe"), QStringLiteral("ordinary-video.mp4")});
+    EXPECT_FALSE(bare);
+    EXPECT_TRUE(bare.error.contains(QStringLiteral("--play")));
+    EXPECT_TRUE(bare.error.contains(QStringLiteral("--compare")));
 }
 
 TEST(StartupRequestParserTests, BoundedJsonRoundTripPreservesUnicodePaths) {

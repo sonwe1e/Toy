@@ -133,7 +133,6 @@ void writeStandardError(std::string_view message) noexcept {
     switch (request.kind) {
     case dvs::app::StartupRequest::Kind::Empty:
         return true;
-    case dvs::app::StartupRequest::Kind::OpenProject:
     case dvs::app::StartupRequest::Kind::PlaySingle:
     case dvs::app::StartupRequest::Kind::Compare: {
         QList<QUrl> sources;
@@ -147,13 +146,11 @@ void writeStandardError(std::string_view message) noexcept {
     return false;
 }
 
-[[nodiscard]] int
-runDesktop(int& argc,
-           char** argv,
-           const bool smokeMode,
-           const std::optional<SmokeSources>& smokeSources = std::nullopt,
-           const bool shutdownDuringOpen = false,
-           const std::optional<std::filesystem::path>& initialProject = std::nullopt) {
+[[nodiscard]] int runDesktop(int& argc,
+                             char** argv,
+                             const bool smokeMode,
+                             const std::optional<SmokeSources>& smokeSources = std::nullopt,
+                             const bool shutdownDuringOpen = false) {
     dvs::ui::configureGraphicsBackend();
     dvs::ui::DesktopApplication desktop{
         argc,
@@ -216,15 +213,6 @@ runDesktop(int& argc,
             return applyStartupRequest(request, desktop);
         });
     }
-    if (smokeMode && initialProject.has_value() &&
-        !runtime->workspace()->openProject(localFileUrl(*initialProject))) {
-        runtime->prepareForSceneGraphRelease();
-        desktop.releaseSceneGraph();
-        static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
-        return dvs::app::reportFatalStartup("The requested VCStation project could not be opened.",
-                                            smokeMode);
-    }
-
     QTimer smokePoll;
     QTimer smokeTimeout;
     SmokeStage smokeStage = SmokeStage::WaitingForGraphics;

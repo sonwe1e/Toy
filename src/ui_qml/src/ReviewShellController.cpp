@@ -63,10 +63,6 @@ QVariantMap ReviewShellController::pendingAction() const {
     return pendingAction_;
 }
 
-bool ReviewShellController::dirtyGuardActive() const noexcept {
-    return dirtyGuardActive_;
-}
-
 int ReviewShellController::openIntent() const noexcept {
     return openIntent_;
 }
@@ -141,7 +137,7 @@ bool ReviewShellController::openStagedSources(const bool preserveDisplayedTime) 
     if (stagedSources_.isEmpty()) {
         return false;
     }
-    openIntent_ = preserveDisplayedTime ? ReplaceProjectSources : NewReview;
+    openIntent_ = preserveDisplayedTime ? ReplaceSources : NewReview;
     Q_EMIT stateChanged();
     return preserveDisplayedTime ? review_.reopenSources(stagedSources_, stagedReferenceIndex_)
                                  : review_.openSources(stagedSources_, stagedReferenceIndex_);
@@ -162,7 +158,7 @@ bool ReviewShellController::removeActiveSource(const int sourceIndex) {
     if (!stageSources(replacement, std::max(0, reference))) {
         return false;
     }
-    openIntent_ = ReplaceProjectSources;
+    openIntent_ = ReplaceSources;
     Q_EMIT stateChanged();
     return review_.reopenSources(replacement, stagedReferenceIndex_);
 }
@@ -173,19 +169,17 @@ bool ReviewShellController::changeReference(const int sourceIndex) {
     return review_.changeReference(sourceIndex);
 }
 
-bool ReviewShellController::beginPendingAction(const QVariantMap& action,
-                                               const bool requiresDirtyGuard) {
+bool ReviewShellController::beginPendingAction(const QVariantMap& action) {
     if (action.isEmpty() || !pendingAction_.isEmpty()) {
         return false;
     }
     pendingAction_ = action;
-    dirtyGuardActive_ = requiresDirtyGuard;
     Q_EMIT stateChanged();
     return true;
 }
 
 QVariantMap ReviewShellController::takePendingAction() {
-    if (dirtyGuardActive_ || pendingAction_.isEmpty()) {
+    if (pendingAction_.isEmpty()) {
         return {};
     }
     QVariantMap action = std::move(pendingAction_);
@@ -195,19 +189,10 @@ QVariantMap ReviewShellController::takePendingAction() {
 }
 
 void ReviewShellController::cancelPendingAction() {
-    if (pendingAction_.isEmpty() && !dirtyGuardActive_) {
+    if (pendingAction_.isEmpty()) {
         return;
     }
     pendingAction_.clear();
-    dirtyGuardActive_ = false;
-    Q_EMIT stateChanged();
-}
-
-void ReviewShellController::releaseDirtyGuard() {
-    if (!dirtyGuardActive_) {
-        return;
-    }
-    dirtyGuardActive_ = false;
     Q_EMIT stateChanged();
 }
 

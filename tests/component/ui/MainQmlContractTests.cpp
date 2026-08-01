@@ -143,11 +143,6 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ReviewShellController shell{controller};
     QObject workspace;
     workspace.setProperty("busy", false);
-    workspace.setProperty("dirty", false);
-    workspace.setProperty("hasProject", false);
-    workspace.setProperty("canSave", false);
-    workspace.setProperty("relinkRequired", false);
-    workspace.setProperty("nextRelinkSourceId", -1);
     workspace.setProperty("errorTechnicalDetail", QString{});
 
     QQmlEngine engine;
@@ -491,7 +486,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         EXPECT_GE(labelY, 0.0);
         EXPECT_LE(labelX + labelW, viewport->width());
         EXPECT_LE(labelY + labelH, viewport->height());
-        EXPECT_TRUE(QRectF(labelX, labelY, labelW, labelH).intersects(chromeRectInViewport) == false)
+        EXPECT_TRUE(QRectF(labelX, labelY, labelW, labelH).intersects(chromeRectInViewport) ==
+                    false)
             << "source label slot " << slot << " overlaps analysis chrome";
     }
     preferences.setViewMode(ReviewPreferencesController::ViewMode::ThreeUp);
@@ -548,7 +544,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         tabbedInspector->findChild<QObject*>(QStringLiteral("compareTabButton"));
     QObject* const alignmentTab =
         tabbedInspector->findChild<QObject*>(QStringLiteral("alignmentTabButton"));
-    QObject* const reviewTab = tabbedInspector->findChild<QObject*>(QStringLiteral("reviewTabButton"));
+    QObject* const reviewTab =
+        tabbedInspector->findChild<QObject*>(QStringLiteral("reviewTabButton"));
     QObject* const infoTab = tabbedInspector->findChild<QObject*>(QStringLiteral("infoTabButton"));
     QObject* const exportBadCase =
         tabbedInspector->findChild<QObject*>(QStringLiteral("exportBadCaseButton"));

@@ -8,7 +8,11 @@
         <file alias="AlignmentInspector.qml">qml/AlignmentInspector.qml</file>
         <file alias="TimelineBar.qml">qml/TimelineBar.qml</file>
         <file alias="ComparisonViewport.qml">qml/ComparisonViewport.qml</file>
-        <file alias="WorkspaceDialogs.qml">qml/WorkspaceDialogs.qml</file>
+        <file alias="VcsMenuBar.qml">qml/VcsMenuBar.qml</file>
+        <file alias="VcsMenu.qml">qml/VcsMenu.qml</file>
+        <file alias="VcsMenuItem.qml">qml/VcsMenuItem.qml</file>
+        <file alias="VcsMenuSeparator.qml">qml/VcsMenuSeparator.qml</file>
+        <file alias="VcsMenuShortcut.qml">qml/VcsMenuShortcut.qml</file>
         <file alias="ReviewActionButton.qml">qml/ReviewActionButton.qml</file>
         <file alias="ReviewOffsetSpinBox.qml">qml/ReviewOffsetSpinBox.qml</file>
         <file alias="ToolbarCombo.qml">qml/ToolbarCombo.qml</file>

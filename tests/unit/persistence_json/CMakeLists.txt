@@ -2,12 +2,7 @@ include(GoogleTest)
 
 add_executable(
     dvs_persistence_json_unit_tests
-    FingerprintServiceTests.cpp
-    DerivedAlignmentCacheTests.cpp
     CommitSemanticsTests.cpp
-    ProjectJsonTests.cpp
-    ProjectRelinkServiceTests.cpp
-    ProjectRepositoryTests.cpp
     SettingsRepositoryTests.cpp
 )
 target_link_libraries(

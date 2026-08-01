@@ -64,16 +64,12 @@ std::string_view stableId(const MediaErrorCode code) noexcept {
         return "source-color-metadata-mismatch";
     case MediaErrorCode::kFrameOutOfRange:
         return "frame-out-of-range";
-    case MediaErrorCode::kUnsupportedProjectSchema:
-        return "unsupported-project-schema";
-    case MediaErrorCode::kInvalidProjectSchema:
-        return "invalid-project-schema";
     case MediaErrorCode::kSourceMissing:
         return "source-missing";
     case MediaErrorCode::kSourceFingerprintMismatch:
         return "source-fingerprint-mismatch";
-    case MediaErrorCode::kProjectFileIo:
-        return "project-file-io";
+    case MediaErrorCode::kFileIo:
+        return "file-io";
     case MediaErrorCode::kMediaOpenFailed:
         return "media-open-failed";
     case MediaErrorCode::kMediaProbeFailed:
@@ -108,10 +104,8 @@ std::string_view stableId(const MediaOperation operation) noexcept {
         return "media-descriptor-validation";
     case MediaOperation::kSourcePairValidation:
         return "source-pair-validation";
-    case MediaOperation::kProjectMutation:
-        return "project-mutation";
-    case MediaOperation::kProjectPersistence:
-        return "project-persistence";
+    case MediaOperation::kPersistence:
+        return "persistence";
     case MediaOperation::kMediaProbe:
         return "media-probe";
     case MediaOperation::kMediaDecode:

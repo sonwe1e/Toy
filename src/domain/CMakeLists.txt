@@ -6,9 +6,7 @@ add_library(
         src/MediaDescriptor.cpp
         src/MediaError.cpp
         src/Module.cpp
-        src/Project.cpp
         src/RationalRate.cpp
-        src/SourceRelinkCandidate.cpp
 )
 add_library(dvs::domain ALIAS dvs_domain)
 

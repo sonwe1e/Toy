@@ -5,8 +5,6 @@
 #include "dvs/domain/FrameTimeline.h"
 #include "dvs/domain/MediaDescriptor.h"
 #include "dvs/domain/MediaError.h"
-#include "dvs/domain/Project.h"
-#include "dvs/domain/SourceRelinkCandidate.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -52,8 +50,7 @@ enum class CommandOutcome {
 
 // A terminal retains the most-specific scope supplied by the originating port. The coordinator
 // must compare all members of that scope before accepting an asynchronous result.
-using EventContext =
-    std::variant<RequestContext, PlaybackRequestContext, FrameRequestContext, SaveRequestContext>;
+using EventContext = std::variant<RequestContext, PlaybackRequestContext, FrameRequestContext>;
 
 // Graphics device notifications deliberately have no session identity: a device can become
 // available before a session starts, and a later loss must invalidate every session using it.
@@ -167,35 +164,14 @@ struct SettingsSnapshot final {
     std::map<std::string, std::string, std::less<>> values;
 };
 
-// A load always checks the persisted A and B identities in this order. A missing or changed
-// source is reported here instead of rejecting an otherwise valid project, so the coordinator
-// can keep its edits available while it offers explicit relink.
+// Reports a per-source revalidation failure after a fresh probe. A missing or changed source is
+// reported here so the UI can surface which loaded source could not be revalidated.
 struct SourceRevalidationDiagnostic final {
     domain::SourceId sourceId;
     std::optional<domain::MediaError> error;
 };
 
 using SourceRevalidationDiagnostics = std::vector<SourceRevalidationDiagnostic>;
-
-struct ProjectLoaded final {
-    RequestContext context;
-    domain::Project project;
-    SourceRevalidationDiagnostics sourceDiagnostics;
-    std::shared_ptr<const std::vector<SequenceAlignmentResult>> derivedAlignmentResults;
-    std::optional<domain::MediaError> alignmentCacheError;
-};
-
-// This only confirms filesystem path normalization and identity capture. It does not assert
-// source compatibility or session readiness: the coordinator must run a fresh media probe and
-// rebuild a ValidatedComparisonSet before committing the change.
-struct SourceRelinkPrepared final {
-    RequestContext context;
-    domain::SourceRelinkCandidate candidate;
-};
-
-struct ProjectSaved final {
-    SaveRequestContext context;
-};
 
 struct SettingsLoaded final {
     RequestContext context;
@@ -216,9 +192,6 @@ using ApplicationEvent = std::variant<RequestTerminal,
                                       GraphicsDeviceUnavailable,
                                       GraphicsDeviceLost,
                                       DeadlineElapsed,
-                                      ProjectLoaded,
-                                      SourceRelinkPrepared,
-                                      ProjectSaved,
                                       SettingsLoaded>;
 
 } // namespace dvs::application

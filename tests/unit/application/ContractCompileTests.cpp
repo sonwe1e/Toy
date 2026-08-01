@@ -29,12 +29,6 @@ static_assert(
 static_assert(std::is_same_v<decltype(SessionSnapshot::sequenceAlignments),
                              std::vector<SequenceAlignmentSummary>>);
 static_assert(std::is_same_v<decltype(FrameProviderCloseRequest::context), PlaybackRequestContext>);
-static_assert(std::is_same_v<decltype(ProjectSaveRequest::projectPath), std::filesystem::path>);
-static_assert(std::is_same_v<decltype(ProjectRelinkRequest::context), RequestContext>);
-static_assert(std::is_same_v<decltype(ProjectRelinkRequest::sourceId), domain::SourceId>);
-static_assert(std::is_same_v<decltype(ProjectRelinkRequest::newSourcePath), std::filesystem::path>);
-static_assert(
-    std::is_same_v<decltype(SourceRelinkPrepared::candidate), domain::SourceRelinkCandidate>);
 static_assert(std::is_same_v<decltype(OpenComparisonCommand::context), CommandContext>);
 static_assert(
     std::is_same_v<decltype(OpenComparisonCommand::sources), std::vector<OpenComparisonSource>>);
@@ -166,14 +160,14 @@ TEST(ContractCompileTests, RequestContextsKeepIndependentInvalidationScopes) {
         .request = request,
         .playbackGeneration = domain::PlaybackGeneration{8},
     };
-    const SaveRequestContext save{
-        .request = request,
-        .projectRevision = domain::ProjectRevision{2},
+    const FrameRequestContext frame{
+        .playback = playback,
+        .deviceGeneration = domain::DeviceGeneration{2},
     };
 
     EXPECT_EQ(playback.request.sessionEpoch, domain::SessionEpoch{3});
-    EXPECT_EQ(save.projectRevision, domain::ProjectRevision{2});
-    EXPECT_NE(playback.playbackGeneration.value(), save.projectRevision.value());
+    EXPECT_EQ(frame.playback.request.sessionId, domain::SessionId{10});
+    EXPECT_EQ(frame.deviceGeneration, domain::DeviceGeneration{2});
 }
 
 TEST(ContractCompileTests, SnapshotCarriesIndependentGraphicsReadiness) {

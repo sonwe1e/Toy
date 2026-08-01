@@ -25,14 +25,11 @@ struct OpenComparisonSource final {
     std::string displayName;
 };
 
-// Describes why an existing review is being opened again. Workspace persistence uses this
-// intent to distinguish a genuinely new review from a topology/reference mutation of the
-// current project. Only NewReview is allowed to discard the current project identity.
+// Describes why an existing review is being opened again. The workspace distinguishes a genuinely
+// new review from a topology/reference mutation of the current review session.
 enum class OpenReviewIntent : std::uint8_t {
     NewReview,
-    ReplaceProjectSources,
-    RestoreProject,
-    RelinkProject,
+    ReplaceSources,
     ChangeReference,
 };
 

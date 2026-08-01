@@ -20,8 +20,6 @@ constexpr qsizetype kMaximumRequestBytes = 64 * 1024;
     switch (kind) {
     case StartupRequest::Kind::Empty:
         return QStringLiteral("empty");
-    case StartupRequest::Kind::OpenProject:
-        return QStringLiteral("open-project");
     case StartupRequest::Kind::PlaySingle:
         return QStringLiteral("play-single");
     case StartupRequest::Kind::Compare:
@@ -33,9 +31,6 @@ constexpr qsizetype kMaximumRequestBytes = 64 * 1024;
 [[nodiscard]] std::optional<StartupRequest::Kind> kindFromName(const QString& name) {
     if (name == QStringLiteral("empty")) {
         return StartupRequest::Kind::Empty;
-    }
-    if (name == QStringLiteral("open-project")) {
-        return StartupRequest::Kind::OpenProject;
     }
     if (name == QStringLiteral("play-single")) {
         return StartupRequest::Kind::PlaySingle;
@@ -50,22 +45,13 @@ constexpr qsizetype kMaximumRequestBytes = 64 * 1024;
     const std::size_t count = request.sources.size();
     const bool countValid =
         (request.kind == StartupRequest::Kind::Empty && count == 0U) ||
-        ((request.kind == StartupRequest::Kind::OpenProject ||
-          request.kind == StartupRequest::Kind::PlaySingle) &&
-         count == 1U) ||
+        (request.kind == StartupRequest::Kind::PlaySingle && count == 1U) ||
         (request.kind == StartupRequest::Kind::Compare && (count == 2U || count == 3U));
     if (!countValid) {
         return {.error = QStringLiteral("The startup request has an invalid source count.")};
     }
     if (std::ranges::any_of(request.sources, [](const auto& source) { return source.empty(); })) {
         return {.error = QStringLiteral("Startup source paths must not be empty.")};
-    }
-    if (request.kind == StartupRequest::Kind::OpenProject) {
-        QString suffix =
-            QString::fromStdWString(request.sources.front().extension().wstring()).toLower();
-        if (suffix != QStringLiteral(".dvsproj")) {
-            return {.error = QStringLiteral("The project path must use the .dvsproj extension.")};
-        }
     }
     return {.request = std::move(request)};
 }
@@ -79,12 +65,6 @@ StartupRequestParseResult parseStartupRequest(const QStringList& arguments) {
     const QStringList values = arguments.sliced(1);
     if (values.isEmpty()) {
         return {.request = StartupRequest{}};
-    }
-    if (values.size() == 1 && !values.front().startsWith(QLatin1Char('-'))) {
-        return validate(StartupRequest{
-            .kind = StartupRequest::Kind::OpenProject,
-            .sources = {pathFromQString(values.front())},
-        });
     }
     if (values.size() == 2 && values.front() == QStringLiteral("--play")) {
         return validate(StartupRequest{
@@ -105,8 +85,8 @@ StartupRequestParseResult parseStartupRequest(const QStringList& arguments) {
         });
     }
     return {
-        .error = QStringLiteral(
-            "Unsupported GUI arguments. Use --play <video>, --compare <video...>, or a project."),
+        .error =
+            QStringLiteral("Unsupported GUI arguments. Use --play <video>, --compare <video...>."),
     };
 }
 

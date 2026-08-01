@@ -6,7 +6,6 @@
 #include "dvs/media/AlignmentAnalysisService.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
-#include "dvs/persistence/ProjectRepository.h"
 #include "dvs/persistence/SettingsRepository.h"
 #include "dvs/platform/D3d11RenderChannel.h"
 #include "dvs/platform/FrameBudget.h"
@@ -269,7 +268,6 @@ public:
         frameProvider.reset();
         mediaProbe.reset();
         settingsRepository.reset();
-        projectRepository.reset();
         clock.reset();
         renderChannel.reset();
 
@@ -325,7 +323,6 @@ public:
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider;
     std::shared_ptr<media::MediaProbe> mediaProbe;
     std::shared_ptr<application::ISettingsRepository> settingsRepository;
-    std::shared_ptr<application::IProjectRepository> projectRepository;
     std::shared_ptr<platform::SystemSteadyClock> clock;
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel;
     std::shared_ptr<platform::GpuTransferActor> transferActor;
@@ -363,7 +360,6 @@ public:
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
         mediaProbe_ = std::make_shared<media::MediaProbe>();
         settingsRepository_ = std::make_shared<persistence::SettingsRepository>();
-        projectRepository_ = std::make_shared<persistence::ProjectRepository>();
         frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(
             *frameBudget_, 16U, false, deviceBroker_);
         alignmentAnalysisService_ = std::make_shared<media::AlignmentAnalysisService>();
@@ -387,7 +383,6 @@ public:
         const std::weak_ptr<application::PlaybackCoordinator> weakCoordinator = coordinator_;
         workspaceCoordinator_ = application::WorkspaceCoordinator::create(
             application::WorkspaceCoordinator::Dependencies{
-                .projectRepository = projectRepository_,
                 .submitPlayback =
                     [weakCoordinator](application::PlaybackCommand command) {
                         if (const auto coordinator = weakCoordinator.lock()) {
@@ -416,12 +411,6 @@ public:
                         }
                         return std::shared_ptr<
                             const std::vector<application::SequenceAlignmentResult>>{};
-                    },
-                .createProjectId =
-                    [] {
-                        static std::atomic<std::uint64_t> nextProjectId{1U};
-                        return domain::ProjectId{"project-" +
-                                                 std::to_string(nextProjectId.fetch_add(1U))};
                     },
                 .statePublished = [bridge = workspaceProjectionBridge_] { bridge->notify(); },
             });
@@ -604,7 +593,6 @@ public:
         work->frameProvider = std::move(frameProvider_);
         work->mediaProbe = std::move(mediaProbe_);
         work->settingsRepository = std::move(settingsRepository_);
-        work->projectRepository = std::move(projectRepository_);
         work->clock = std::move(clock_);
         work->renderChannel = std::move(renderChannel_);
         work->transferActor = std::move(transferActor_);
@@ -655,7 +643,6 @@ private:
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;
     std::shared_ptr<application::ISettingsRepository> settingsRepository_;
-    std::shared_ptr<application::IProjectRepository> projectRepository_;
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider_;
     std::shared_ptr<media::AlignmentAnalysisService> alignmentAnalysisService_;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;

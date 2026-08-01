@@ -13,7 +13,6 @@ namespace dvs::app {
 struct StartupRequest final {
     enum class Kind {
         Empty,
-        OpenProject,
         PlaySingle,
         Compare,
     };

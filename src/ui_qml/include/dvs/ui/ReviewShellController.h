@@ -29,16 +29,13 @@ class ReviewShellController final : public QObject {
         bool inspectorVisible READ inspectorVisible WRITE setInspectorVisible NOTIFY stateChanged)
     Q_PROPERTY(bool hasPendingAction READ hasPendingAction NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap pendingAction READ pendingAction NOTIFY stateChanged)
-    Q_PROPERTY(bool dirtyGuardActive READ dirtyGuardActive NOTIFY stateChanged)
     Q_PROPERTY(int openIntent READ openIntent NOTIFY stateChanged)
 
 public:
     enum OpenIntent {
         NewReview = 0,
-        ReplaceProjectSources = 1,
+        ReplaceSources = 1,
         ChangeReference = 2,
-        RestoreProject = 3,
-        RelinkProject = 4,
     };
     Q_ENUM(OpenIntent)
 
@@ -55,7 +52,6 @@ public:
     [[nodiscard]] bool inspectorVisible() const noexcept;
     [[nodiscard]] bool hasPendingAction() const noexcept;
     [[nodiscard]] QVariantMap pendingAction() const;
-    [[nodiscard]] bool dirtyGuardActive() const noexcept;
     [[nodiscard]] int openIntent() const noexcept;
 
     void setStagedReferenceIndex(int sourceIndex);
@@ -68,10 +64,9 @@ public:
     Q_INVOKABLE bool openStagedSources(bool preserveDisplayedTime);
     Q_INVOKABLE bool removeActiveSource(int sourceIndex);
     Q_INVOKABLE bool changeReference(int sourceIndex);
-    Q_INVOKABLE bool beginPendingAction(const QVariantMap& action, bool requiresDirtyGuard);
+    Q_INVOKABLE bool beginPendingAction(const QVariantMap& action);
     Q_INVOKABLE QVariantMap takePendingAction();
     Q_INVOKABLE void cancelPendingAction();
-    Q_INVOKABLE void releaseDirtyGuard();
     Q_INVOKABLE bool enqueueStartupRequest(int kind, const QVariantList& files);
     Q_INVOKABLE QVariantMap takeNextStartupRequest();
     Q_INVOKABLE void completeStartupRequest();
@@ -99,7 +94,6 @@ private:
     bool chromeVisible_ = true;
     bool inspectorVisible_ = false;
     QVariantMap pendingAction_;
-    bool dirtyGuardActive_ = false;
     int openIntent_ = NewReview;
 };
 

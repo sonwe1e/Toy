@@ -34,7 +34,7 @@ constexpr std::uintmax_t kMaximumSettingsBytes = 1024U * 1024U;
 
 [[nodiscard]] domain::MediaError settingsError(std::string technicalDetail) {
     return internal::persistenceError(
-        domain::MediaErrorCode::kProjectFileIo, std::nullopt, std::move(technicalDetail));
+        domain::MediaErrorCode::kFileIo, std::nullopt, std::move(technicalDetail));
 }
 
 [[nodiscard]] domain::Result<std::filesystem::path>

@@ -86,29 +86,6 @@ struct FrameProviderCloseRequest final {
     PlaybackRequestContext context;
 };
 
-struct ProjectLoadRequest final {
-    RequestContext context;
-    std::filesystem::path projectPath;
-};
-
-// Relinking is always explicit. Persistence only prepares a filesystem candidate; it never
-// receives an editable project or claims the replacement has compatible media metadata.
-struct ProjectRelinkRequest final {
-    RequestContext context;
-    domain::SourceId sourceId;
-    std::filesystem::path newSourcePath;
-};
-
-struct ProjectSaveRequest final {
-    SaveRequestContext context;
-    // The coordinator chooses a project destination before persistence begins. Repositories must
-    // never infer it from a source path or a previously loaded project, because Save As is an
-    // explicit operation and new projects have no bound document yet.
-    std::filesystem::path projectPath;
-    domain::Project project;
-    std::shared_ptr<const std::vector<SequenceAlignmentResult>> derivedAlignmentResults;
-};
-
 struct SettingsLoadRequest final {
     RequestContext context;
 };
@@ -183,26 +160,11 @@ public:
     virtual void cancel(AlignmentAnalysisJobId jobId) noexcept = 0;
 };
 
-class IProjectRepository {
-public:
-    virtual ~IProjectRepository() = default;
-
-    // Repository work is queued. Implementations downgrade this handle before queueing so an
-    // expired coordinator sink cannot be called by delayed I/O completion.
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const ProjectLoadRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const ProjectRelinkRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    [[nodiscard]] virtual PortSubmitResult
-    submit(const ProjectSaveRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
-    virtual void cancel(const RequestContext& context) noexcept = 0;
-};
-
 class ISettingsRepository {
 public:
     virtual ~ISettingsRepository() = default;
 
-    // See IProjectRepository: queued persistence work must not retain a raw event-sink pointer.
+    // Queued persistence work must not retain a raw event-sink pointer.
     [[nodiscard]] virtual PortSubmitResult
     submit(const SettingsLoadRequest& request, std::shared_ptr<IApplicationEventSink> events) = 0;
     [[nodiscard]] virtual PortSubmitResult

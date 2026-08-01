@@ -38,11 +38,9 @@ enum class MediaErrorCode {
     kSourceResolutionMismatch,
     kSourceColorMetadataMismatch,
     kFrameOutOfRange,
-    kUnsupportedProjectSchema,
-    kInvalidProjectSchema,
     kSourceMissing,
     kSourceFingerprintMismatch,
-    kProjectFileIo,
+    kFileIo,
     kMediaOpenFailed,
     kMediaProbeFailed,
     kInvalidCfrTiming,
@@ -60,8 +58,7 @@ enum class MediaOperation {
     kRationalConversion,
     kMediaDescriptorValidation,
     kSourcePairValidation,
-    kProjectMutation,
-    kProjectPersistence,
+    kPersistence,
     kMediaProbe,
     kMediaDecode,
     kGraphicsInitialization,
@@ -78,7 +75,7 @@ enum class MediaOperation {
 // session source id is carried; session-wide errors leave it empty.
 struct MediaError final {
     MediaErrorCode code = MediaErrorCode::kInvalidArgument;
-    MediaOperation operation = MediaOperation::kProjectMutation;
+    MediaOperation operation = MediaOperation::kPersistence;
     std::optional<SourceId> source;
     std::optional<RequestId> requestId;
     bool recoverable = false;

@@ -1,9 +1,8 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
 
-Menu {
+VcsMenu {
     id: control
 
     required property int sourceCount
@@ -23,31 +22,31 @@ Menu {
 
     objectName: "reviewContextMenu"
 
-    Menu {
+    VcsMenu {
         objectName: "contextViewMenu"
         title: qsTr("View")
         enabled: control.sourceCount > 1
 
-        MenuItem {
+        VcsMenuItem {
             objectName: "contextSideAction"
             text: qsTr("Side by side")
             onTriggered: control.sideRequested()
         }
-        MenuItem {
+        VcsMenuItem {
             objectName: "contextWipeAction"
             text: qsTr("Wipe")
             onTriggered: control.wipeRequested()
         }
-        MenuItem {
+        VcsMenuItem {
             objectName: "contextDifferenceAction"
             text: qsTr("Difference")
             onTriggered: control.diffRequested()
         }
     }
-    MenuSeparator {
+    VcsMenuSeparator {
         visible: control.sourceCount > 1
     }
-    Menu {
+    VcsMenu {
         objectName: "contextPairMenu"
         title: qsTr("Pair")
         enabled: control.sourceCount === 3
@@ -56,7 +55,7 @@ Menu {
         Repeater {
             model: control.differenceEdges
 
-            delegate: MenuItem {
+            delegate: VcsMenuItem {
                 required property int index
                 required property var modelData
                 text: String(modelData.label)
@@ -66,25 +65,25 @@ Menu {
             }
         }
     }
-    Menu {
+    VcsMenu {
         objectName: "contextReferenceMenu"
         title: qsTr("Reference")
         enabled: control.sourceCount > 1
 
-        MenuItem {
+        VcsMenuItem {
             text: qsTr("Source A")
             checkable: true
             checked: control.canonicalSourceIndex === 0
             onTriggered: control.referenceRequested(0)
         }
-        MenuItem {
+        VcsMenuItem {
             text: qsTr("Source B")
             visible: control.sourceCount > 1
             checkable: true
             checked: control.canonicalSourceIndex === 1
             onTriggered: control.referenceRequested(1)
         }
-        MenuItem {
+        VcsMenuItem {
             text: qsTr("Source C")
             visible: control.sourceCount > 2
             checkable: true
@@ -92,19 +91,19 @@ Menu {
             onTriggered: control.referenceRequested(2)
         }
     }
-    MenuSeparator {}
-    MenuItem {
+    VcsMenuSeparator {}
+    VcsMenuItem {
         objectName: "contextBadCaseAction"
         text: qsTr("Export Bad Case…")
         enabled: control.canExport
         onTriggered: control.badCaseRequested()
     }
-    MenuItem {
+    VcsMenuItem {
         objectName: "contextInfoAction"
         text: qsTr("Inspector and media info")
         onTriggered: control.inspectorRequested()
     }
-    MenuItem {
+    VcsMenuItem {
         text: qsTr("Full screen")
         onTriggered: control.fullScreenRequested()
     }

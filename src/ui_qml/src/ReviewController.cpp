@@ -1606,7 +1606,7 @@ bool ReviewController::openSources(const QVariantList& urls, const int reference
 
 bool ReviewController::reopenSources(const QVariantList& urls, const int referenceSourceIndex) {
     return impl_->openSources(
-        urls, referenceSourceIndex, true, application::OpenReviewIntent::ReplaceProjectSources);
+        urls, referenceSourceIndex, true, application::OpenReviewIntent::ReplaceSources);
 }
 
 bool ReviewController::changeReference(const int sourceIndex) {
@@ -1631,7 +1631,6 @@ QVariantMap ReviewController::handleDroppedUrls(const QVariantList& urls) const 
     QVariantList normalizedUrls;
     normalizedUrls.reserve(urls.size());
     QSet<QString> uniquePaths;
-    qsizetype projectCount = 0;
 
     for (const QVariant& value : urls) {
         const LocalFileValidation validated = validateLocalFile(value.toUrl());
@@ -1650,19 +1649,11 @@ QVariantMap ReviewController::handleDroppedUrls(const QVariantList& urls) const 
         }
         uniquePaths.insert(comparisonPath);
         normalizedUrls.push_back(QUrl::fromLocalFile(canonicalPath));
-        if (candidate.filename.endsWith(QStringLiteral(".dvsproj"), Qt::CaseInsensitive)) {
-            ++projectCount;
-        }
-    }
-
-    if (projectCount > 0 && (projectCount != 1 || normalizedUrls.size() != 1)) {
-        return rejectedDrop(QStringLiteral("drop-mixed"));
     }
 
     return QVariantMap{
         {QStringLiteral("accepted"), true},
-        {QStringLiteral("kind"),
-         projectCount == 1 ? QStringLiteral("project") : QStringLiteral("videos")},
+        {QStringLiteral("kind"), QStringLiteral("videos")},
         {QStringLiteral("urls"), normalizedUrls},
     };
 }

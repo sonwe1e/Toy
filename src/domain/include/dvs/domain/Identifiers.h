@@ -66,7 +66,6 @@ struct PlaybackGenerationTag;
 struct DeviceGenerationTag;
 struct RequestIdTag;
 struct CommandIdTag;
-struct ProjectRevisionTag;
 
 using SessionId = CounterId<SessionIdTag>;
 using SessionEpoch = CounterId<SessionEpochTag>;
@@ -74,31 +73,6 @@ using PlaybackGeneration = CounterId<PlaybackGenerationTag>;
 using DeviceGeneration = CounterId<DeviceGenerationTag>;
 using RequestId = CounterId<RequestIdTag>;
 using CommandId = CounterId<CommandIdTag>;
-using ProjectRevision = CounterId<ProjectRevisionTag>;
-
-// Persistent IDs are supplied by a caller (normally a UUID-producing adapter). The domain only
-// requires a stable non-empty value and enforces uniqueness in the aggregate.
-template <typename Tag> class PersistentId final {
-public:
-    explicit PersistentId(std::string value) : value_(std::move(value)) {}
-
-    [[nodiscard]] const std::string& value() const noexcept {
-        return value_;
-    }
-
-    [[nodiscard]] bool isValid() const noexcept {
-        return !value_.empty();
-    }
-
-    [[nodiscard]] auto operator<=>(const PersistentId&) const = default;
-
-private:
-    std::string value_;
-};
-
-struct ProjectIdTag;
-
-using ProjectId = PersistentId<ProjectIdTag>;
 
 // SourceId identifies one loaded input within a comparison session. It lives with the other
 // identifiers (not in ComparisonSource.h) so error and event types can name a source without

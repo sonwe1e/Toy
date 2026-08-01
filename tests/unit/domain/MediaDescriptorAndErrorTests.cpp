@@ -115,11 +115,9 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaErrorCode::kSourceColorMetadataMismatch),
               "source-color-metadata-mismatch");
     EXPECT_EQ(stableId(MediaErrorCode::kFrameOutOfRange), "frame-out-of-range");
-    EXPECT_EQ(stableId(MediaErrorCode::kUnsupportedProjectSchema), "unsupported-project-schema");
-    EXPECT_EQ(stableId(MediaErrorCode::kInvalidProjectSchema), "invalid-project-schema");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceMissing), "source-missing");
     EXPECT_EQ(stableId(MediaErrorCode::kSourceFingerprintMismatch), "source-fingerprint-mismatch");
-    EXPECT_EQ(stableId(MediaErrorCode::kProjectFileIo), "project-file-io");
+    EXPECT_EQ(stableId(MediaErrorCode::kFileIo), "file-io");
     EXPECT_EQ(stableId(MediaErrorCode::kMediaOpenFailed), "media-open-failed");
     EXPECT_EQ(stableId(MediaErrorCode::kMediaProbeFailed), "media-probe-failed");
     EXPECT_EQ(stableId(MediaErrorCode::kInvalidCfrTiming), "invalid-cfr-timing");
@@ -134,8 +132,7 @@ TEST(MediaErrorTests, ExposesStableEnglishIdentifiersForPersistedStatesAndErrors
     EXPECT_EQ(stableId(MediaOperation::kRationalConversion), "rational-conversion");
     EXPECT_EQ(stableId(MediaOperation::kMediaDescriptorValidation), "media-descriptor-validation");
     EXPECT_EQ(stableId(MediaOperation::kSourcePairValidation), "source-pair-validation");
-    EXPECT_EQ(stableId(MediaOperation::kProjectMutation), "project-mutation");
-    EXPECT_EQ(stableId(MediaOperation::kProjectPersistence), "project-persistence");
+    EXPECT_EQ(stableId(MediaOperation::kPersistence), "persistence");
     EXPECT_EQ(stableId(MediaOperation::kMediaProbe), "media-probe");
     EXPECT_EQ(stableId(MediaOperation::kMediaDecode), "media-decode");
     EXPECT_EQ(stableId(MediaOperation::kGraphicsInitialization), "graphics-initialization");
@@ -166,7 +163,7 @@ TEST(MediaErrorTests, KeepsNativeGraphicsDiagnosticsOutOfTheUserMessageKey) {
 
 TEST(MediaErrorTests, ResultCanCarryMediaErrorAsEitherValueOrFailure) {
     const MediaError value = makeMediaError(MediaErrorCode::kInvalidArgument,
-                                            MediaOperation::kProjectPersistence,
+                                            MediaOperation::kPersistence,
                                             std::nullopt,
                                             false,
                                             "decoded persisted error");
@@ -175,13 +172,13 @@ TEST(MediaErrorTests, ResultCanCarryMediaErrorAsEitherValueOrFailure) {
     EXPECT_EQ(success.value().technicalDetail, "decoded persisted error");
 
     const auto failure =
-        Result<MediaError>::failure(makeMediaError(MediaErrorCode::kInvalidProjectSchema,
-                                                   MediaOperation::kProjectPersistence,
+        Result<MediaError>::failure(makeMediaError(MediaErrorCode::kSourceMissing,
+                                                   MediaOperation::kSourcePairValidation,
                                                    std::nullopt,
                                                    false,
-                                                   "schema rejected"));
+                                                   "source unavailable"));
     ASSERT_FALSE(failure);
-    EXPECT_EQ(failure.error().code, MediaErrorCode::kInvalidProjectSchema);
+    EXPECT_EQ(failure.error().code, MediaErrorCode::kSourceMissing);
 }
 
 } // namespace dvs::domain

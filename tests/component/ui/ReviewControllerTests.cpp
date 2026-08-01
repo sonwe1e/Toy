@@ -314,13 +314,11 @@ TEST_F(ReviewControllerTests, ReviewsDroppedFilesInCppAndNormalizesUnicodePaths)
     EXPECT_EQ(urls.back().toUrl().toLocalFile(), QFileInfo{sourceBPath}.canonicalFilePath());
 }
 
-TEST_F(ReviewControllerTests, RejectsDuplicateMixedAndMissingDroppedFiles) {
+TEST_F(ReviewControllerTests, RejectsDuplicateAndMissingDroppedFiles) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     const QString sourcePath = createFile(directory, QStringLiteral("source.mp4"));
-    const QString projectPath = createFile(directory, QStringLiteral("review.dvsproj"));
     ASSERT_FALSE(sourcePath.isEmpty());
-    ASSERT_FALSE(projectPath.isEmpty());
 
     auto backend = std::make_shared<FakeBackend>();
     ReviewController controller{dependenciesFor(backend)};
@@ -330,11 +328,6 @@ TEST_F(ReviewControllerTests, RejectsDuplicateMixedAndMissingDroppedFiles) {
     EXPECT_FALSE(duplicate.value(QStringLiteral("accepted")).toBool());
     EXPECT_EQ(duplicate.value(QStringLiteral("errorKey")).toString(),
               QStringLiteral("drop-duplicate"));
-
-    const QVariantMap mixed =
-        controller.handleDroppedUrls({sourceUrl, QUrl::fromLocalFile(projectPath)});
-    EXPECT_FALSE(mixed.value(QStringLiteral("accepted")).toBool());
-    EXPECT_EQ(mixed.value(QStringLiteral("errorKey")).toString(), QStringLiteral("drop-mixed"));
 
     const QVariantMap missing = controller.handleDroppedUrls(
         {QUrl::fromLocalFile(directory.filePath(QStringLiteral("missing.mp4")))});
@@ -429,7 +422,7 @@ TEST_F(ReviewControllerTests, ReopenSourcesRequestsMediaTimePreservingSessionReb
         std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
     ASSERT_NE(command, nullptr);
     EXPECT_TRUE(command->preserveDisplayedTime);
-    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceProjectSources);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceSources);
     controller.stop();
 }
 
@@ -573,9 +566,9 @@ TEST_F(ReviewControllerTests, ShellCanRemoveAnyActiveSourceAndPreservesTheRefere
     ASSERT_NE(command, nullptr);
     ASSERT_EQ(command->sources.size(), 1U);
     EXPECT_EQ(command->sources.front().role, domain::ComparisonRole::kReference);
-    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceProjectSources);
+    EXPECT_EQ(command->intent, application::OpenReviewIntent::ReplaceSources);
     EXPECT_TRUE(command->preserveDisplayedTime);
-    EXPECT_EQ(shell.openIntent(), ReviewShellController::ReplaceProjectSources);
+    EXPECT_EQ(shell.openIntent(), ReviewShellController::ReplaceSources);
     controller.stop();
 }
 
@@ -601,7 +594,7 @@ TEST_F(ReviewControllerTests, ShellBoundsAndSerializesStartupRequests) {
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, ShellOwnsChromeInspectorAndDirtyGuardState) {
+TEST_F(ReviewControllerTests, ShellOwnsChromeInspectorAndPendingActionState) {
     auto backend = std::make_shared<FakeBackend>();
     ReviewController controller{dependenciesFor(backend)};
     ReviewShellController shell{controller};
@@ -616,17 +609,16 @@ TEST_F(ReviewControllerTests, ShellOwnsChromeInspectorAndDirtyGuardState) {
     shell.setChromeVisible(true);
 
     const QVariantMap action{
-        {QStringLiteral("kind"), QStringLiteral("openProject")},
-        {QStringLiteral("url"), QUrl::fromLocalFile(QStringLiteral("C:/review.dvsproj"))},
+        {QStringLiteral("kind"), QStringLiteral("openVideos")},
+        {QStringLiteral("urls"),
+         QVariantList{QUrl::fromLocalFile(QStringLiteral("C:/media/a.mp4"))}},
     };
-    ASSERT_TRUE(shell.beginPendingAction(action, true));
+    ASSERT_TRUE(shell.beginPendingAction(action));
     EXPECT_TRUE(shell.hasPendingAction());
-    EXPECT_TRUE(shell.dirtyGuardActive());
-    EXPECT_TRUE(shell.takePendingAction().isEmpty());
-    shell.releaseDirtyGuard();
-    EXPECT_FALSE(shell.dirtyGuardActive());
+    EXPECT_EQ(shell.pendingAction(), action);
     EXPECT_EQ(shell.takePendingAction(), action);
     EXPECT_FALSE(shell.hasPendingAction());
+    EXPECT_TRUE(shell.takePendingAction().isEmpty());
     controller.stop();
 }
 

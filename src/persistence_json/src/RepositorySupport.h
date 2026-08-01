@@ -18,38 +18,22 @@ namespace dvs::persistence::internal {
 [[nodiscard]] inline domain::MediaError persistenceError(const domain::MediaErrorCode code,
                                                          std::optional<domain::SourceId> sourceId,
                                                          std::string technicalDetail) {
-    return domain::makeMediaError(code,
-                                  domain::MediaOperation::kProjectPersistence,
-                                  sourceId,
-                                  false,
-                                  std::move(technicalDetail));
+    return domain::makeMediaError(
+        code, domain::MediaOperation::kPersistence, sourceId, false, std::move(technicalDetail));
 }
 
 [[nodiscard]] inline domain::MediaError platformError(const platform::PlatformError& error,
                                                       std::optional<domain::SourceId> sourceId) {
-    return persistenceError(domain::MediaErrorCode::kProjectFileIo,
+    return persistenceError(domain::MediaErrorCode::kFileIo,
                             sourceId,
                             std::string{"Platform error "} +
                                 std::string{platform::stableId(error.code)} + ": " +
                                 error.technicalDetail);
 }
 
-[[nodiscard]] inline const application::RequestContext&
-requestContextFor(const application::RequestContext& context) noexcept {
-    return context;
-}
-
-[[nodiscard]] inline const application::RequestContext&
-requestContextFor(const application::SaveRequestContext& context) noexcept {
-    return context.request;
-}
-
-template <typename TContext>
-[[nodiscard]] domain::MediaError withRequestId(domain::MediaError error,
-                                               const TContext& context) noexcept {
-    static_assert(std::is_same_v<std::remove_cvref_t<TContext>, application::RequestContext> ||
-                  std::is_same_v<std::remove_cvref_t<TContext>, application::SaveRequestContext>);
-    error.requestId = requestContextFor(context).requestId;
+[[nodiscard]] inline domain::MediaError
+withRequestId(domain::MediaError error, const application::RequestContext& context) noexcept {
+    error.requestId = context.requestId;
     return error;
 }
 

@@ -105,16 +105,15 @@ private:
                           }}}),
                       application::EventPostResult::Accepted);
         } else {
-            EXPECT_EQ(
-                events.postCritical(application::ApplicationEvent{
-                    application::RequestTerminal{application::RequestFailed{
-                        .context = application::EventContext{context},
-                        .error = domain::makeMediaError(domain::MediaErrorCode::kProjectFileIo,
-                                                        domain::MediaOperation::kProjectPersistence,
-                                                        std::nullopt,
-                                                        true),
-                    }}}),
-                application::EventPostResult::Accepted);
+            EXPECT_EQ(events.postCritical(application::ApplicationEvent{
+                          application::RequestTerminal{application::RequestFailed{
+                              .context = application::EventContext{context},
+                              .error = domain::makeMediaError(domain::MediaErrorCode::kFileIo,
+                                                              domain::MediaOperation::kPersistence,
+                                                              std::nullopt,
+                                                              true),
+                          }}}),
+                      application::EventPostResult::Accepted);
         }
     }
 };

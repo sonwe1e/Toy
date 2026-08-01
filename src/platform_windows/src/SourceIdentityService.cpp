@@ -85,7 +85,7 @@ template <typename TValue>
                                                         const domain::MediaOperation operation) {
     const auto absolutePath = WindowsPaths::absolutePath(sourcePath);
     if (!absolutePath) {
-        return fingerprintFailure<FileMetadata>(domain::MediaErrorCode::kProjectFileIo,
+        return fingerprintFailure<FileMetadata>(domain::MediaErrorCode::kFileIo,
                                                 sourceId,
                                                 operation,
                                                 "Could not resolve the source path: " +
@@ -97,13 +97,13 @@ template <typename TValue>
         const DWORD errorCode = GetLastError();
         const domain::MediaErrorCode code = isMissingFileError(errorCode)
                                                 ? domain::MediaErrorCode::kSourceMissing
-                                                : domain::MediaErrorCode::kProjectFileIo;
+                                                : domain::MediaErrorCode::kFileIo;
         return fingerprintFailure<FileMetadata>(
             code, sourceId, operation, systemFailure("GetFileAttributesExW", errorCode));
     }
     if ((attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0U) {
         return fingerprintFailure<FileMetadata>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "Source path names a directory rather than a media file.");
@@ -116,7 +116,7 @@ template <typename TValue>
         static_cast<std::uint64_t>(attributes.ftLastWriteTime.dwLowDateTime);
     if (byteSize == 0U) {
         return fingerprintFailure<FileMetadata>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "An empty source file cannot produce a valid media identity.");
@@ -138,7 +138,7 @@ template <typename TValue>
     const std::uint64_t milliseconds = delta / kHundredNanosecondsPerMillisecond;
     if (milliseconds > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
         return fingerprintFailure<std::int64_t>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "Source modified time cannot be represented as UTC milliseconds.");
@@ -381,7 +381,7 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
     std::ifstream stream(before.value().absolutePath, std::ios::binary);
     if (!stream) {
         return fingerprintFailure<domain::SourceFileIdentity>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "Could not open the source file for fingerprinting.");
@@ -395,7 +395,7 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
                                          hashRange(stream, byteSize - kOneMiB, kOneMiB, &hasher);
     if (!readSucceeded) {
         return fingerprintFailure<domain::SourceFileIdentity>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "Could not read the required source bytes for fingerprinting.");
@@ -408,7 +408,7 @@ SourceIdentityService::fingerprint(const std::filesystem::path& sourcePath,
     if (after.value().byteSize != byteSize ||
         after.value().lastWriteFileTime != before.value().lastWriteFileTime) {
         return fingerprintFailure<domain::SourceFileIdentity>(
-            domain::MediaErrorCode::kProjectFileIo,
+            domain::MediaErrorCode::kFileIo,
             sourceId,
             operation,
             "Source changed while its identity was being computed.");
@@ -426,7 +426,7 @@ domain::Status SourceIdentityService::verify(const std::filesystem::path& source
                                              const domain::SourceId sourceId,
                                              const domain::MediaOperation operation) {
     if (!expected.isComplete()) {
-        return fingerprintFailureStatus(domain::MediaErrorCode::kInvalidProjectSchema,
+        return fingerprintFailureStatus(domain::MediaErrorCode::kInvalidArgument,
                                         sourceId,
                                         operation,
                                         "Persisted source identity is incomplete.");
