@@ -2,7 +2,6 @@
 
 #include "dvs/application/Commands.h"
 #include "dvs/application/PlaybackCoordinator.h"
-#include "dvs/application/WorkspaceCoordinator.h"
 #include "dvs/media/AlignmentAnalysisService.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
@@ -19,7 +18,6 @@
 #include "dvs/ui/RenderAckRelay.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
-#include "dvs/ui/WorkspaceController.h"
 
 #include <QMetaObject>
 #include <QObject>
@@ -116,33 +114,6 @@ public:
 private:
     std::mutex mutex_;
     ui::ReviewController* controller_ = nullptr;
-};
-
-class WorkspaceProjectionBridge final {
-public:
-    void bind(ui::WorkspaceController& controller) noexcept {
-        std::scoped_lock lock(mutex_);
-        controller_ = &controller;
-    }
-
-    void unbind() noexcept {
-        std::scoped_lock lock(mutex_);
-        controller_ = nullptr;
-    }
-
-    void notify() noexcept {
-        std::scoped_lock lock(mutex_);
-        if (controller_ == nullptr) {
-            return;
-        }
-        ui::WorkspaceController* const controller = controller_;
-        static_cast<void>(QMetaObject::invokeMethod(
-            controller, [controller] { controller->refreshProjection(); }, Qt::QueuedConnection));
-    }
-
-private:
-    std::mutex mutex_;
-    ui::WorkspaceController* controller_ = nullptr;
 };
 
 class GraphicsNotificationPump final {
@@ -249,11 +220,6 @@ public:
     void run() noexcept {
         graphicsPump.reset();
 
-        if (workspaceCoordinator) {
-            workspaceCoordinator->shutdown();
-        }
-        workspaceCoordinator.reset();
-
         if (coordinator) {
             coordinator->shutdown();
         }
@@ -315,7 +281,6 @@ public:
     bool relayStopped = false;
 
     std::unique_ptr<GraphicsNotificationPump> graphicsPump;
-    std::unique_ptr<application::WorkspaceCoordinator> workspaceCoordinator;
     std::shared_ptr<application::PlaybackCoordinator> coordinator;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler;
@@ -354,7 +319,6 @@ public:
         acknowledgementMailbox_ = std::make_shared<platform::PresentationAckMailbox>();
         activityBridge_ = std::make_shared<RenderActivityBridge>();
         projectionBridge_ = std::make_shared<ReviewProjectionBridge>();
-        workspaceProjectionBridge_ = std::make_shared<WorkspaceProjectionBridge>();
         transferActor_ = std::make_shared<platform::GpuTransferActor>(
             frameBudget_, deviceBroker_, frameMailbox_, activityBridge_);
         renderChannel_ = std::make_shared<platform::D3d11RenderChannel>(transferActor_);
@@ -381,64 +345,38 @@ public:
         }
         coordinatorEventSink_ = coordinator_->eventSink();
         const std::weak_ptr<application::PlaybackCoordinator> weakCoordinator = coordinator_;
-        workspaceCoordinator_ = application::WorkspaceCoordinator::create(
-            application::WorkspaceCoordinator::Dependencies{
-                .submitPlayback =
-                    [weakCoordinator](application::PlaybackCommand command) {
-                        if (const auto coordinator = weakCoordinator.lock()) {
-                            return coordinator->submit(std::move(command));
-                        }
-                        return application::PortSubmitResult::Closed;
-                    },
-                .playbackSnapshot =
-                    [weakCoordinator] {
-                        if (const auto coordinator = weakCoordinator.lock()) {
-                            return coordinator->snapshot();
-                        }
-                        return std::shared_ptr<const application::SessionSnapshot>{};
-                    },
-                .takePlaybackTerminals =
-                    [weakCoordinator] {
-                        if (const auto coordinator = weakCoordinator.lock()) {
-                            return coordinator->takeCompletedCommands();
-                        }
-                        return std::vector<application::CommandTerminal>{};
-                    },
-                .acceptedSequenceAlignments =
-                    [weakCoordinator] {
-                        if (const auto coordinator = weakCoordinator.lock()) {
-                            return coordinator->acceptedSequenceAlignments();
-                        }
-                        return std::shared_ptr<
-                            const std::vector<application::SequenceAlignmentResult>>{};
-                    },
-                .statePublished = [bridge = workspaceProjectionBridge_] { bridge->notify(); },
-            });
-        if (!workspaceCoordinator_) {
-            throw std::runtime_error{"The workspace coordinator could not be created."};
-        }
 
         acknowledgementRelay_ = std::make_shared<ui::RenderAckRelay>(
             acknowledgementMailbox_,
             std::weak_ptr<application::IApplicationEventSink>{coordinatorEventSink_});
         activityBridge_->bind(acknowledgementRelay_);
 
-        application::WorkspaceCoordinator* const workspace = workspaceCoordinator_.get();
         controller_ = std::make_unique<ui::ReviewController>(ui::ReviewController::Dependencies{
             .submit =
-                [workspace](application::PlaybackCommand command) {
-                    return workspace->submitPlayback(std::move(command));
+                [weakCoordinator](application::PlaybackCommand command) {
+                    if (const auto coordinator = weakCoordinator.lock()) {
+                        return coordinator->submit(std::move(command));
+                    }
+                    return application::PortSubmitResult::Closed;
                 },
-            .snapshot = [workspace] { return workspace->playbackSnapshot(); },
+            .snapshot =
+                [weakCoordinator] {
+                    if (const auto coordinator = weakCoordinator.lock()) {
+                        return coordinator->snapshot();
+                    }
+                    return std::shared_ptr<const application::SessionSnapshot>{};
+                },
             .takeCompletedCommands =
-                [workspace] { return workspace->takeCompletedPlaybackCommands(); },
+                [weakCoordinator] {
+                    if (const auto coordinator = weakCoordinator.lock()) {
+                        return coordinator->takeCompletedCommands();
+                    }
+                    return std::vector<application::CommandTerminal>{};
+                },
             .eventDriven = true,
         });
         projectionBridge_->bind(*controller_);
         preferences_ = std::make_unique<ui::ReviewPreferencesController>(settingsRepository_);
-        workspaceController_ =
-            std::make_unique<ui::WorkspaceController>(*workspaceCoordinator_, *preferences_);
-        workspaceProjectionBridge_->bind(*workspaceController_);
         graphicsPump_ = std::make_unique<GraphicsNotificationPump>(
             deviceBroker_,
             frameMailbox_,
@@ -456,10 +394,6 @@ public:
 
     [[nodiscard]] ui::ReviewPreferencesController* preferences() noexcept {
         return preferences_.get();
-    }
-
-    [[nodiscard]] ui::WorkspaceController* workspace() noexcept {
-        return workspaceController_.get();
     }
 
     [[nodiscard]] std::vector<media::DecoderBackendStatus> decoderBackendStatuses() const {
@@ -529,14 +463,8 @@ public:
         if (projectionBridge_) {
             projectionBridge_->unbind();
         }
-        if (workspaceProjectionBridge_) {
-            workspaceProjectionBridge_->unbind();
-        }
         if (controller_) {
             controller_->stop();
-        }
-        if (workspaceController_) {
-            workspaceController_->stop();
         }
         if (preferences_) {
             preferences_->stop();
@@ -585,7 +513,6 @@ public:
         work->deadline = shutdownDeadline;
         work->relayStopped = relayStopped;
         work->graphicsPump = std::move(graphicsPump_);
-        work->workspaceCoordinator = std::move(workspaceCoordinator_);
         work->coordinator = std::move(coordinator_);
         work->coordinatorEventSink = std::move(coordinatorEventSink_);
         work->deadlineScheduler = std::move(deadlineScheduler_);
@@ -638,7 +565,6 @@ private:
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox_;
     std::shared_ptr<RenderActivityBridge> activityBridge_;
     std::shared_ptr<ReviewProjectionBridge> projectionBridge_;
-    std::shared_ptr<WorkspaceProjectionBridge> workspaceProjectionBridge_;
     std::shared_ptr<platform::GpuTransferActor> transferActor_;
     std::shared_ptr<platform::D3d11RenderChannel> renderChannel_;
     std::shared_ptr<media::MediaProbe> mediaProbe_;
@@ -648,13 +574,11 @@ private:
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;
     std::shared_ptr<platform::SystemSteadyClock> clock_;
     std::shared_ptr<application::PlaybackCoordinator> coordinator_;
-    std::unique_ptr<application::WorkspaceCoordinator> workspaceCoordinator_;
     std::shared_ptr<application::IApplicationEventSink> coordinatorEventSink_;
     std::shared_ptr<ui::RenderAckRelay> acknowledgementRelay_;
     std::unique_ptr<GraphicsNotificationPump> graphicsPump_;
     std::unique_ptr<ui::ReviewController> controller_;
     std::unique_ptr<ui::ReviewPreferencesController> preferences_;
-    std::unique_ptr<ui::WorkspaceController> workspaceController_;
     ui::ComparisonSurface* surface_ = nullptr;
     QMetaObject::Connection surfaceDestroyedConnection_;
     bool prepared_ = false;
@@ -680,10 +604,6 @@ ui::ReviewController* ReviewRuntime::controller() noexcept {
 
 ui::ReviewPreferencesController* ReviewRuntime::preferences() noexcept {
     return impl_ ? impl_->preferences() : nullptr;
-}
-
-ui::WorkspaceController* ReviewRuntime::workspace() noexcept {
-    return impl_ ? impl_->workspace() : nullptr;
 }
 
 bool ReviewRuntime::attachSurface(ui::ComparisonSurface& surface) noexcept {

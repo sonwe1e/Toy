@@ -543,8 +543,7 @@ TEST_F(ReviewControllerTests, ShellKeepsActiveAndStagedSourcesSeparateDuringAReb
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests,
-       ShellAcceptsPredictionOnlyReferenceIndexAndOpensAllPredictionSources) {
+TEST_F(ReviewControllerTests, ShellRejectsPredictionOnlyReferenceIndex) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     const QString sourceAPath = createFile(directory, QStringLiteral("prediction_a.mp4"));
@@ -559,22 +558,9 @@ TEST_F(ReviewControllerTests,
     ReviewController controller{dependenciesFor(backend)};
     ReviewShellController shell{controller};
 
-    // The drop-confirmation dialog exposes "None (prediction-only)", which maps to a
-    // reference index of -1. The shell must accept it and forward it to the review
-    // controller, which interprets -1 as "no reference source" (all-prediction).
-    ASSERT_TRUE(shell.stageSources(
+    EXPECT_FALSE(shell.stageSources(
         {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, -1));
-    EXPECT_EQ(shell.stagedReferenceIndex(), -1);
-
-    ASSERT_TRUE(shell.openStagedSources(false));
-    ASSERT_EQ(backend->submitted.size(), 1U);
-    const auto* command =
-        std::get_if<application::OpenComparisonCommand>(&backend->submitted.front());
-    ASSERT_NE(command, nullptr);
-    EXPECT_EQ(command->intent, application::OpenReviewIntent::NewReview);
-    ASSERT_EQ(command->sources.size(), 2U);
-    EXPECT_EQ(command->sources[0].role, domain::ComparisonRole::kPrediction);
-    EXPECT_EQ(command->sources[1].role, domain::ComparisonRole::kPrediction);
+    EXPECT_TRUE(backend->submitted.empty());
     controller.stop();
 }
 
@@ -607,6 +593,23 @@ TEST_F(ReviewControllerTests, ShellCanRemoveAnyActiveSourceAndPreservesTheRefere
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests, ControllerClosesTheActiveSessionWithoutAWorkspaceBridge) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourcePath = createFile(directory, QStringLiteral("active.mp4"));
+    ASSERT_FALSE(sourcePath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourcePath.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+
+    ASSERT_TRUE(controller.closeSources());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_NE(std::get_if<application::CloseSessionCommand>(&backend->submitted.front()), nullptr);
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, ShellBoundsAndSerializesStartupRequests) {
     auto backend = std::make_shared<FakeBackend>();
     ReviewController controller{dependenciesFor(backend)};
@@ -626,6 +629,48 @@ TEST_F(ReviewControllerTests, ShellBoundsAndSerializesStartupRequests) {
     shell.completeStartupRequest();
     EXPECT_FALSE(shell.startupRequestActive());
     EXPECT_EQ(shell.takeNextStartupRequest().value(QStringLiteral("kind")).toInt(), 2);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellQueuesBusyIntentsAndDrainsThemInOrder) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceAPath = createFile(directory, QStringLiteral("queued_a.mp4"));
+    const QString sourceBPath = createFile(directory, QStringLiteral("queued_b.mp4"));
+    ASSERT_FALSE(sourceAPath.isEmpty());
+    ASSERT_FALSE(sourceBPath.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+    ASSERT_TRUE(controller.openSources(
+        {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, 0));
+    ASSERT_TRUE(controller.busy());
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const application::CommandContext pendingContext =
+        application::commandContext(backend->submitted.front());
+
+    ASSERT_TRUE(shell.stageSources(
+        {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, 0));
+    EXPECT_TRUE(shell.openStagedSources(false));
+    EXPECT_TRUE(shell.closeSources());
+    EXPECT_EQ(shell.queuedIntentCount(), 2);
+    EXPECT_EQ(backend->submitted.size(), 1U);
+
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceAPath.toStdWString()},
+                                  std::filesystem::path{sourceBPath.toStdWString()}});
+    backend->terminals.push_back(application::CommandTerminal{
+        .context = pendingContext,
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    QCoreApplication::processEvents();
+    ASSERT_EQ(backend->submitted.size(), 2U);
+    EXPECT_NE(std::get_if<application::OpenComparisonCommand>(&backend->submitted.back()), nullptr);
+    EXPECT_EQ(shell.queuedIntentCount(), 1);
     controller.stop();
 }
 
@@ -657,6 +702,42 @@ TEST_F(ReviewControllerTests, ShellOwnsChromeInspectorAndPendingActionState) {
     controller.stop();
 }
 
+TEST_F(ReviewControllerTests, ShellOwnsRangeStateAndPreservesItsOrderingInvariants) {
+    auto backend = std::make_shared<FakeBackend>();
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    EXPECT_FALSE(shell.setRangeIn(-1, -1.0));
+    ASSERT_TRUE(shell.setRangeOut(8, 8000.0));
+    ASSERT_TRUE(shell.setRangeIn(3, 3000.0));
+    EXPECT_EQ(shell.inFrame(), 3);
+    EXPECT_EQ(shell.outFrame(), 8);
+    EXPECT_TRUE(shell.setRangePlaybackState(true, true));
+    EXPECT_TRUE(shell.rangePlaybackActive());
+    EXPECT_TRUE(shell.rangeStartPending());
+
+    ASSERT_TRUE(shell.setRangeIn(9, 9000.0));
+    EXPECT_EQ(shell.inFrame(), 9);
+    EXPECT_EQ(shell.outFrame(), -1);
+    EXPECT_FALSE(shell.rangePlaybackActive());
+    EXPECT_FALSE(shell.rangeStartPending());
+    EXPECT_FALSE(shell.setRangePlaybackState(true, false));
+
+    ASSERT_TRUE(shell.setRangeOut(12, 12000.0));
+    shell.remapRange(4, 6);
+    EXPECT_EQ(shell.inFrame(), 4);
+    EXPECT_EQ(shell.outFrame(), 6);
+    EXPECT_DOUBLE_EQ(shell.inMediaTime(), 9000.0);
+    EXPECT_DOUBLE_EQ(shell.outMediaTime(), 12000.0);
+
+    shell.clearRange();
+    EXPECT_EQ(shell.inFrame(), -1);
+    EXPECT_EQ(shell.outFrame(), -1);
+    EXPECT_DOUBLE_EQ(shell.inMediaTime(), -1.0);
+    EXPECT_DOUBLE_EQ(shell.outMediaTime(), -1.0);
+    controller.stop();
+}
+
 TEST_F(ReviewControllerTests, RejectsAnAbsentOrOutOfRangeReferenceSource) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
@@ -669,6 +750,8 @@ TEST_F(ReviewControllerTests, RejectsAnAbsentOrOutOfRangeReferenceSource) {
     ReviewController controller{dependenciesFor(backend)};
     EXPECT_FALSE(controller.openComparisonSet(
         QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath), QUrl{}, 2));
+    EXPECT_FALSE(controller.openComparisonSet(
+        QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath), QUrl{}, -1));
     EXPECT_TRUE(backend->submitted.empty());
     controller.stop();
 }
@@ -1381,7 +1464,6 @@ TEST_F(ReviewControllerTests, StopAndExpiredBackendFailClosedWithoutFurtherAcces
     EXPECT_FALSE(controller.play());
     EXPECT_FALSE(controller.pause());
     EXPECT_FALSE(controller.togglePlayback());
-    EXPECT_FALSE(controller.exportBadCase(nullptr, QUrl{}));
     EXPECT_FALSE(controller.openComparison(QUrl{}, QUrl{}));
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
     EXPECT_EQ(backend->submitCalls + backend->snapshotCalls + backend->drainCalls, accesses);

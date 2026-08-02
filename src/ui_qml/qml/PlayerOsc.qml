@@ -42,6 +42,13 @@ Item {
         revealActive = controllerState === 0;
     }
 
+    function reveal() {
+        if (controllerState !== 1)
+            return;
+        revealActive = true;
+        hideTimer.restart();
+    }
+
     Rectangle {
         id: panel
 
@@ -126,7 +133,7 @@ Item {
             previewFrame: Math.max(0, control.previewFrame)
             previewTimecode: control.previewTimecode
             thumbnailSource: control.previewThumbnailSource
-            comparisonState: control.markers.length > 0 ? qsTr("Review markers available") : ""
+            comparisonState: control.markers.length > 0 ? qsTr("Analysis markers available") : ""
             x: Math.max(8, Math.min(control.width - width - 8, tracks.x + tracks.positionForFrame(tracks.hoverFrame) * tracks.width - width / 2))
             y: -height - 6
             z: 20

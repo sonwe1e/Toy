@@ -35,7 +35,7 @@ Popup {
             font.weight: Font.DemiBold
         }
         Label {
-            text: control.playerPreset ? qsTr("Player preset") : qsTr("Review preset")
+            text: control.playerPreset ? qsTr("Player shortcuts") : qsTr("Frame review shortcuts")
             color: "#9fc3ff"
             font.pixelSize: 12
         }

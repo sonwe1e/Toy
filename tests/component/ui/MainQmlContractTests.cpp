@@ -141,17 +141,13 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
     ReviewShellController shell{controller};
-    QObject workspace;
-    workspace.setProperty("busy", false);
-    workspace.setProperty("errorTechnicalDetail", QString{});
 
     QQmlEngine engine;
     engine.addImportPath(
         QDir{QCoreApplication::applicationDirPath()}.filePath(QStringLiteral("qml")));
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
-    engine.rootContext()->setContextProperty(QStringLiteral("workspaceController"), &workspace);
-    engine.rootContext()->setContextProperty(QStringLiteral("reviewShell"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -160,6 +156,10 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(qobject_cast<QQuickWindow*>(root.get()), nullptr);
     QCoreApplication::processEvents();
     ASSERT_EQ(controller.sources()->rowCount(), 2);
+    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "setInPoint"));
+    EXPECT_EQ(shell.inFrame(), 0);
+    EXPECT_EQ(shell.inMediaTime(), controller.mediaTimeForFrame(0));
+    shell.clearRange();
 
     const QVariant requestUrls = QVariantList{QUrl::fromLocalFile(QStringLiteral("C:/a.mp4"))};
     ASSERT_TRUE(shell.enqueueStartupRequest(2, requestUrls.toList()));
@@ -230,19 +230,22 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         root->findChild<QObject*>(QStringLiteral("mediaInfoRepeater"));
     QObject* const shortcutHelp = root->findChild<QObject*>(QStringLiteral("shortcutHelpOverlay"));
     QObject* const contextViewMenu = root->findChild<QObject*>(QStringLiteral("contextViewMenu"));
+    QObject* const reviewContextMenu =
+        root->findChild<QObject*>(QStringLiteral("reviewContextMenu"));
+    QObject* const contextOpenAction =
+        root->findChild<QObject*>(QStringLiteral("contextOpenAction"));
     QObject* const contextPairMenu = root->findChild<QObject*>(QStringLiteral("contextPairMenu"));
     QObject* const contextReferenceMenu =
         root->findChild<QObject*>(QStringLiteral("contextReferenceMenu"));
-    QObject* const contextBadCaseAction =
-        root->findChild<QObject*>(QStringLiteral("contextBadCaseAction"));
     QObject* const contextInfoAction =
         root->findChild<QObject*>(QStringLiteral("contextInfoAction"));
     QObject* const immersiveHud = root->findChild<QObject*>(QStringLiteral("immersiveReviewHud"));
     auto* const firstButton = root->findChild<QQuickItem*>(QStringLiteral("firstButton"));
     auto* const lastButton = root->findChild<QQuickItem*>(QStringLiteral("lastButton"));
-    QObject* const badCaseDialog = root->findChild<QObject*>(QStringLiteral("badCaseFolderDialog"));
     QObject* const analysisGridMenuItem =
         root->findChild<QObject*>(QStringLiteral("analysisGridMenuItem"));
+    QObject* const compareMenu = root->findChild<QObject*>(QStringLiteral("compareMenu"));
+    QObject* const analyzeMenu = root->findChild<QObject*>(QStringLiteral("analyzeMenu"));
     ASSERT_NE(inspector, nullptr);
     ASSERT_NE(tabbedInspector, nullptr);
     ASSERT_NE(compareBar, nullptr);
@@ -263,15 +266,17 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(mediaInfoRepeater, nullptr);
     ASSERT_NE(shortcutHelp, nullptr);
     ASSERT_NE(contextViewMenu, nullptr);
+    ASSERT_NE(reviewContextMenu, nullptr);
+    ASSERT_NE(contextOpenAction, nullptr);
     ASSERT_NE(contextPairMenu, nullptr);
     ASSERT_NE(contextReferenceMenu, nullptr);
-    ASSERT_NE(contextBadCaseAction, nullptr);
     ASSERT_NE(contextInfoAction, nullptr);
     ASSERT_NE(immersiveHud, nullptr);
     ASSERT_NE(firstButton, nullptr);
     ASSERT_NE(lastButton, nullptr);
-    ASSERT_NE(badCaseDialog, nullptr);
     ASSERT_NE(analysisGridMenuItem, nullptr);
+    ASSERT_NE(compareMenu, nullptr);
+    ASSERT_NE(analyzeMenu, nullptr);
     EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());
     EXPECT_FALSE(inspector->property("visible").toBool());
     EXPECT_EQ(root->property("minimumWidth").toDouble(), 960.0);
@@ -393,7 +398,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QCoreApplication::processEvents();
     EXPECT_TRUE(immersiveHud->property("visible").toBool());
 
-    root->setProperty("shortcutPreset", 1);
+    preferences.setShortcutPreset(1);
+    QCoreApplication::processEvents();
     sendKey(*window, Qt::Key_Right);
     ASSERT_FALSE(submitted.empty());
     const auto* const playerStep = std::get_if<application::StepFramesCommand>(&submitted.back());
@@ -404,7 +410,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         .outcome = application::CommandOutcome::Succeeded,
     });
     controller.refreshProjection();
-    root->setProperty("shortcutPreset", 0);
+    preferences.setShortcutPreset(0);
 
     sendKey(*window, Qt::Key_Question);
     EXPECT_TRUE(shortcutHelp->property("visible").toBool());
@@ -539,7 +545,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_TRUE(setOutButton->property("visible").toBool());
 
     // In single mode the inspector keeps only the Review/Info tabs; Compare/Alignment
-    // tabs hide and the Review-tab range/export actions remain reachable.
+    // tabs hide and the Review-tab range actions remain reachable.
     QObject* const compareTab =
         tabbedInspector->findChild<QObject*>(QStringLiteral("compareTabButton"));
     QObject* const alignmentTab =
@@ -547,18 +553,14 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QObject* const reviewTab =
         tabbedInspector->findChild<QObject*>(QStringLiteral("reviewTabButton"));
     QObject* const infoTab = tabbedInspector->findChild<QObject*>(QStringLiteral("infoTabButton"));
-    QObject* const exportBadCase =
-        tabbedInspector->findChild<QObject*>(QStringLiteral("exportBadCaseButton"));
     ASSERT_NE(compareTab, nullptr);
     ASSERT_NE(alignmentTab, nullptr);
     ASSERT_NE(reviewTab, nullptr);
     ASSERT_NE(infoTab, nullptr);
-    ASSERT_NE(exportBadCase, nullptr);
     EXPECT_FALSE(compareTab->property("visible").toBool());
     EXPECT_FALSE(alignmentTab->property("visible").toBool());
     EXPECT_TRUE(reviewTab->property("visible").toBool());
     EXPECT_TRUE(infoTab->property("visible").toBool());
-    EXPECT_TRUE(exportBadCase->property("visible").toBool());
     EXPECT_TRUE(loopRangeButton->property("visible").toBool());
     EXPECT_TRUE(clearRangeButton->property("visible").toBool());
 
@@ -572,6 +574,10 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QCoreApplication::processEvents();
     EXPECT_EQ(root->property("oscState").toInt(), 2);
     EXPECT_FALSE(transport->isVisible());
+    EXPECT_FALSE(compareMenu->property("enabled").toBool());
+    EXPECT_FALSE(analyzeMenu->property("enabled").toBool());
+    EXPECT_TRUE(reviewContextMenu->property("emptyStateOnly").toBool());
+    EXPECT_EQ(reviewContextMenu->property("availableActionCount").toInt(), 2);
 }
 
 } // namespace

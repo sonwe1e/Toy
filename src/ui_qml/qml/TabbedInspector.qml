@@ -11,14 +11,61 @@ import Dvs.Ui 1.0
 Rectangle {
     id: control
 
-    required property var host
+    required property var controller
+    required property var preferences
+    required property var session
+    required property var alignmentHost
+    required property color borderColor
+    required property color primaryTextColor
+    required property color mutedTextColor
+    required property bool singleMode
+    required property int sourceCount
+    required property bool wipeMode
+    required property bool differenceMode
+    required property bool analysisGridMode
+    required property var differenceEdges
+    required property int differenceEdge
+    required property int referenceSourceIndex
+    required property bool differenceThresholdEnabled
+    required property int differenceThresholdCode
+    required property int differenceThresholdPolicy
+    required property real wipePosition
+    required property bool roiEnabled
+    required property bool graphicsReady
+    required property bool dropFrameTimecode
+    required property int currentFrame
+    required property int inFrame
+    required property int outFrame
+    required property bool rangePlaybackActive
+
+    signal differenceEdgeRequested(int edge)
+    signal referenceRequested(int sourceIndex)
+    signal differenceThresholdEnabledRequested(bool enabled)
+    signal differenceThresholdCodeRequested(int code)
+    signal differenceThresholdPolicyRequested(int policy)
+    signal wipePositionRequested(real position)
+    signal resetViewportRequested
+    signal clearRoiRequested
+    signal dropFrameTimecodeRequested(bool enabled)
+    signal inPointRequested
+    signal outPointRequested
+    signal clearRangeRequested
+    signal rangeLoopToggleRequested
 
     objectName: "tabbedInspector"
-    width: 360
+    width: Math.max(300, Math.min(380, parent ? parent.width * 0.3 : 360))
     color: "#111823"
-    border.color: control.host.borderColor
+    border.color: control.borderColor
 
-    readonly property int effectiveTab: control.host.singleMode && tabs.currentIndex < 2 ? 2 : tabs.currentIndex
+    readonly property int effectiveTab: control.singleMode && tabs.currentIndex < 2 ? 2 : tabs.currentIndex
+
+    function differenceEdgeIndex(preferenceValue) {
+        for (let index = 0; index < control.differenceEdges.length; ++index) {
+            if (Number(control.differenceEdges[index].preferenceValue) === Number(preferenceValue))
+                return index;
+        }
+        return 0;
+    }
 
     component DarkTabButton: TabButton {
         id: darkTabButton
@@ -110,17 +157,17 @@ Rectangle {
         }
         DarkTabButton {
             objectName: "compareTabButton"
-            visible: !control.host.singleMode
+            visible: !control.singleMode
             text: qsTr("Compare")
         }
         DarkTabButton {
             objectName: "alignmentTabButton"
-            visible: !control.host.singleMode
+            visible: !control.singleMode
             text: qsTr("Alignment")
         }
         DarkTabButton {
             objectName: "reviewTabButton"
-            text: qsTr("Review")
+            text: qsTr("Playback")
         }
         DarkTabButton {
             objectName: "infoTabButton"
@@ -151,7 +198,7 @@ Rectangle {
 
                 Label {
                     text: qsTr("Comparison")
-                    color: control.host.primaryTextColor
+                    color: control.primaryTextColor
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
@@ -159,90 +206,90 @@ Rectangle {
                 Label {
                     text: qsTr("Pair")
                     visible: pairCombo.visible
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
                     id: pairCombo
-                    visible: control.host.sourceCount === 3 && (control.host.wipeMode || control.host.differenceMode || control.host.analysisGridMode)
+                    visible: control.sourceCount === 3 && (control.wipeMode || control.differenceMode || control.analysisGridMode)
                     width: parent.width
-                    model: control.host.differenceEdges
+                    model: control.differenceEdges
                     textRole: "label"
-                    currentIndex: control.host.differenceEdgeIndex(control.host.differenceEdge)
+                    currentIndex: control.differenceEdgeIndex(control.differenceEdge)
                     onActivated: index => {
-                        if (index >= 0 && index < control.host.differenceEdges.length)
-                            control.host.preferences.differenceEdge = Number(control.host.differenceEdges[index].preferenceValue);
+                        if (index >= 0 && index < control.differenceEdges.length)
+                            control.differenceEdgeRequested(Number(control.differenceEdges[index].preferenceValue));
                     }
                 }
 
                 Label {
                     text: qsTr("Reference")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
                     width: parent.width
-                    model: control.host.controller ? control.host.controller.sources : null
+                    model: control.controller ? control.controller.sources : null
                     textRole: "filename"
-                    currentIndex: Math.max(0, control.host.referenceSourceIndex)
-                    onActivated: index => control.host.shell ? control.host.shell.changeReference(index) : control.host.controller.changeReference(index)
+                    currentIndex: Math.max(0, control.referenceSourceIndex)
+                    onActivated: index => control.referenceRequested(index)
                 }
 
                 Label {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     text: qsTr("Difference metric")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     width: parent.width
                     model: [qsTr("RGB absolute"), qsTr("Luma"), qsTr("Chroma"), qsTr("Heatmap"), qsTr("Exact planes")]
-                    currentIndex: Number(control.host.preferences.differenceMetric)
-                    onActivated: index => control.host.preferences.differenceMetric = index
+                    currentIndex: Number(control.preferences.differenceMetric)
+                    onActivated: index => control.preferences.differenceMetric = index
                 }
 
                 Label {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     text: qsTr("Gain")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     width: parent.width
                     model: [qsTr("1×"), qsTr("2×"), qsTr("4×"), qsTr("8×"), qsTr("16×")]
-                    currentIndex: Number(control.host.preferences.differenceGain)
-                    onActivated: index => control.host.preferences.differenceGain = index
+                    currentIndex: Number(control.preferences.differenceGain)
+                    onActivated: index => control.preferences.differenceGain = index
                 }
 
                 Label {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     text: qsTr("Filter")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     width: parent.width
                     model: [qsTr("Nearest"), qsTr("Bilinear"), qsTr("Bicubic")]
-                    currentIndex: Number(control.host.preferences.differenceFilter)
-                    onActivated: index => control.host.preferences.differenceFilter = index
+                    currentIndex: Number(control.preferences.differenceFilter)
+                    onActivated: index => control.preferences.differenceFilter = index
                 }
 
                 DarkCheckBox {
-                    visible: control.host.differenceMode
+                    visible: control.differenceMode
                     text: qsTr("Threshold")
-                    checked: control.host.differenceThresholdEnabled
-                    onToggled: control.host.differenceThresholdEnabled = checked
+                    checked: control.differenceThresholdEnabled
+                    onToggled: control.differenceThresholdEnabledRequested(checked)
                 }
                 SpinBox {
                     id: thresholdSpinBox
 
-                    visible: control.host.differenceMode && control.host.differenceThresholdEnabled
+                    visible: control.differenceMode && control.differenceThresholdEnabled
                     width: parent.width
                     from: 0
                     to: 255
-                    value: control.host.differenceThresholdCode
+                    value: control.differenceThresholdCode
                     editable: true
                     implicitHeight: 34
                     Accessible.name: qsTr("Difference threshold in 8-bit code values")
-                    onValueModified: control.host.differenceThresholdCode = value
+                    onValueModified: control.differenceThresholdCodeRequested(value)
 
                     contentItem: TextInput {
                         text: thresholdSpinBox.textFromValue(thresholdSpinBox.value, thresholdSpinBox.locale)
@@ -306,28 +353,28 @@ Rectangle {
                     }
                 }
                 ToolbarCombo {
-                    visible: control.host.differenceMode && control.host.differenceThresholdEnabled
+                    visible: control.differenceMode && control.differenceThresholdEnabled
                     width: parent.width
                     model: [qsTr("Luma"), qsTr("Any channel"), qsTr("All channels")]
-                    currentIndex: control.host.differenceThresholdPolicy
-                    onActivated: index => control.host.differenceThresholdPolicy = index
+                    currentIndex: control.differenceThresholdPolicy
+                    onActivated: index => control.differenceThresholdPolicyRequested(index)
                 }
 
                 Label {
-                    visible: control.host.wipeMode
-                    text: qsTr("Wipe position · %1%").arg(Math.round(control.host.wipePosition * 100))
-                    color: control.host.mutedTextColor
+                    visible: control.wipeMode
+                    text: qsTr("Wipe position · %1%").arg(Math.round(control.wipePosition * 100))
+                    color: control.mutedTextColor
                 }
                 Slider {
                     id: wipeSlider
 
-                    visible: control.host.wipeMode
+                    visible: control.wipeMode
                     width: parent.width
                     from: 0
                     to: 1
-                    value: control.host.wipePosition
+                    value: control.wipePosition
                     padding: 6
-                    onMoved: control.host.wipePosition = value
+                    onMoved: control.wipePositionRequested(value)
 
                     background: Rectangle {
                         x: wipeSlider.leftPadding + (wipeSlider.horizontal ? 0 : (wipeSlider.availableWidth - width) / 2)
@@ -365,21 +412,21 @@ Rectangle {
                     implicitHeight: 34
                     text: qsTr("Reset zoom and pan")
                     helpText: qsTr("Restore the full image view.")
-                    onClicked: control.host.resetViewport()
+                    onClicked: control.resetViewportRequested()
                 }
                 ReviewActionButton {
-                    visible: control.host.roiEnabled
+                    visible: control.roiEnabled
                     width: parent.width
                     implicitHeight: 34
                     text: qsTr("Clear ROI")
                     helpText: qsTr("Remove the active region of interest.")
-                    onClicked: control.host.clearRoi()
+                    onClicked: control.clearRoiRequested()
                 }
             }
         }
 
         AlignmentInspector {
-            host: control.host
+            host: control.alignmentHost
         }
 
         Flickable {
@@ -395,34 +442,34 @@ Rectangle {
                 y: 14
 
                 Label {
-                    text: qsTr("Review")
-                    color: control.host.primaryTextColor
+                    text: qsTr("Playback")
+                    color: control.primaryTextColor
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
                 Label {
                     text: qsTr("On-screen controls")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
                 ToolbarCombo {
                     width: parent.width
                     model: [qsTr("Contextual"), qsTr("Pinned"), qsTr("Auto hide"), qsTr("Hidden")]
-                    currentIndex: control.host.preferences && Number(control.host.preferences.oscMode) >= 0 ? Number(control.host.preferences.oscMode) + 1 : 0
-                    onActivated: index => control.host.preferences.oscMode = index - 1
+                    currentIndex: control.preferences && Number(control.preferences.oscMode) >= 0 ? Number(control.preferences.oscMode) + 1 : 0
+                    onActivated: index => control.preferences.oscMode = index - 1
                 }
                 DarkCheckBox {
-                    visible: control.host.controller && control.host.controller.dropFrameTimecodeAvailable
+                    visible: control.controller && control.controller.dropFrameTimecodeAvailable
                     text: checked ? qsTr("Drop-frame timecode (DF)") : qsTr("Non-drop timecode (NDF)")
-                    checked: control.host.dropFrameTimecode
-                    onToggled: control.host.dropFrameTimecode = checked
+                    checked: control.dropFrameTimecode
+                    onToggled: control.dropFrameTimecodeRequested(checked)
                 }
                 Label {
-                    text: qsTr("In: %1").arg(control.host.inFrame >= 0 ? control.host.inFrame + 1 : "—")
-                    color: control.host.mutedTextColor
+                    text: qsTr("In: %1").arg(control.inFrame >= 0 ? control.inFrame + 1 : "—")
+                    color: control.mutedTextColor
                 }
                 Label {
-                    text: qsTr("Out: %1").arg(control.host.outFrame >= 0 ? control.host.outFrame + 1 : "—")
-                    color: control.host.mutedTextColor
+                    text: qsTr("Out: %1").arg(control.outFrame >= 0 ? control.outFrame + 1 : "—")
+                    color: control.mutedTextColor
                 }
 
                 GridLayout {
@@ -437,8 +484,8 @@ Rectangle {
                         implicitHeight: 34
                         text: qsTr("Set In")
                         helpText: qsTr("Set the range start to the current frame (I).")
-                        enabled: control.host.currentFrame >= 0
-                        onClicked: control.host.setInPoint()
+                        enabled: control.currentFrame >= 0
+                        onClicked: control.inPointRequested()
                     }
                     ReviewActionButton {
                         objectName: "setOutButton"
@@ -446,8 +493,8 @@ Rectangle {
                         implicitHeight: 34
                         text: qsTr("Set Out")
                         helpText: qsTr("Set the range end to the current frame (O).")
-                        enabled: control.host.currentFrame >= 0
-                        onClicked: control.host.setOutPoint()
+                        enabled: control.currentFrame >= 0
+                        onClicked: control.outPointRequested()
                     }
                     ReviewActionButton {
                         objectName: "clearRangeButton"
@@ -455,40 +502,30 @@ Rectangle {
                         implicitHeight: 34
                         text: qsTr("Clear range")
                         helpText: qsTr("Clear In, Out, and loop playback.")
-                        enabled: control.host.inFrame >= 0 || control.host.outFrame >= 0
-                        onClicked: control.host.clearSelectedRange()
+                        enabled: control.inFrame >= 0 || control.outFrame >= 0
+                        onClicked: control.clearRangeRequested()
                     }
                     ReviewActionButton {
                         objectName: "loopRangeButton"
                         Layout.fillWidth: true
                         implicitHeight: 34
-                        text: control.host.rangePlaybackActive ? qsTr("Stop loop") : qsTr("Loop range")
+                        text: control.rangePlaybackActive ? qsTr("Stop loop") : qsTr("Loop range")
                         helpText: qsTr("Toggle playback of the selected range.")
-                        enabled: control.host.inFrame >= 0 && control.host.outFrame >= control.host.inFrame
-                        onClicked: control.host.toggleRangeLoop()
+                        enabled: control.inFrame >= 0 && control.outFrame >= control.inFrame
+                        onClicked: control.rangeLoopToggleRequested()
                     }
-                }
-
-                ReviewActionButton {
-                    objectName: "exportBadCaseButton"
-                    width: parent.width
-                    implicitHeight: 34
-                    text: qsTr("Export current Bad Case…")
-                    helpText: qsTr("Export the current comparison evidence.")
-                    enabled: control.host.currentFrame >= 0
-                    onClicked: control.host.openBadCaseExport()
                 }
 
                 Label {
                     text: qsTr("Marker legend")
-                    color: control.host.primaryTextColor
+                    color: control.primaryTextColor
                     font.weight: Font.DemiBold
                 }
                 Label {
                     width: parent.width
                     wrapMode: Text.WordWrap
                     text: qsTr("Red · Missing    Orange · Duplicate    Purple · Extra\nCyan · Anchor    Yellow · Low confidence")
-                    color: control.host.mutedTextColor
+                    color: control.mutedTextColor
                 }
             }
         }
@@ -507,13 +544,13 @@ Rectangle {
 
                 Label {
                     text: qsTr("Media information")
-                    color: control.host.primaryTextColor
+                    color: control.primaryTextColor
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
                 Repeater {
                     objectName: "mediaInfoRepeater"
-                    model: control.host.controller ? control.host.controller.sourceMediaInfo : []
+                    model: control.controller ? control.controller.sourceMediaInfo : []
 
                     Rectangle {
                         id: mediaCard
@@ -523,7 +560,7 @@ Rectangle {
                         height: mediaInfo.implicitHeight + 20
                         radius: 6
                         color: "#1d2635"
-                        border.color: control.host.borderColor
+                        border.color: control.borderColor
 
                         Label {
                             id: mediaInfo
@@ -532,14 +569,14 @@ Rectangle {
                             y: 10
                             wrapMode: Text.Wrap
                             text: qsTr("Source %1 · %2\n%3 × %4 · %5 · %6 frames\n%7 · %8 · %9-bit\n%10 · %11 · %12\nDecode: %13 · Role: %14").arg(String(mediaCard.modelData.label)).arg(String(mediaCard.modelData.filename)).arg(Number(mediaCard.modelData.width)).arg(Number(mediaCard.modelData.height)).arg(String(mediaCard.modelData.frameRate)).arg(Number(mediaCard.modelData.frameCount)).arg(String(mediaCard.modelData.timingMode)).arg(String(mediaCard.modelData.codec)).arg(Number(mediaCard.modelData.bitDepth)).arg(String(mediaCard.modelData.pixelFormat)).arg(String(mediaCard.modelData.colorMatrix)).arg(String(mediaCard.modelData.colorRange)).arg(String(mediaCard.modelData.decodeBackend)).arg(String(mediaCard.modelData.role))
-                            color: control.host.mutedTextColor
+                            color: control.mutedTextColor
                             font.pixelSize: 11
                         }
                     }
                 }
                 Label {
-                    text: control.host.graphicsReady ? qsTr("D3D11 renderer ready") : qsTr("Graphics unavailable")
-                    color: control.host.graphicsReady ? "#8ce2c2" : "#efbf83"
+                    text: control.graphicsReady ? qsTr("D3D11 renderer ready") : qsTr("Graphics unavailable")
+                    color: control.graphicsReady ? "#8ce2c2" : "#efbf83"
                 }
             }
         }

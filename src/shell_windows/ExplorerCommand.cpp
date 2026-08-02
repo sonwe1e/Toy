@@ -18,10 +18,10 @@ namespace {
         return paths;
     }
     DWORD count = 0U;
-    if (FAILED(selection->GetCount(&count)) || count != 2U) {
+    if (FAILED(selection->GetCount(&count)) || count < 1U || count > 3U) {
         return paths;
     }
-    paths.reserve(2U);
+    paths.reserve(count);
     for (DWORD index = 0U; index < count; ++index) {
         IShellItem* item = nullptr;
         if (FAILED(selection->GetItemAt(index, &item)) || item == nullptr) {
@@ -96,8 +96,15 @@ ULONG ExplorerCommand::Release() noexcept {
     return remaining;
 }
 
-HRESULT ExplorerCommand::GetTitle(IShellItemArray*, LPWSTR* const title) noexcept {
-    return title == nullptr ? E_POINTER : SHStrDupW(L"Compare with VCStation", title);
+HRESULT ExplorerCommand::GetTitle(IShellItemArray* const selection, LPWSTR* const title) noexcept {
+    if (title == nullptr) {
+        return E_POINTER;
+    }
+    const std::size_t count = selectedPaths(selection).size();
+    const wchar_t* value = count == 1U   ? L"Open in VCStation"
+                           : count == 3U ? L"Compare 3 videos with VCStation"
+                                         : L"Compare with VCStation";
+    return SHStrDupW(value, title);
 }
 
 HRESULT ExplorerCommand::GetIcon(IShellItemArray*, LPWSTR* const icon) noexcept {
@@ -113,10 +120,16 @@ HRESULT ExplorerCommand::GetIcon(IShellItemArray*, LPWSTR* const icon) noexcept 
     }
 }
 
-HRESULT ExplorerCommand::GetToolTip(IShellItemArray*, LPWSTR* const toolTip) noexcept {
-    return toolTip == nullptr
-               ? E_POINTER
-               : SHStrDupW(L"Compare the two selected videos frame by frame", toolTip);
+HRESULT ExplorerCommand::GetToolTip(IShellItemArray* const selection,
+                                    LPWSTR* const toolTip) noexcept {
+    if (toolTip == nullptr) {
+        return E_POINTER;
+    }
+    const std::size_t count = selectedPaths(selection).size();
+    const wchar_t* value = count == 1U   ? L"Open the selected video for visual review"
+                           : count == 3U ? L"Compare the three selected videos frame by frame"
+                                         : L"Compare the two selected videos frame by frame";
+    return SHStrDupW(value, toolTip);
 }
 
 HRESULT ExplorerCommand::GetCanonicalName(GUID* const commandName) noexcept {
@@ -134,7 +147,8 @@ HRESULT ExplorerCommand::GetState(IShellItemArray* const selection,
         return E_POINTER;
     }
     try {
-        *state = selectedPaths(selection).size() == 2U ? ECS_ENABLED : ECS_HIDDEN;
+        const std::size_t count = selectedPaths(selection).size();
+        *state = count >= 1U && count <= 3U ? ECS_ENABLED : ECS_HIDDEN;
     } catch (...) {
         *state = ECS_HIDDEN;
     }
@@ -144,14 +158,14 @@ HRESULT ExplorerCommand::GetState(IShellItemArray* const selection,
 HRESULT ExplorerCommand::Invoke(IShellItemArray* const selection, IBindCtx*) noexcept {
     try {
         const std::vector<std::filesystem::path> paths = selectedPaths(selection);
-        if (paths.size() != 2U) {
+        if (paths.empty() || paths.size() > 3U) {
             return E_INVALIDARG;
         }
         const std::filesystem::path executable = executablePath();
         if (executable.empty()) {
             return HRESULT_FROM_WIN32(GetLastError());
         }
-        std::wstring commandLine = buildCompareCommandLine(executable, paths);
+        std::wstring commandLine = buildReviewCommandLine(executable, paths);
         STARTUPINFOW startupInfo{
             .cb = sizeof(STARTUPINFOW),
         };

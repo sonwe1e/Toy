@@ -2,6 +2,7 @@
 
 #include <QQuickItem>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <memory>
 
@@ -160,6 +161,7 @@ public:
                                      qreal roiTop,
                                      qreal roiRight,
                                      qreal roiBottom);
+    Q_INVOKABLE QVariantMap mapSurfacePoint(qreal x, qreal y) const;
 
     [[nodiscard]] bool
     attachRendererServices(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,

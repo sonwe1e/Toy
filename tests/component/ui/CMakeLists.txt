@@ -2,7 +2,6 @@ include(GoogleTest)
 
 add_executable(
     dvs_ui_component_tests
-    BadCaseExporterTests.cpp
     ReviewControllerTests.cpp
     ReviewPreferencesControllerTests.cpp
 )

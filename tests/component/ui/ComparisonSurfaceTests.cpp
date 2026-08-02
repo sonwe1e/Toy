@@ -362,6 +362,27 @@ TEST(ComparisonSurfaceGeometryTests, MapsWipeLabelsToSelectedPairAndSplit) {
     EXPECT_FLOAT_EQ(wipe.sourceRects[1U].x, 200.0F);
 }
 
+TEST(ComparisonSurfaceGeometryTests, MapsPointerInputThroughTheRendererPanelLayout) {
+    ComparisonSurface surface;
+    surface.setWidth(800.0);
+    surface.setHeight(450.0);
+    surface.setViewMode(ComparisonSurface::Wipe);
+    surface.setDifferenceEdge(ComparisonSurface::Edge1And2);
+    surface.setWipePosition(0.25);
+
+    const QVariantMap left = surface.mapSurfacePoint(100.0, 225.0);
+    EXPECT_EQ(left.value(QStringLiteral("panelIndex")).toInt(), 0);
+    EXPECT_EQ(left.value(QStringLiteral("sourceSlot")).toInt(), 1);
+    EXPECT_DOUBLE_EQ(left.value(QStringLiteral("normalizedX")).toDouble(), 0.5);
+    EXPECT_DOUBLE_EQ(left.value(QStringLiteral("normalizedY")).toDouble(), 0.5);
+
+    const QVariantMap right = surface.mapSurfacePoint(500.0, 225.0);
+    EXPECT_EQ(right.value(QStringLiteral("panelIndex")).toInt(), 1);
+    EXPECT_EQ(right.value(QStringLiteral("sourceSlot")).toInt(), 2);
+    EXPECT_DOUBLE_EQ(right.value(QStringLiteral("normalizedX")).toDouble(), 0.5);
+    EXPECT_DOUBLE_EQ(right.value(QStringLiteral("normalizedY")).toDouble(), 0.5);
+}
+
 TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
     const domain::ColorMetadata bt601{
         .matrix = domain::ColorMatrix::kBt601,

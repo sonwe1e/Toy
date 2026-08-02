@@ -47,6 +47,32 @@ set_tests_properties(
 )
 
 dvs_add_test(
+    NAME performance.1080p60-2source
+    LAYER performance
+    MODULE app
+    COMMAND
+        "${DVS_POWERSHELL_EXECUTABLE}"
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy
+        Bypass
+        -File
+        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        -Profile
+        1080p60-2source
+        -Executable
+        $<TARGET_FILE:VCStation>
+        -DurationSeconds
+        300
+)
+set_tests_properties(
+    performance.1080p60-2source
+    PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 480
+)
+
+dvs_add_test(
     NAME performance.1080p60
     LAYER performance
     MODULE app

@@ -264,9 +264,9 @@ TEST(ExplorerCommandSmokeTests, LoadsRealComServerAndFiltersSelectionCardinality
         EXPECT_EQ(result, S_OK);
         return state;
     };
-    EXPECT_EQ(stateFor({first}), ECS_HIDDEN);
+    EXPECT_EQ(stateFor({first}), ECS_ENABLED);
     EXPECT_EQ(stateFor({first, second}), ECS_ENABLED);
-    EXPECT_EQ(stateFor({first, second, first}), ECS_HIDDEN);
+    EXPECT_EQ(stateFor({first, second, first}), ECS_ENABLED);
     EXPECT_EQ(stateFor({first, unsupported}), ECS_HIDDEN);
 
     std::filesystem::remove_all(directory);
@@ -300,11 +300,10 @@ TEST(ExplorerCommandSmokeTests, InvokesRealComServerWithUnicodeCompareArguments)
             std::this_thread::sleep_for(std::chrono::milliseconds{20});
         }
         const std::vector<std::wstring> arguments = readCapturedArguments(captured);
-        ASSERT_EQ(arguments.size(), 4U);
+        ASSERT_EQ(arguments.size(), 3U);
         EXPECT_EQ(std::filesystem::path{arguments[0]}.filename(), L"VCStation.exe");
-        EXPECT_EQ(arguments[1], L"--compare");
-        EXPECT_EQ(arguments[2], first.wstring());
-        EXPECT_EQ(arguments[3], second.wstring());
+        EXPECT_EQ(arguments[1], first.wstring());
+        EXPECT_EQ(arguments[2], second.wstring());
     }
 
     SetEnvironmentVariableW(L"DVS_SHELL_TEST_CAPTURE_FILE", nullptr);

@@ -1,6 +1,7 @@
 #include "dvs/ui/ReviewPreferencesController.h"
 
 #include <QMetaObject>
+#include <QPointer>
 #include <QThread>
 #include <QTimer>
 
@@ -8,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -23,11 +25,12 @@
 namespace dvs::ui {
 namespace {
 
-constexpr int kEventDrainIntervalMilliseconds = 16;
 constexpr int kSaveDebounceMilliseconds = 150;
 constexpr auto kShutdownSaveFlushTimeout = std::chrono::milliseconds{500};
 
-constexpr std::string_view kLargeStepKey = "review.large-step-frames";
+constexpr std::string_view kLegacyLargeStepKey = "review.large-step-frames";
+constexpr std::string_view kShortcutPresetKey = "review.shortcut-preset";
+constexpr std::string_view kDropFrameTimecodeKey = "review.drop-frame-timecode";
 constexpr std::string_view kViewModeKey = "review.view-mode";
 constexpr std::string_view kDifferenceMetricKey = "review.difference-metric";
 constexpr std::string_view kDifferenceGainKey = "review.difference-gain";
@@ -37,16 +40,25 @@ constexpr std::string_view kOscModeKey = "review.osc-mode";
 
 class SettingsEventQueue final : public application::IApplicationEventSink {
 public:
+    explicit SettingsEventQueue(std::function<void()> wakeup) : wakeup_(std::move(wakeup)) {}
+
     [[nodiscard]] application::EventPostResult
     postCritical(application::ApplicationEvent event) noexcept override {
-        std::scoped_lock lock{mutex_};
-        if (closed_) {
-            return application::EventPostResult::Closed;
+        {
+            std::scoped_lock lock{mutex_};
+            if (closed_) {
+                return application::EventPostResult::Closed;
+            }
+            try {
+                events_.push_back(std::move(event));
+            } catch (...) {
+                return application::EventPostResult::Closed;
+            }
         }
         try {
-            events_.push_back(std::move(event));
+            wakeup_();
         } catch (...) {
-            return application::EventPostResult::Closed;
+            // The event is already accepted. A missed wake-up is recovered by shutdown draining.
         }
         return application::EventPostResult::Accepted;
     }
@@ -81,6 +93,7 @@ public:
 private:
     std::mutex mutex_;
     std::deque<application::ApplicationEvent> events_;
+    std::function<void()> wakeup_;
     bool closed_ = false;
 };
 
@@ -116,17 +129,27 @@ class ReviewPreferencesController::Impl final {
 public:
     Impl(ReviewPreferencesController& owner,
          std::shared_ptr<application::ISettingsRepository> repository)
-        : owner_(owner), repository_(std::move(repository)),
-          events_(std::make_shared<SettingsEventQueue>()) {
+        : owner_(owner), repository_(std::move(repository)) {
         if (!repository_) {
             throw std::invalid_argument{"Review preferences require a settings repository."};
         }
-        QObject::connect(&eventTimer_, &QTimer::timeout, &owner_, [this] { drainEvents(); });
-        eventTimer_.setInterval(kEventDrainIntervalMilliseconds);
+        const QPointer<ReviewPreferencesController> guardedOwner{&owner_};
+        events_ = std::make_shared<SettingsEventQueue>([guardedOwner] {
+            if (guardedOwner.isNull()) {
+                return;
+            }
+            static_cast<void>(QMetaObject::invokeMethod(
+                guardedOwner,
+                [guardedOwner] {
+                    if (!guardedOwner.isNull()) {
+                        guardedOwner->processRepositoryEvents();
+                    }
+                },
+                Qt::QueuedConnection));
+        });
         QObject::connect(&saveTimer_, &QTimer::timeout, &owner_, [this] { saveNow(); });
         saveTimer_.setSingleShot(true);
         saveTimer_.setInterval(kSaveDebounceMilliseconds);
-        eventTimer_.start();
         beginLoad();
     }
 
@@ -134,8 +157,12 @@ public:
         stop();
     }
 
-    [[nodiscard]] int largeStepFrames() const noexcept {
-        return largeStepFrames_;
+    [[nodiscard]] int shortcutPreset() const noexcept {
+        return shortcutPreset_;
+    }
+
+    [[nodiscard]] bool dropFrameTimecode() const noexcept {
+        return dropFrameTimecode_;
     }
 
     [[nodiscard]] ViewMode viewMode() const noexcept {
@@ -162,11 +189,19 @@ public:
         return oscMode_;
     }
 
-    void setLargeStepFrames(const int value) {
-        if ((value != 5 && value != 10) || value == largeStepFrames_) {
+    void setShortcutPreset(const int value) {
+        if ((value != 0 && value != 1) || value == shortcutPreset_) {
             return;
         }
-        largeStepFrames_ = value;
+        shortcutPreset_ = value;
+        changed();
+    }
+
+    void setDropFrameTimecode(const bool value) {
+        if (value == dropFrameTimecode_) {
+            return;
+        }
+        dropFrameTimecode_ = value;
         changed();
     }
 
@@ -218,7 +253,6 @@ public:
             return;
         }
         stopping_ = true;
-        eventTimer_.stop();
         saveTimer_.stop();
         try {
             flushPendingChangesBeforeStop();
@@ -239,6 +273,10 @@ public:
         events_->closeCriticalIngress();
         repository_.reset();
         stopping_ = false;
+    }
+
+    void processRepositoryEvents() noexcept {
+        drainEvents();
     }
 
 private:
@@ -338,6 +376,9 @@ private:
                 if (auto* loaded = std::get_if<application::SettingsLoaded>(&event)) {
                     if (pendingLoad_.has_value() && loaded->context == *pendingLoad_) {
                         settings_ = std::move(loaded->settings);
+                        if (settings_.values.erase(std::string{kLegacyLargeStepKey}) > 0U) {
+                            dirty_ = true;
+                        }
                         if (!localChanges_) {
                             applyKnownValues(settings_.values);
                         }
@@ -376,11 +417,13 @@ private:
     }
 
     void applyKnownValues(const std::map<std::string, std::string, std::less<>>& values) {
-        int nextLargeStep = 10;
-        if (const auto iterator = values.find(kLargeStepKey);
-            iterator != values.end() && iterator->second == "5") {
-            nextLargeStep = 5;
+        int nextShortcutPreset = 0;
+        if (const auto iterator = values.find(kShortcutPresetKey);
+            iterator != values.end() && iterator->second == "player") {
+            nextShortcutPreset = 1;
         }
+        const bool nextDropFrameTimecode = values.find(kDropFrameTimecodeKey) != values.end() &&
+                                           values.find(kDropFrameTimecodeKey)->second == "true";
         const ViewMode nextViewMode =
             parseEnum<ViewMode>(values,
                                 kViewModeKey,
@@ -434,11 +477,13 @@ private:
             }
         }
 
-        const bool changed = largeStepFrames_ != nextLargeStep || viewMode_ != nextViewMode ||
-                             differenceMetric_ != nextMetric || differenceGain_ != nextGain ||
-                             differenceEdge_ != nextReference || differenceFilter_ != nextFilter ||
-                             oscMode_ != nextOscMode;
-        largeStepFrames_ = nextLargeStep;
+        const bool changed = shortcutPreset_ != nextShortcutPreset ||
+                             dropFrameTimecode_ != nextDropFrameTimecode ||
+                             viewMode_ != nextViewMode || differenceMetric_ != nextMetric ||
+                             differenceGain_ != nextGain || differenceEdge_ != nextReference ||
+                             differenceFilter_ != nextFilter || oscMode_ != nextOscMode;
+        shortcutPreset_ = nextShortcutPreset;
+        dropFrameTimecode_ = nextDropFrameTimecode;
         viewMode_ = nextViewMode;
         differenceMetric_ = nextMetric;
         differenceGain_ = nextGain;
@@ -451,7 +496,11 @@ private:
     }
 
     void writeKnownValues(std::map<std::string, std::string, std::less<>>& values) const {
-        values.insert_or_assign(std::string{kLargeStepKey}, largeStepFrames_ == 5 ? "5" : "10");
+        values.erase(std::string{kLegacyLargeStepKey});
+        values.insert_or_assign(std::string{kShortcutPresetKey},
+                                shortcutPreset_ == 1 ? "player" : "review");
+        values.insert_or_assign(std::string{kDropFrameTimecodeKey},
+                                dropFrameTimecode_ ? "true" : "false");
         const char* viewModeName = "side-by-side";
         switch (viewMode_) {
         case ViewMode::ThreeUp:
@@ -509,14 +558,14 @@ private:
     ReviewPreferencesController& owner_;
     std::shared_ptr<application::ISettingsRepository> repository_;
     std::shared_ptr<SettingsEventQueue> events_;
-    QTimer eventTimer_;
     QTimer saveTimer_;
     application::SettingsSnapshot settings_;
     application::SettingsSnapshot pendingSaveSnapshot_;
     std::optional<application::RequestContext> pendingLoad_;
     std::optional<application::RequestContext> pendingSave_;
     std::uint64_t nextRequestId_ = 1U;
-    int largeStepFrames_ = 10;
+    int shortcutPreset_ = 0;
+    bool dropFrameTimecode_ = false;
     ViewMode viewMode_ = ViewMode::SideBySide;
     DifferenceMetric differenceMetric_ = DifferenceMetric::RgbAbsolute;
     DifferenceGain differenceGain_ = DifferenceGain::Gain1x;
@@ -532,12 +581,19 @@ private:
 
 ReviewPreferencesController::ReviewPreferencesController(
     std::shared_ptr<application::ISettingsRepository> repository, QObject* const parent)
+    // QPointer owns Qt's weak control block correctly; the analyzer mistakes its last temporary
+    // copy release for a use-after-free inside Qt's custom operator delete.
+    // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDelete)
     : QObject(parent), impl_(std::make_unique<Impl>(*this, std::move(repository))) {}
 
 ReviewPreferencesController::~ReviewPreferencesController() = default;
 
-int ReviewPreferencesController::largeStepFrames() const noexcept {
-    return impl_->largeStepFrames();
+int ReviewPreferencesController::shortcutPreset() const noexcept {
+    return impl_->shortcutPreset();
+}
+
+bool ReviewPreferencesController::dropFrameTimecode() const noexcept {
+    return impl_->dropFrameTimecode();
 }
 
 ReviewPreferencesController::ViewMode ReviewPreferencesController::viewMode() const noexcept {
@@ -568,8 +624,12 @@ int ReviewPreferencesController::oscMode() const noexcept {
     return impl_->oscMode();
 }
 
-void ReviewPreferencesController::setLargeStepFrames(const int value) {
-    impl_->setLargeStepFrames(value);
+void ReviewPreferencesController::setShortcutPreset(const int value) {
+    impl_->setShortcutPreset(value);
+}
+
+void ReviewPreferencesController::setDropFrameTimecode(const bool value) {
+    impl_->setDropFrameTimecode(value);
 }
 
 void ReviewPreferencesController::setViewMode(const ViewMode value) {
@@ -602,6 +662,10 @@ void ReviewPreferencesController::stop() noexcept {
         return;
     }
     impl_->stop();
+}
+
+void ReviewPreferencesController::processRepositoryEvents() noexcept {
+    impl_->processRepositoryEvents();
 }
 
 } // namespace dvs::ui

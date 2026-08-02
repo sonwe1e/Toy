@@ -14,7 +14,6 @@ namespace dvs::ui {
 class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
-class WorkspaceController;
 
 struct DesktopApplicationOptions final {
     bool smokeMode = false;
@@ -40,7 +39,6 @@ public:
 
     [[nodiscard]] bool load(ReviewController& controller,
                             ReviewPreferencesController& preferences,
-                            WorkspaceController& workspace,
                             SurfaceBinder bindSurface);
     [[nodiscard]] int exec();
     void exit(int exitCode) noexcept;
@@ -52,11 +50,7 @@ public:
     // Drives the same QML properties, button handlers, and window key events as a user. These
     // helpers keep the end-to-end smoke path on the declarative UI boundary instead of calling
     // the controller behind the controls.
-    [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                       const QUrl& sourceB) noexcept;
-    [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                       const QUrl& sourceB,
-                                                       const QUrl& sourceC) noexcept;
+    [[nodiscard]] bool openSourcesForAutomation(const QList<QUrl>& sources) noexcept;
     [[nodiscard]] bool clickControlForAutomation(std::string_view objectName) noexcept;
     [[nodiscard]] bool focusControlForAutomation(std::string_view objectName) noexcept;
     [[nodiscard]] bool clickTimelineForAutomation(double normalizedPosition) noexcept;

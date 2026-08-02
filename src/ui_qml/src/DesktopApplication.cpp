@@ -3,8 +3,7 @@
 #include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
-#include "dvs/ui/ReviewShellController.h"
-#include "dvs/ui/WorkspaceController.h"
+#include "dvs/ui/ReviewSessionFacade.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -71,7 +70,6 @@ public:
 
     [[nodiscard]] bool load(ReviewController& controller,
                             ReviewPreferencesController& preferences,
-                            WorkspaceController& workspace,
                             SurfaceBinder bindSurface) {
         if (engine_ || !bindSurface) {
             return false;
@@ -84,10 +82,8 @@ public:
         engine->rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewPreferences"),
                                                   &preferences);
-        engine->rootContext()->setContextProperty(QStringLiteral("workspaceController"),
-                                                  &workspace);
-        shellController_ = std::make_unique<ReviewShellController>(controller);
-        engine->rootContext()->setContextProperty(QStringLiteral("reviewShell"),
+        shellController_ = std::make_unique<ReviewSessionFacade>(controller);
+        engine->rootContext()->setContextProperty(QStringLiteral("reviewSession"),
                                                   shellController_.get());
         const QMetaObject::Connection warningConnection = QObject::connect(
             engine.get(),
@@ -208,20 +204,22 @@ public:
         window_->requestActivate();
     }
 
-    [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                       const QUrl& sourceB) noexcept {
-        if (window_ == nullptr) {
+    [[nodiscard]] bool openSourcesForAutomation(const QList<QUrl>& sources) noexcept {
+        if (shellController_ == nullptr || sources.isEmpty() || sources.size() > 3) {
             return false;
         }
-        return window_->setProperty("selectedSourceA", QVariant::fromValue(sourceA)) &&
-               window_->setProperty("selectedSourceB", QVariant::fromValue(sourceB));
-    }
-
-    [[nodiscard]] bool setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                       const QUrl& sourceB,
-                                                       const QUrl& sourceC) noexcept {
-        return setSelectedSourcesForAutomation(sourceA, sourceB) && window_ != nullptr &&
-               window_->setProperty("selectedSourceC", QVariant::fromValue(sourceC));
+        QVariantList values;
+        values.reserve(sources.size());
+        for (const QUrl& source : sources) {
+            values.push_back(source);
+        }
+        if (!shellController_->stageSources(values, 0)) {
+            return false;
+        }
+        // Automation reports whether the UI accepted the action. Media validation failures are
+        // intentionally projected through ReviewController and asserted by the smoke state machine.
+        static_cast<void>(shellController_->openStagedSources(false));
+        return true;
     }
 
     [[nodiscard]] bool clickControlForAutomation(const std::string_view objectName) noexcept {
@@ -348,7 +346,7 @@ private:
     DesktopApplicationOptions options_;
     QGuiApplication application_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
-    std::unique_ptr<ReviewShellController> shellController_;
+    std::unique_ptr<ReviewSessionFacade> shellController_;
     QQuickWindow* window_ = nullptr;
     ComparisonSurface* surface_ = nullptr;
     double activeScreenRefreshRate_ = 0.0;
@@ -364,9 +362,8 @@ DesktopApplication::~DesktopApplication() = default;
 
 bool DesktopApplication::load(ReviewController& controller,
                               ReviewPreferencesController& preferences,
-                              WorkspaceController& workspace,
                               SurfaceBinder bindSurface) {
-    return impl_->load(controller, preferences, workspace, std::move(bindSurface));
+    return impl_->load(controller, preferences, std::move(bindSurface));
 }
 
 int DesktopApplication::exec() {
@@ -393,15 +390,8 @@ void DesktopApplication::activateWindow() noexcept {
     impl_->activateWindow();
 }
 
-bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                         const QUrl& sourceB) noexcept {
-    return impl_->setSelectedSourcesForAutomation(sourceA, sourceB);
-}
-
-bool DesktopApplication::setSelectedSourcesForAutomation(const QUrl& sourceA,
-                                                         const QUrl& sourceB,
-                                                         const QUrl& sourceC) noexcept {
-    return impl_->setSelectedSourcesForAutomation(sourceA, sourceB, sourceC);
+bool DesktopApplication::openSourcesForAutomation(const QList<QUrl>& sources) noexcept {
+    return impl_->openSourcesForAutomation(sources);
 }
 
 bool DesktopApplication::clickControlForAutomation(const std::string_view objectName) noexcept {

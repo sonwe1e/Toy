@@ -49,14 +49,17 @@ std::wstring quoteWindowsArgument(const std::wstring_view argument) {
     return quoted;
 }
 
-std::wstring buildCompareCommandLine(const std::filesystem::path& executable,
-                                     const std::span<const std::filesystem::path> selectedPaths) {
-    if (executable.empty() || selectedPaths.size() != 2U) {
+std::wstring buildReviewCommandLine(const std::filesystem::path& executable,
+                                    const std::span<const std::filesystem::path> selectedPaths) {
+    if (executable.empty() || selectedPaths.empty() || selectedPaths.size() > 3U) {
         return {};
     }
-    return quoteWindowsArgument(executable.wstring()) + L" --compare " +
-           quoteWindowsArgument(selectedPaths[0].wstring()) + L" " +
-           quoteWindowsArgument(selectedPaths[1].wstring());
+    std::wstring commandLine = quoteWindowsArgument(executable.wstring());
+    for (const std::filesystem::path& path : selectedPaths) {
+        commandLine.push_back(L' ');
+        commandLine.append(quoteWindowsArgument(path.wstring()));
+    }
+    return commandLine;
 }
 
 } // namespace dvs::shell

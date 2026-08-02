@@ -22,10 +22,21 @@ Rectangle {
     signal referenceRequested(int sourceIndex)
 
     objectName: "activeSourceStrip"
-    height: sourceCount > 0 ? 42 : 0
+    height: sourceCount > 0 ? (singleMode ? 38 : 42) : 0
     visible: sourceCount > 0
-    color: panelColor
-    border.color: borderColor
+    color: singleMode ? "transparent" : panelColor
+    border.color: singleMode ? "transparent" : borderColor
+    opacity: singleMode && !sourceHover.hovered ? 0.68 : 1.0
+
+    Behavior on opacity {
+        NumberAnimation {
+            duration: 160
+        }
+    }
+
+    HoverHandler {
+        id: sourceHover
+    }
 
     Row {
         id: chips
@@ -50,7 +61,7 @@ Rectangle {
                 required property string filename
 
                 height: chips.height
-                width: Math.min(280, Math.max(128, chipText.implicitWidth + 62))
+                width: Math.min(280, Math.max(128, chipText.implicitWidth + (control.singleMode ? 24 : 62)))
                 radius: 15
                 color: chip.sourceId === control.canonicalSourceIndex ? "#243f68" : "#1d2635"
                 border.color: chip.sourceId === control.canonicalSourceIndex ? control.accentColor : control.borderColor
@@ -74,16 +85,16 @@ Rectangle {
                 ToolButton {
                     id: roleButton
 
-                    width: control.singleMode ? 66 : 30
+                    visible: !control.singleMode
+                    width: 30
                     height: 30
-                    text: control.singleMode ? qsTr("SOURCE") : (chip.sourceId === control.canonicalSourceIndex ? "R" : "⋯")
-                    enabled: !control.busy && !control.singleMode
+                    text: chip.sourceId === control.canonicalSourceIndex ? "R" : "⋯"
+                    enabled: true
                     padding: 0
                     ToolTip.visible: hovered
                     ToolTip.text: chip.sourceId === control.canonicalSourceIndex ? qsTr("Canonical reference") : qsTr("Make Source %1 the reference").arg(String.fromCharCode(65 + chip.sourceId))
                     onClicked: {
-                        if (!control.singleMode)
-                            sourceMenu.open();
+                        sourceMenu.open();
                     }
                     anchors {
                         right: parent.right
@@ -124,7 +135,7 @@ Rectangle {
                             id: useAsReferenceItem
 
                             text: qsTr("Use as reference")
-                            enabled: chip.sourceId !== control.canonicalSourceIndex && !control.busy
+                            enabled: chip.sourceId !== control.canonicalSourceIndex
                             onTriggered: control.referenceRequested(chip.sourceId)
                             leftPadding: 12
                             rightPadding: 12
@@ -148,7 +159,7 @@ Rectangle {
                             id: removeSourceItem
 
                             text: qsTr("Remove source")
-                            enabled: control.sourceCount > 1 && !control.busy
+                            enabled: control.sourceCount > 1
                             onTriggered: control.removeRequested(chip.sourceId)
                             leftPadding: 12
                             rightPadding: 12
@@ -181,11 +192,11 @@ Rectangle {
             width: 34
             height: chips.height
             text: "+"
-            enabled: !control.busy
+            enabled: true
             padding: 0
-            Accessible.name: qsTr("Add source")
+            Accessible.name: qsTr("Add video")
             ToolTip.visible: hovered
-            ToolTip.text: qsTr("Add a source to this review")
+            ToolTip.text: qsTr("Add a video")
             onClicked: control.addRequested()
 
             contentItem: Text {

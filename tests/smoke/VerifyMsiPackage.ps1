@@ -80,6 +80,28 @@ function Find-CommonShortcut {
         Select-Object -First 1
 }
 
+function Test-LegacyProjectRegistration {
+    $extensionKey = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\.dvsproj'
+    $projectKey = 'Registry::HKEY_LOCAL_MACHINE\Software\Classes\VCStation.Project'
+    $supportedTypesKey = (
+        'Registry::HKEY_LOCAL_MACHINE\Software\Classes\Applications\' +
+        'VCStation.exe\SupportedTypes'
+    )
+    $supportedType = Get-ItemPropertyValue `
+        -LiteralPath $supportedTypesKey `
+        -Name '.dvsproj' `
+        -ErrorAction SilentlyContinue
+    return (Test-Path -LiteralPath $extensionKey) -or
+        (Test-Path -LiteralPath $projectKey) -or
+        $null -ne $supportedType
+}
+
+function Assert-NoLegacyProjectRegistration {
+    if (Test-LegacyProjectRegistration) {
+        throw 'A legacy .dvsproj registry entry remains installed.'
+    }
+}
+
 foreach ($path in @($MsiPath, $ProbeFixture)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required packaged-smoke input is missing: $path"
@@ -131,6 +153,9 @@ try {
                 "'$($previousProducts[0].DisplayVersion)'."
             )
         }
+        if (-not (Test-LegacyProjectRegistration)) {
+            throw 'The 1.1.0 MSI did not establish the expected legacy .dvsproj registration.'
+        }
         $previousGui = Join-Path $env:ProgramFiles 'VCStation\VCStation.exe'
         if (-not (Test-Path -LiteralPath $previousGui -PathType Leaf)) {
             throw "The previous installed executable is missing: $previousGui"
@@ -160,12 +185,15 @@ try {
         if ($remainingPrevious) {
             throw 'The VCStation 1.1.0 ARP entry remained after the VCStation upgrade.'
         }
+        Assert-NoLegacyProjectRegistration
         if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
             (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash -cne
                 $settingsProbeHash) {
-            throw 'The VCStation settings file changed during the 1.1.0 to 1.2.0 upgrade.'
+            throw "The VCStation settings file changed during the 1.1.0 to $ExpectedVersion upgrade."
         }
     }
+
+    Assert-NoLegacyProjectRegistration
 
     $currentProducts = Get-InstalledProduct -DisplayName @('VCStation')
     if ($currentProducts.Count -ne 1) {
@@ -289,6 +317,7 @@ if ($remainingProducts) {
         (($remainingProducts | ForEach-Object DisplayName) -join ', ')
     )
 }
+Assert-NoLegacyProjectRegistration
 $shellClsidPath = (
     'Registry::HKEY_LOCAL_MACHINE\Software\Classes\CLSID\' +
     '{3B790D74-E76E-4F28-A51D-2AB8C6BD107D}'

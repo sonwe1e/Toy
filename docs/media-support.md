@@ -1,6 +1,7 @@
 # Media Support
 
-Status: **current state + staged plan** (USERPLAN phase 6 for the expansion work).
+Status: **current 1.4 contract**. VP9, AV1, HDR/tone mapping, audio, and additional video
+encoding work are intentionally outside this release.
 
 ## What opens today
 
@@ -26,7 +27,10 @@ Containers are whatever FFmpeg opens when the stream passes these gates. VFR,
 non-zero start PTS, and B-frame display reordering use the display-order PTS index.
 
 "Encoding format is not fixed" cannot be solved by widening a file-extension filter;
-the gates above are the contract, and widening them is staged.
+the gates above are the complete 1.4 contract.
+
+VCStation does not decode or play audio. It uses video timestamps as the playback clock and is
+presented in the UI as visual playback only.
 
 ## Capability layering
 
@@ -66,7 +70,8 @@ stated in the UI (`Resampled comparison — not pixel-exact`).
   renderer (no GPU→CPU→GPU), device-generation rejection, and software fallback with a
   queryable backend/fallback reason. H.264 NV12, HEVC Main10 P010, direct array-slice
   publication, and 10-bit signature normalization are covered on the local hardware runner.
-  Three-source 1080p60 visible-window gates pass for five continuous minutes. Small-fixture
+  The single-/two-/three-source 1080p60 visible-window profiles are release-blocking for five
+  continuous minutes. Small-fixture
   P010 and 10-bit tests retain format and hardware-path correctness coverage; 4K is not part
   of the active performance matrix.
 

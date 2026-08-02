@@ -17,7 +17,6 @@
 #include <vector>
 
 class QUrl;
-class QQuickItem;
 
 namespace dvs::ui {
 
@@ -172,13 +171,13 @@ public:
     // Rebuilds the active review with a new canonical/reference source. The active source list
     // remains unchanged until the rebuild succeeds.
     Q_INVOKABLE bool changeReference(int sourceIndex);
-    // Opens two required sources plus one optional third source. referenceSourceIndex is -1 for
-    // prediction-only comparison or the zero-based canonical source. General 1-3 source opening
-    // uses openSources().
+    // Opens two required sources plus one optional third source. The reference index is the
+    // zero-based canonical source. General 1-3 source opening uses openSources().
     Q_INVOKABLE bool openComparisonSet(const QUrl& first,
                                        const QUrl& second,
                                        const QUrl& third,
                                        int referenceSourceIndex);
+    Q_INVOKABLE bool closeSources();
     Q_INVOKABLE QVariantMap handleDroppedUrls(const QVariantList& urls) const;
     Q_INVOKABLE bool first();
     Q_INVOKABLE bool previous();
@@ -203,7 +202,6 @@ public:
     Q_INVOKABLE bool play();
     Q_INVOKABLE bool pause();
     Q_INVOKABLE bool togglePlayback();
-    Q_INVOKABLE bool exportBadCase(QQuickItem* comparisonSurface, const QUrl& destinationFolder);
     Q_INVOKABLE void refreshProjection() noexcept;
 
     // Stops timer/backend access and makes every command fail closed. Calls from another thread
@@ -213,8 +211,6 @@ public:
 Q_SIGNALS:
     void stateChanged();
     void frameStateChanged();
-    void badCaseExported(const QString& folder);
-    void badCaseExportFailed(const QString& detail);
 
 private:
     class Impl;

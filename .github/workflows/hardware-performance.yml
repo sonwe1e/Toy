@@ -137,6 +137,7 @@ jobs:
             'Release-blocking profiles:',
             '- resource profile: background-4-cpu (BelowNormal priority)',
             '- 1080p60-1source',
+            '- 1080p60-2source',
             '- 1080p60',
             '- 1080p120-1source',
             '- 1080p120-2source',
@@ -146,6 +147,7 @@ jobs:
           if (Test-Path -LiteralPath $resultRoot) {
             $profiles = @(
               '1080p60-1source',
+              '1080p60-2source',
               '1080p60',
               '1080p120-1source',
               '1080p120-2source',

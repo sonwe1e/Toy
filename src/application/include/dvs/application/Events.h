@@ -164,15 +164,6 @@ struct SettingsSnapshot final {
     std::map<std::string, std::string, std::less<>> values;
 };
 
-// Reports a per-source revalidation failure after a fresh probe. A missing or changed source is
-// reported here so the UI can surface which loaded source could not be revalidated.
-struct SourceRevalidationDiagnostic final {
-    domain::SourceId sourceId;
-    std::optional<domain::MediaError> error;
-};
-
-using SourceRevalidationDiagnostics = std::vector<SourceRevalidationDiagnostic>;
-
 struct SettingsLoaded final {
     RequestContext context;
     SettingsSnapshot settings;

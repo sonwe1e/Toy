@@ -1,4 +1,9 @@
 {
   "version": "@PROJECT_VERSION@",
+  "signed": false,
+  "projectFiles": false,
+  "shellExtension": true,
+  "audioPlayback": false,
+  "maximumSourceCount": 3,
   "shellBinaryName": "@DVS_SHELL_BINARY_NAME@"
 }

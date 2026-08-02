@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(VCStation VERSION 1.2.0 LANGUAGES CXX)
+project(VCStation VERSION 1.4.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "VCStation supports Windows only.")

@@ -9,7 +9,6 @@ add_library(
         src/PlaybackCoordinator.cpp
         src/PrefetchScheduler.cpp
         src/SessionSnapshot.cpp
-        src/WorkspaceCoordinator.cpp
 )
 add_library(dvs::application ALIAS dvs_application)
 

@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet(
         '1080p60-1source',
+        '1080p60-2source',
         '1080p60',
         '1080p120-1source',
         '1080p120-2source',
@@ -37,6 +38,9 @@ $resolvedLogRoot = (Resolve-Path -LiteralPath $LogRoot).Path
 $fixtureNames = switch ($Profile) {
     '1080p60-1source' {
         @('gate-1080p60-a.mp4')
+    }
+    '1080p60-2source' {
+        @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4')
     }
     '1080p60' {
         @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4', 'gate-1080p60-c.mp4')

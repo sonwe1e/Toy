@@ -3,14 +3,9 @@
 #include "dvs/application/ComparisonExactness.h"
 #include "dvs/ui/SourceListModel.h"
 
-#include "BadCaseExporter.h"
-
 #include <QFileInfo>
 #include <QMetaObject>
-#include <QQuickItem>
-#include <QQuickItemGrabResult>
 #include <QSet>
-#include <QSharedPointer>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -345,7 +340,7 @@ public:
     }
 
     [[nodiscard]] bool openComparison(const QUrl& first, const QUrl& second) {
-        return openComparisonSet(first, second, QUrl{}, -1);
+        return openComparisonSet(first, second, QUrl{}, 0);
     }
 
     [[nodiscard]] bool openComparisonSet(const QUrl& first,
@@ -372,7 +367,7 @@ public:
             return false;
         }
 
-        if (urls.empty() || urls.size() > 3 || referenceSourceIndex < -1 ||
+        if (urls.empty() || urls.size() > 3 || referenceSourceIndex < 0 ||
             referenceSourceIndex >= urls.size()) {
             return false;
         }
@@ -438,6 +433,25 @@ public:
         }
         return openSources(
             view_.sourceUrls, sourceIndex, true, application::OpenReviewIntent::ChangeReference);
+    }
+
+    [[nodiscard]] bool closeSources() {
+        if (!onOwnerThread() || stopped_) {
+            return false;
+        }
+        refresh();
+        if (stopped_ || pendingCommand_.has_value()) {
+            return false;
+        }
+        if (view_.sourceCount == 0) {
+            return true;
+        }
+        const std::optional<application::CommandContext> context = allocateCommandContext();
+        if (!context.has_value()) {
+            failClosed();
+            return false;
+        }
+        return dispatch(application::CloseSessionCommand{.context = *context});
     }
 
     [[nodiscard]] bool first() {
@@ -665,41 +679,6 @@ public:
             return false;
         }
         return view_.playing ? pause() : play();
-    }
-
-    [[nodiscard]] bool exportBadCase(QQuickItem* const comparisonSurface,
-                                     const QUrl& destinationFolder) {
-        if (!onOwnerThread() || stopped_ || comparisonSurface == nullptr ||
-            !destinationFolder.isLocalFile() || !snapshot_ ||
-            !snapshot_->displayedFrame.has_value()) {
-            return false;
-        }
-        const QFileInfo destination{destinationFolder.toLocalFile()};
-        const QString parentPath = destination.canonicalFilePath();
-        if (!destination.isDir() || parentPath.isEmpty()) {
-            return false;
-        }
-
-        const std::shared_ptr<const application::SessionSnapshot> evidence = snapshot_;
-        ReviewController* const ownerPointer = &owner_;
-        const QSharedPointer<QQuickItemGrabResult> result = comparisonSurface->grabToImage();
-        if (!result) {
-            return false;
-        }
-        QObject::connect(result.data(),
-                         &QQuickItemGrabResult::ready,
-                         &owner_,
-                         [evidence, ownerPointer, parentPath, result] {
-                             const internal::BadCaseExportResult exported =
-                                 internal::exportBadCaseEvidence(
-                                     result->image(), *evidence, parentPath);
-                             if (exported.succeeded()) {
-                                 emit ownerPointer->badCaseExported(exported.folder);
-                             } else {
-                                 emit ownerPointer->badCaseExportFailed(exported.error);
-                             }
-                         });
-        return true;
     }
 
     void refreshProjection() noexcept {
@@ -1620,6 +1599,10 @@ bool ReviewController::openComparisonSet(const QUrl& first,
     return impl_->openComparisonSet(first, second, third, referenceSourceIndex);
 }
 
+bool ReviewController::closeSources() {
+    return impl_->closeSources();
+}
+
 QVariantMap ReviewController::handleDroppedUrls(const QVariantList& urls) const {
     if (urls.isEmpty()) {
         return rejectedDrop(QStringLiteral("drop-empty"));
@@ -1744,11 +1727,6 @@ bool ReviewController::pause() {
 
 bool ReviewController::togglePlayback() {
     return impl_->togglePlayback();
-}
-
-bool ReviewController::exportBadCase(QQuickItem* const comparisonSurface,
-                                     const QUrl& destinationFolder) {
-    return impl_->exportBadCase(comparisonSurface, destinationFolder);
 }
 
 void ReviewController::refreshProjection() noexcept {

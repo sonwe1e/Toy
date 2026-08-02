@@ -84,9 +84,23 @@ StartupRequestParseResult parseStartupRequest(const QStringList& arguments) {
             .sources = std::move(sources),
         });
     }
+    if (values.size() >= 1 && values.size() <= 3 &&
+        std::ranges::none_of(
+            values, [](const QString& value) { return value.startsWith(QStringLiteral("--")); })) {
+        std::vector<std::filesystem::path> sources;
+        sources.reserve(static_cast<std::size_t>(values.size()));
+        for (const QString& value : values) {
+            sources.push_back(pathFromQString(value));
+        }
+        return validate(StartupRequest{
+            .kind = values.size() == 1 ? StartupRequest::Kind::PlaySingle
+                                       : StartupRequest::Kind::Compare,
+            .sources = std::move(sources),
+        });
+    }
     return {
-        .error =
-            QStringLiteral("Unsupported GUI arguments. Use --play <video>, --compare <video...>."),
+        .error = QStringLiteral("Unsupported GUI arguments. Pass one to three video paths, or use "
+                                "--play <video> / --compare <video...>."),
     };
 }
 

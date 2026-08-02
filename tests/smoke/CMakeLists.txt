@@ -7,6 +7,21 @@ dvs_add_test(
 )
 
 dvs_add_test(
+    NAME quality.release-contract
+    LAYER e2e
+    MODULE app
+    TIMEOUT 10
+    COMMAND
+        ${CMAKE_COMMAND}
+        "-DDVS_SOURCE_DIR=${PROJECT_SOURCE_DIR}"
+        "-DDVS_BINARY_DIR=${PROJECT_BINARY_DIR}"
+        "-DDVS_EXPECTED_VERSION=${PROJECT_VERSION}"
+        "-DDVS_EXPECTED_SHELL=${DVS_SHELL_BINARY_NAME}"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/VerifyReleaseContract.cmake"
+)
+
+dvs_add_test(
     NAME app.gui-pe-subsystem
     LAYER e2e
     MODULE app

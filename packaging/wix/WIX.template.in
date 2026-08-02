@@ -3,7 +3,7 @@
 <?include "cpack_variables.wxi"?>
 
 <Wix
-    xmlns="http://wixtoolset.org/schemas/v4/wxs"@CPACK_WIX_CUSTOM_XMLNS_EXPANDED@
+    xmlns="http://wixtoolset.org/schemas/v4/wxs"@DVS_CPACK_WIX_CUSTOM_XMLNS_PLACEHOLDER@
     RequiredVersion="4.0"
     >
 
@@ -181,6 +181,18 @@
                     Root="HKLM"
                     Key="Software\Classes\SystemFileAssociations\.m4v\shell\VCStation.Compare"
                     Action="removeOnUninstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\.dvsproj"
+                    Action="removeOnInstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\VCStation.Project"
+                    Action="removeOnInstall"/>
+                <RemoveRegistryKey
+                    Root="HKLM"
+                    Key="Software\Classes\Applications\VCStation.exe\SupportedTypes"
+                    Action="removeOnInstall"/>
             </Component>
         </DirectoryRef>
 
@@ -201,7 +213,7 @@
                         Directory="VCStationProgramMenuFolder"
                         On="uninstall"/>
                     <RegistryValue
-                        Root="HKLM"
+                        Root="HKCU"
                         Key="Software\VCStation\Installer"
                         Name="StartMenuShortcut"
                         Value="1"

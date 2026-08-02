@@ -34,6 +34,13 @@ Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
         }
 
+        Text {
+            text: qsTr("Visual playback only · Audio is not played")
+            color: control.mutedTextColor
+            font.pixelSize: 12
+            anchors.horizontalCenter: parent.horizontalCenter
+        }
+
         Row {
             spacing: 10
             anchors.horizontalCenter: parent.horizontalCenter

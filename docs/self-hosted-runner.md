@@ -29,13 +29,13 @@ G:\GitHubActions\tools\wix\wix.exe extension add `
   --global WixToolset.UI.wixext/4.0.4
 ```
 
-把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。`v1.2.0` 经明确批准使用
-仅限该标签的无签名例外；后续版本必须提供 Windows SDK 的 `signtool.exe` 以及对应
-证书 Secrets，并在计算校验和前签名 GUI、CLI、Shell DLL 和 MSI。MSI 是 per-machine，
+把 `G:\GitHubActions\tools\wix` 加入 runner 用户的 `PATH`。`v1.4.0` 的发布合同明确为
+无 Authenticode 签名；runner 不需要签名证书或 `signtool.exe`。MSI 是 per-machine，
 因此执行 `packaged-smoke` 的交互式 runner 进程仍必须以管理员身份启动；测试会
 拒绝覆盖机器上已有的 VCStation 安装，并在结束时卸载自己的测试安装。
 Release workflow 会下载 `VCStation-1.1.0-windows-x64.msi`，先完成一次启动/关闭，再安装
-1.2.0，验证设置未变以及 ARP、快捷方式、文件关联和版本化 Explorer Shell COM 注册。
+1.4.0，验证设置未变、旧 `.dvsproj` 注册消失，以及 ARP、快捷方式、文件关联和版本化
+Explorer Shell COM 注册正确。
 
 ## 固定下载
 

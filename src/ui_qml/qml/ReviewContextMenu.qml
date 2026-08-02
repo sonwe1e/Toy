@@ -7,39 +7,60 @@ VcsMenu {
 
     required property int sourceCount
     required property int canonicalSourceIndex
-    required property bool canExport
+    required property int currentViewMode
+    required property bool fullScreen
     required property var differenceEdges
     required property int currentEdgeIndex
+    readonly property bool emptyStateOnly: sourceCount === 0
+    readonly property int availableActionCount: {
+        if (emptyStateOnly || sourceCount === 1)
+            return 2;
+        return sourceCount === 3 ? 5 : 4;
+    }
 
     signal sideRequested
     signal wipeRequested
     signal diffRequested
     signal edgeRequested(int preferenceValue)
     signal referenceRequested(int sourceIndex)
-    signal badCaseRequested
+    signal openRequested
     signal inspectorRequested
     signal fullScreenRequested
 
     objectName: "reviewContextMenu"
 
+    VcsMenuItem {
+        objectName: "contextOpenAction"
+        text: qsTr("Open videos…")
+        visible: control.sourceCount === 0
+        onTriggered: control.openRequested()
+    }
+
     VcsMenu {
         objectName: "contextViewMenu"
         title: qsTr("View")
         enabled: control.sourceCount > 1
+        visible: control.sourceCount > 1
 
         VcsMenuItem {
             objectName: "contextSideAction"
             text: qsTr("Side by side")
+            checkable: true
+            checked: control.currentViewMode === 0
             onTriggered: control.sideRequested()
         }
         VcsMenuItem {
             objectName: "contextWipeAction"
             text: qsTr("Wipe")
+            checkable: true
+            checked: control.currentViewMode === 5
             onTriggered: control.wipeRequested()
         }
         VcsMenuItem {
             objectName: "contextDifferenceAction"
             text: qsTr("Difference")
+            checkable: true
+            checked: control.currentViewMode === 3
             onTriggered: control.diffRequested()
         }
     }
@@ -50,7 +71,7 @@ VcsMenu {
         objectName: "contextPairMenu"
         title: qsTr("Pair")
         enabled: control.sourceCount === 3
-        visible: control.sourceCount > 1
+        visible: control.sourceCount === 3
 
         Repeater {
             model: control.differenceEdges
@@ -69,6 +90,7 @@ VcsMenu {
         objectName: "contextReferenceMenu"
         title: qsTr("Reference")
         enabled: control.sourceCount > 1
+        visible: control.sourceCount > 1
 
         VcsMenuItem {
             text: qsTr("Source A")
@@ -91,20 +113,17 @@ VcsMenu {
             onTriggered: control.referenceRequested(2)
         }
     }
-    VcsMenuSeparator {}
-    VcsMenuItem {
-        objectName: "contextBadCaseAction"
-        text: qsTr("Export Bad Case…")
-        enabled: control.canExport
-        onTriggered: control.badCaseRequested()
+    VcsMenuSeparator {
+        visible: control.sourceCount > 0
     }
     VcsMenuItem {
         objectName: "contextInfoAction"
         text: qsTr("Inspector and media info")
+        visible: control.sourceCount > 0
         onTriggered: control.inspectorRequested()
     }
     VcsMenuItem {
-        text: qsTr("Full screen")
+        text: control.fullScreen ? qsTr("Exit full screen") : qsTr("Full screen")
         onTriggered: control.fullScreenRequested()
     }
 }

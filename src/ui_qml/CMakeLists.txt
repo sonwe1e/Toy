@@ -4,11 +4,9 @@ add_library(
         include/dvs/ui/ComparisonSurface.h
         include/dvs/ui/ReviewController.h
         include/dvs/ui/ReviewPreferencesController.h
+        include/dvs/ui/ReviewSessionFacade.h
         include/dvs/ui/ReviewShellController.h
         include/dvs/ui/SourceListModel.h
-        include/dvs/ui/WorkspaceController.h
-        src/BadCaseExporter.cpp
-        src/BadCaseExporter.h
         src/DesktopApplication.cpp
         src/DirectCompare.cpp
         src/ComparisonSurface.cpp
@@ -19,7 +17,6 @@ add_library(
         src/ReviewPreferencesController.cpp
         src/ReviewShellController.cpp
         src/SourceListModel.cpp
-        src/WorkspaceController.cpp
 )
 add_library(dvs::ui_qml ALIAS dvs_ui_qml)
 

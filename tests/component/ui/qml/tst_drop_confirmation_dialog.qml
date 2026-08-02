@@ -120,7 +120,7 @@ Item {
             dialog.initialReferenceIndex = -1;
             dialog.open();
             tryCompare(dialog, "visible", true);
-            compare(dialog.referenceIndex, -1);
+            compare(dialog.referenceIndex, 0);
             dialog.close();
         }
     }

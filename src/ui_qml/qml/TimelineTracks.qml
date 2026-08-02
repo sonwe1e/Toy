@@ -26,7 +26,7 @@ Item {
     clip: true
     activeFocusOnTab: enabled
     Accessible.role: Accessible.Slider
-    Accessible.name: qsTr("Review timeline")
+    Accessible.name: qsTr("Video timeline")
 
     function frameAt(position) {
         if (totalFrames <= 1)

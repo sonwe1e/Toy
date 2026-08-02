@@ -129,14 +129,16 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     auto repository = std::make_shared<FakeSettingsRepository>();
     ReviewPreferencesController controller{repository};
     ASSERT_EQ(repository->loadRequests.size(), 1U);
-    EXPECT_EQ(controller.largeStepFrames(), 10);
+    EXPECT_EQ(controller.shortcutPreset(), 0);
+    EXPECT_FALSE(controller.dropFrameTimecode());
     EXPECT_EQ(controller.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
     EXPECT_EQ(controller.differenceFilter(),
               ReviewPreferencesController::DifferenceFilter::Bilinear);
     EXPECT_EQ(controller.oscMode(), -1);
 
     application::SettingsSnapshot settings;
-    settings.values.emplace("review.large-step-frames", "5");
+    settings.values.emplace("review.shortcut-preset", "player");
+    settings.values.emplace("review.drop-frame-timecode", "true");
     settings.values.emplace("review.view-mode", "difference");
     settings.values.emplace("review.difference-metric", "heatmap");
     settings.values.emplace("review.difference-gain", "8x");
@@ -145,7 +147,8 @@ TEST_F(ReviewPreferencesControllerTests, DefaultsThenProjectsValidPersistedValue
     settings.values.emplace("review.osc-mode", "auto");
     repository->completeLoad(std::move(settings));
 
-    ASSERT_TRUE(waitForPreferences([&controller] { return controller.largeStepFrames() == 5; }));
+    ASSERT_TRUE(waitForPreferences([&controller] { return controller.shortcutPreset() == 1; }));
+    EXPECT_TRUE(controller.dropFrameTimecode());
     EXPECT_EQ(controller.viewMode(), ReviewPreferencesController::ViewMode::Difference);
     EXPECT_EQ(controller.differenceMetric(),
               ReviewPreferencesController::DifferenceMetric::Heatmap);
@@ -161,7 +164,8 @@ TEST_F(ReviewPreferencesControllerTests, InvalidValuesFallBackWithoutBlockingSta
     auto repository = std::make_shared<FakeSettingsRepository>();
     ReviewPreferencesController controller{repository};
     application::SettingsSnapshot settings;
-    settings.values.emplace("review.large-step-frames", "7");
+    settings.values.emplace("review.shortcut-preset", "unknown");
+    settings.values.emplace("review.drop-frame-timecode", "unknown");
     settings.values.emplace("review.view-mode", "unknown");
     settings.values.emplace("review.difference-metric", "ssim");
     settings.values.emplace("review.difference-gain", "100x");
@@ -170,7 +174,8 @@ TEST_F(ReviewPreferencesControllerTests, InvalidValuesFallBackWithoutBlockingSta
     repository->completeLoad(std::move(settings));
 
     ASSERT_TRUE(waitForPreferences([&repository] { return repository->loadEvents != nullptr; }));
-    EXPECT_EQ(controller.largeStepFrames(), 10);
+    EXPECT_EQ(controller.shortcutPreset(), 0);
+    EXPECT_FALSE(controller.dropFrameTimecode());
     EXPECT_EQ(controller.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
     EXPECT_EQ(controller.differenceMetric(),
               ReviewPreferencesController::DifferenceMetric::RgbAbsolute);
@@ -186,12 +191,14 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
     ReviewPreferencesController controller{repository};
     application::SettingsSnapshot settings;
     settings.values.emplace("future.setting", "keep-me");
+    settings.values.emplace("review.large-step-frames", "5");
     repository->completeLoad(std::move(settings));
     ASSERT_TRUE(waitForPreferences([&controller] {
         return controller.viewMode() == ReviewPreferencesController::ViewMode::SideBySide;
     }));
 
-    controller.setLargeStepFrames(5);
+    controller.setShortcutPreset(1);
+    controller.setDropFrameTimecode(true);
     controller.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
     controller.setDifferenceMetric(ReviewPreferencesController::DifferenceMetric::Chroma);
     controller.setDifferenceGain(ReviewPreferencesController::DifferenceGain::Gain16x);
@@ -203,7 +210,9 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
         waitForPreferences([&repository] { return repository->saveRequests.size() == 1U; }));
     const auto& values = repository->saveRequests.front().settings.values;
     EXPECT_EQ(values.at("future.setting"), "keep-me");
-    EXPECT_EQ(values.at("review.large-step-frames"), "5");
+    EXPECT_EQ(values.count("review.large-step-frames"), 0U);
+    EXPECT_EQ(values.at("review.shortcut-preset"), "player");
+    EXPECT_EQ(values.at("review.drop-frame-timecode"), "true");
     EXPECT_EQ(values.at("review.view-mode"), "analysis-grid");
     EXPECT_EQ(values.at("review.difference-metric"), "chroma");
     EXPECT_EQ(values.at("review.difference-gain"), "16x");
@@ -217,8 +226,8 @@ TEST_F(ReviewPreferencesControllerTests, CoalescesChangesAndPreservesUnknownSett
 TEST_F(ReviewPreferencesControllerTests, RejectsUnsupportedSetterValuesAndCancelsPendingWork) {
     auto repository = std::make_shared<FakeSettingsRepository>();
     ReviewPreferencesController controller{repository};
-    controller.setLargeStepFrames(7);
-    EXPECT_EQ(controller.largeStepFrames(), 10);
+    controller.setShortcutPreset(2);
+    EXPECT_EQ(controller.shortcutPreset(), 0);
     controller.setOscMode(3);
     EXPECT_EQ(controller.oscMode(), -1);
     controller.stop();

@@ -10,13 +10,80 @@ import Dvs.Ui 1.0
 Rectangle {
     id: control
 
-    required property var host
+    required property var preferences
+    required property color borderColor
+    required property color accentColor
+    required property color primaryTextColor
+    required property color mutedTextColor
+    required property color errorColor
+    required property bool chromeVisible
+    required property int effectiveViewMode
+    required property real wipePosition
+    required property int selectedDifferenceExactness
+    required property bool differenceThresholdEnabled
+    required property int differenceThresholdCode
+    required property int differenceThresholdPolicy
+    required property int referenceSourceIndex
+    required property int sourceCount
+    required property bool wipeMode
+    required property bool differenceMode
+    required property bool analysisGridMode
+    required property bool immersiveHudVisible
+    required property string immersiveHudText
+    required property bool showFramePending
+    required property int currentFrame
+    required property string differenceUnavailableDetail
+    required property string combinedAlignmentStatus
+    required property bool singleMode
+    required property int differenceFirstSlot
+    required property var sourceNames
+    required property bool frameErrorBannerVisible
+    required property string errorDetail
+    required property bool overlayVisible
+    required property bool hasErrors
+    required property bool busy
+    required property string overlayTitle
+    required property string overlayDetail
+
+    property bool roiSelecting: false
+    property int roiPanel: -1
+    property real roiStartX: 0
+    property real roiStartY: 0
+    property real roiCurrentX: 0
+    property real roiCurrentY: 0
+    property real panLastX: 0
+    property real panLastY: 0
+
+    signal wipePositionRequested(real position)
+    signal oscRevealRequested
+    signal contextMenuRequested
+    signal fullScreenToggleRequested
     property alias surface: dualVideoSurface
     property alias videoOutput: surfaceLayer
     readonly property bool roiEnabled: dualVideoSurface.roiEnabled
 
     function clearRoi() {
         dualVideoSurface.clearRoi();
+    }
+
+    function panelPoint(x, y) {
+        return dualVideoSurface.mapSurfacePoint(x, y);
+    }
+
+    function sourceFilename(slot) {
+        return slot >= 0 && slot < control.sourceNames.length ? String(control.sourceNames[slot]) : "";
+    }
+
+    function comparisonExactnessLabel(exactness) {
+        if (exactness === 0)
+            return qsTr("Pixel-exact");
+        if (exactness === 1)
+            return qsTr("Display-space converted");
+        if (exactness === 2)
+            return qsTr("Spatially resampled");
+        if (exactness === 3)
+            return qsTr("Temporally aligned");
+        return qsTr("Unavailable");
     }
 
     function surfaceLabelGeometry(index) {
@@ -35,9 +102,9 @@ Rectangle {
     objectName: "mediaViewportFocusTarget"
     focus: true
     color: "#06080d"
-    border.color: control.host.borderColor
-    border.width: control.host.chromeVisible ? 1 : 0
-    radius: control.host.chromeVisible ? 7 : 0
+    border.color: control.borderColor
+    border.width: control.chromeVisible ? 1 : 0
+    radius: control.chromeVisible ? 7 : 0
     clip: true
     TapHandler {
         onTapped: control.forceActiveFocus()
@@ -48,7 +115,7 @@ Rectangle {
 
         anchors {
             fill: parent
-            margins: control.host.chromeVisible ? 1 : 0
+            margins: control.chromeVisible ? 1 : 0
         }
 
         // The type is runtime-registered; startup smoke coverage verifies the registration.
@@ -58,17 +125,17 @@ Rectangle {
 
             objectName: "dualVideoSurface"
             Accessible.name: qsTr("VCStation synchronized comparison surface")
-            viewMode: control.host.effectiveViewMode
-            differenceMetric: control.host.preferences ? control.host.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
-            differenceGain: control.host.preferences ? control.host.preferences.differenceGain : ComparisonSurface.Gain1x
-            differenceEdge: control.host.preferences ? control.host.preferences.differenceEdge : ComparisonSurface.Edge0And1
-            differenceFilter: control.host.preferences ? control.host.preferences.differenceFilter : ComparisonSurface.Bilinear
-            wipePosition: control.host.wipePosition
-            exactPlaneAvailable: control.host.selectedDifferenceExactness === 0
-            thresholdEnabled: control.host.differenceThresholdEnabled
-            threshold: Number(control.host.differenceThresholdCode) / 255
-            thresholdPolicy: control.host.differenceThresholdPolicy
-            referenceSlot: control.host.referenceSourceIndex >= 0 ? control.host.referenceSourceIndex : 0
+            viewMode: control.effectiveViewMode
+            differenceMetric: control.preferences ? control.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
+            differenceGain: control.preferences ? control.preferences.differenceGain : ComparisonSurface.Gain1x
+            differenceEdge: control.preferences ? control.preferences.differenceEdge : ComparisonSurface.Edge0And1
+            differenceFilter: control.preferences ? control.preferences.differenceFilter : ComparisonSurface.Bilinear
+            wipePosition: control.wipePosition
+            exactPlaneAvailable: control.selectedDifferenceExactness === 0
+            thresholdEnabled: control.differenceThresholdEnabled
+            threshold: Number(control.differenceThresholdCode) / 255
+            thresholdPolicy: control.differenceThresholdPolicy
+            referenceSlot: control.referenceSourceIndex >= 0 ? control.referenceSourceIndex : 0
             anchors.fill: parent
         }
         // qmllint enable import unqualified unresolved-type
@@ -76,7 +143,7 @@ Rectangle {
 
     Repeater {
         objectName: "panelDividerRepeater"
-        model: control.host.sourceCount > 1 && !control.host.wipeMode && (!control.host.differenceMode || control.host.analysisGridMode) ? dualVideoSurface.sourcePanelRects : []
+        model: control.sourceCount > 1 && !control.wipeMode && (!control.differenceMode || control.analysisGridMode) ? dualVideoSurface.sourcePanelRects : []
 
         Rectangle {
             required property var modelData
@@ -94,15 +161,15 @@ Rectangle {
     }
 
     WipeHandle {
-        visible: control.host.wipeMode
+        visible: control.wipeMode
         z: 50
         surfaceItem: dualVideoSurface
-        position: control.host.wipePosition
-        onPositionRequested: position => control.host.wipePosition = position
+        position: control.wipePosition
+        onPositionRequested: position => control.wipePositionRequested(position)
     }
 
     Repeater {
-        model: !control.host.chromeVisible && control.host.sourceCount > 1 ? dualVideoSurface.sourcePanelRects : []
+        model: !control.chromeVisible && control.sourceCount > 1 ? dualVideoSurface.sourcePanelRects : []
 
         Rectangle {
             required property var modelData
@@ -128,7 +195,7 @@ Rectangle {
 
     Rectangle {
         objectName: "immersiveReviewHud"
-        visible: !control.host.chromeVisible && control.host.immersiveHudVisible && control.host.immersiveHudText.length > 0
+        visible: !control.chromeVisible && control.immersiveHudVisible && control.immersiveHudText.length > 0
         opacity: visible ? 1.0 : 0.0
         z: 45
         width: immersiveHudLabel.implicitWidth + 24
@@ -151,8 +218,8 @@ Rectangle {
         Text {
             id: immersiveHudLabel
 
-            text: control.host.immersiveHudText
-            color: control.host.primaryTextColor
+            text: control.immersiveHudText
+            color: control.primaryTextColor
             font.pixelSize: 13
             anchors.centerIn: parent
         }
@@ -160,11 +227,11 @@ Rectangle {
 
     Rectangle {
         objectName: "framePendingIndicator"
-        visible: control.host.showFramePending && control.host.currentFrame >= 0
+        visible: control.showFramePending && control.currentFrame >= 0
         z: 40
         radius: 12
         color: "#dc1d2635"
-        border.color: control.host.borderColor
+        border.color: control.borderColor
         width: pendingRow.implicitWidth + 22
         height: 30
         anchors {
@@ -186,36 +253,8 @@ Rectangle {
             }
             Text {
                 text: qsTr("Fetching latest frame…")
-                color: control.host.mutedTextColor
+                color: control.mutedTextColor
                 font.pixelSize: 11
-            }
-        }
-    }
-
-    Rectangle {
-        visible: control.host.exportMessage.length > 0
-        z: 39
-        radius: 5
-        color: "#e61b2432"
-        border.color: control.host.borderColor
-        width: Math.min(parent.width - 32, exportStatusText.implicitWidth + 24)
-        height: exportStatusText.implicitHeight + 16
-        anchors {
-            top: parent.top
-            topMargin: 16
-            horizontalCenter: parent.horizontalCenter
-        }
-
-        Text {
-            id: exportStatusText
-
-            text: control.host.exportMessage
-            color: control.host.primaryTextColor
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-            anchors {
-                fill: parent
-                margins: 8
             }
         }
     }
@@ -229,60 +268,63 @@ Rectangle {
         hoverEnabled: true
 
         onWheel: wheel => {
-            const point = control.host.panelPoint(wheel.x, wheel.y);
+            control.oscRevealRequested();
+            const point = control.panelPoint(wheel.x, wheel.y);
             dualVideoSurface.zoomAt(point.x, point.y, wheel.angleDelta.y > 0 ? 1.25 : 0.8);
             wheel.accepted = true;
         }
         onPressed: mouse => {
+            control.oscRevealRequested();
             if (mouse.button === Qt.RightButton) {
-                control.host.openViewerContextMenu();
+                control.contextMenuRequested();
                 return;
             }
-            const point = control.host.panelPoint(mouse.x, mouse.y);
-            control.host.roiPanel = point.panel;
-            control.host.panLastX = point.x;
-            control.host.panLastY = point.y;
+            const point = control.panelPoint(mouse.x, mouse.y);
+            control.roiPanel = point.panel;
+            control.panLastX = point.x;
+            control.panLastY = point.y;
             if ((mouse.modifiers & Qt.ShiftModifier) !== 0) {
-                control.host.roiSelecting = true;
-                control.host.roiStartX = mouse.x;
-                control.host.roiStartY = mouse.y;
-                control.host.roiCurrentX = mouse.x;
-                control.host.roiCurrentY = mouse.y;
+                control.roiSelecting = true;
+                control.roiStartX = mouse.x;
+                control.roiStartY = mouse.y;
+                control.roiCurrentX = mouse.x;
+                control.roiCurrentY = mouse.y;
             }
             control.forceActiveFocus();
         }
         onPositionChanged: mouse => {
-            const point = control.host.panelPoint(mouse.x, mouse.y);
-            if (control.host.roiSelecting) {
-                control.host.roiCurrentX = mouse.x;
-                control.host.roiCurrentY = mouse.y;
-            } else if (pressed && point.panel === control.host.roiPanel) {
-                dualVideoSurface.panBy(point.x - control.host.panLastX, point.y - control.host.panLastY);
-                control.host.panLastX = point.x;
-                control.host.panLastY = point.y;
+            control.oscRevealRequested();
+            const point = control.panelPoint(mouse.x, mouse.y);
+            if (control.roiSelecting) {
+                control.roiCurrentX = mouse.x;
+                control.roiCurrentY = mouse.y;
+            } else if (pressed && point.panel === control.roiPanel) {
+                dualVideoSurface.panBy(point.x - control.panLastX, point.y - control.panLastY);
+                control.panLastX = point.x;
+                control.panLastY = point.y;
             }
         }
         onReleased: mouse => {
-            if (control.host.roiSelecting) {
-                const start = control.host.panelPoint(control.host.roiStartX, control.host.roiStartY);
-                const end = control.host.panelPoint(mouse.x, mouse.y);
+            if (control.roiSelecting) {
+                const start = control.panelPoint(control.roiStartX, control.roiStartY);
+                const end = control.panelPoint(mouse.x, mouse.y);
                 if (start.panel === end.panel)
                     dualVideoSurface.setRoiNormalized(start.x, start.y, end.x, end.y);
             }
-            control.host.roiSelecting = false;
-            control.host.roiPanel = -1;
+            control.roiSelecting = false;
+            control.roiPanel = -1;
         }
-        onDoubleClicked: control.host.toggleFullScreen()
+        onDoubleClicked: control.fullScreenToggleRequested()
     }
 
     Rectangle {
-        visible: control.host.roiSelecting
-        x: Math.min(control.host.roiStartX, control.host.roiCurrentX)
-        y: Math.min(control.host.roiStartY, control.host.roiCurrentY)
-        width: Math.abs(control.host.roiCurrentX - control.host.roiStartX)
-        height: Math.abs(control.host.roiCurrentY - control.host.roiStartY)
+        visible: control.roiSelecting
+        x: Math.min(control.roiStartX, control.roiCurrentX)
+        y: Math.min(control.roiStartY, control.roiCurrentY)
+        width: Math.abs(control.roiCurrentX - control.roiStartX)
+        height: Math.abs(control.roiCurrentY - control.roiStartY)
         color: "#224b8df8"
-        border.color: control.host.accentColor
+        border.color: control.accentColor
         border.width: 1
     }
 
@@ -290,13 +332,13 @@ Rectangle {
         id: analysisChrome
 
         objectName: "analysisControlsChrome"
-        visible: control.host.chromeVisible && (control.host.differenceMode || dualVideoSurface.roiEnabled)
+        visible: control.chromeVisible && (control.differenceMode || dualVideoSurface.roiEnabled)
         z: 30
         width: analysisStatus.implicitWidth + 18
         height: 28
         radius: 5
         color: "#dc171e2a"
-        border.color: control.host.borderColor
+        border.color: control.borderColor
         anchors {
             right: parent.right
             rightMargin: 12
@@ -309,13 +351,13 @@ Rectangle {
 
             text: {
                 const parts = [];
-                if (control.host.differenceMode)
-                    parts.push(control.host.comparisonExactnessLabel(control.host.selectedDifferenceExactness));
+                if (control.differenceMode)
+                    parts.push(control.comparisonExactnessLabel(control.selectedDifferenceExactness));
                 if (dualVideoSurface.roiEnabled)
                     parts.push(qsTr("ROI active"));
                 return parts.join(" · ");
             }
-            color: control.host.selectedDifferenceExactness === 0 ? "#86efac" : "#facc15"
+            color: control.selectedDifferenceExactness === 0 ? "#86efac" : "#facc15"
             font.pixelSize: 11
             anchors.centerIn: parent
         }
@@ -325,12 +367,12 @@ Rectangle {
         id: differenceUnavailableOverlay
 
         objectName: "differenceUnavailableOverlay"
-        visible: control.host.differenceUnavailableDetail.length > 0
+        visible: control.differenceUnavailableDetail.length > 0
         width: Math.min(parent.width - 48, 460)
         height: unavailableColumn.implicitHeight + 32
         radius: 8
         color: "#e6121822"
-        border.color: control.host.errorColor
+        border.color: control.errorColor
         border.width: 1
         z: 40
         anchors.centerIn: parent
@@ -346,7 +388,7 @@ Rectangle {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 text: qsTr("Difference unavailable")
-                color: control.host.primaryTextColor
+                color: control.primaryTextColor
                 font.pixelSize: 17
                 font.weight: Font.DemiBold
             }
@@ -355,7 +397,7 @@ Rectangle {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.WordWrap
-                text: control.host.differenceUnavailableDetail
+                text: control.differenceUnavailableDetail
                 color: "#fca5a5"
                 font.pixelSize: 13
             }
@@ -365,10 +407,10 @@ Rectangle {
     Rectangle {
         id: alignmentStatus
 
-        visible: control.host.chromeVisible && control.host.combinedAlignmentStatus.length > 0
+        visible: control.chromeVisible && control.combinedAlignmentStatus.length > 0
         radius: 5
         color: "#d9232c3d"
-        border.color: control.host.errorColor
+        border.color: control.errorColor
         height: mappingStatusText.implicitHeight + 14
         width: Math.min(parent.width - 24, mappingStatusText.implicitWidth + 24)
         z: 20
@@ -381,7 +423,7 @@ Rectangle {
         Text {
             id: mappingStatusText
 
-            text: control.host.combinedAlignmentStatus
+            text: control.combinedAlignmentStatus
             color: "#ffd2d2"
             font.pixelSize: 12
             font.weight: Font.DemiBold
@@ -392,11 +434,11 @@ Rectangle {
     Item {
         id: surfaceLabels
 
-        visible: control.host.chromeVisible
+        visible: control.chromeVisible
         z: 10
         anchors {
             fill: parent
-            margins: control.host.chromeVisible ? 1 : 0
+            margins: control.chromeVisible ? 1 : 0
         }
 
         Repeater {
@@ -414,12 +456,12 @@ Rectangle {
                 property int sourceSlot: Number(modelData.slot)
 
                 readonly property real panelWidth: Number(modelData.width)
-                readonly property bool wipeBadge: control.host.wipeMode
-                readonly property bool showFilename: !control.host.singleMode && !wipeBadge && panelWidth >= 160
-                readonly property bool compactBadge: control.host.singleMode || wipeBadge || panelWidth < 160
+                readonly property bool wipeBadge: control.wipeMode
+                readonly property bool showFilename: !control.singleMode && !wipeBadge && panelWidth >= 160
+                readonly property bool compactBadge: control.singleMode || wipeBadge || panelWidth < 160
 
-                visible: wipeBadge || control.host.singleMode || panelWidth >= 80
-                x: wipeBadge ? (Number(modelData.slot) === control.host.differenceFirstSlot ? 12 : parent.width - width - 12) : Number(modelData.x) + 12
+                visible: wipeBadge || control.singleMode || panelWidth >= 80
+                x: wipeBadge ? (Number(modelData.slot) === control.differenceFirstSlot ? 12 : parent.width - width - 12) : Number(modelData.x) + 12
                 y: Number(modelData.y) + 12
                 width: compactBadge ? 44 : Math.min(280, Math.max(80, panelWidth - 24))
                 height: compactBadge ? 36 : 42
@@ -431,7 +473,7 @@ Rectangle {
                     width: 26
                     height: 26
                     radius: 4
-                    color: control.host.accentColor
+                    color: control.accentColor
                     anchors {
                         left: parent.left
                         leftMargin: surfaceLabel.compactBadge ? 9 : 8
@@ -449,8 +491,8 @@ Rectangle {
 
                 Text {
                     visible: surfaceLabel.showFilename
-                    text: control.host.sourceFilename(Number(surfaceLabel.modelData.slot))
-                    color: control.host.primaryTextColor
+                    text: control.sourceFilename(Number(surfaceLabel.modelData.slot))
+                    color: control.primaryTextColor
                     font.pixelSize: 12
                     elide: Text.ElideMiddle
                     anchors {
@@ -472,11 +514,11 @@ Rectangle {
         width: Math.min(parent.width - 48, 720)
         height: frameErrorBannerColumn.implicitHeight + 20
         radius: 6
-        visible: control.host.frameErrorBannerVisible
+        visible: control.frameErrorBannerVisible
         color: "#e6351f2a"
         border.color: "#b9503f4a"
         z: 40
-        Accessible.name: qsTr("Frame unchanged. %1").arg(control.host.errorDetails())
+        Accessible.name: qsTr("Frame unchanged. %1").arg(control.errorDetail)
         anchors {
             top: parent.top
             topMargin: alignmentStatus.visible ? alignmentStatus.height + 20 : 12
@@ -501,8 +543,8 @@ Rectangle {
             Text {
                 objectName: "frameErrorBannerDetail"
                 width: parent.width
-                text: control.host.errorDetails()
-                color: control.host.primaryTextColor
+                text: control.errorDetail
+                color: control.primaryTextColor
                 font.pixelSize: 11
                 wrapMode: Text.Wrap
             }
@@ -516,9 +558,9 @@ Rectangle {
         width: Math.min(parent.width - 48, 560)
         height: overlayColumn.implicitHeight + 32
         radius: 7
-        visible: control.host.overlayVisible
-        color: control.host.hasErrors && !control.host.busy ? "#ee351f2a" : "#ed151d29"
-        border.color: control.host.hasErrors && !control.host.busy ? "#a9503f4a" : "#a43d4d64"
+        visible: control.overlayVisible
+        color: control.hasErrors && !control.busy ? "#ee351f2a" : "#ed151d29"
+        border.color: control.hasErrors && !control.busy ? "#a9503f4a" : "#a43d4d64"
         anchors.centerIn: parent
 
         Column {
@@ -531,7 +573,7 @@ Rectangle {
             BusyIndicator {
                 width: 34
                 height: 34
-                running: control.host.busy && control.host.currentFrame < 0
+                running: control.busy && control.currentFrame < 0
                 visible: running
                 anchors.horizontalCenter: parent.horizontalCenter
                 Accessible.name: qsTr("Loading")
@@ -540,8 +582,8 @@ Rectangle {
             Text {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: control.host.overlayTitle
-                color: control.host.hasErrors && !control.host.busy ? "#ffb4b4" : control.host.primaryTextColor
+                text: control.overlayTitle
+                color: control.hasErrors && !control.busy ? "#ffb4b4" : control.primaryTextColor
                 font.pixelSize: 17
                 font.weight: Font.DemiBold
                 wrapMode: Text.Wrap
@@ -551,8 +593,8 @@ Rectangle {
                 objectName: "statusDetail"
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
-                text: control.host.overlayDetail
-                color: control.host.mutedTextColor
+                text: control.overlayDetail
+                color: control.mutedTextColor
                 font.pixelSize: 12
                 lineHeight: 1.25
                 wrapMode: Text.Wrap

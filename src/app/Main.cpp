@@ -8,7 +8,6 @@
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 #include "dvs/ui/SourceListModel.h"
-#include "dvs/ui/WorkspaceController.h"
 
 #include "ReviewRuntime.h"
 #include "StartupFailureReporter.h"
@@ -181,10 +180,8 @@ void writeStandardError(std::string_view message) noexcept {
     }
     std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
     if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
-        runtime->workspace() == nullptr ||
         !desktop.load(*runtime->controller(),
                       *runtime->preferences(),
-                      *runtime->workspace(),
                       [&runtime](dvs::ui::ComparisonSurface& surface) {
                           return runtime->attachSurface(surface);
                       })) {
@@ -245,21 +242,14 @@ void writeStandardError(std::string_view message) noexcept {
                     desktop.exit(EXIT_SUCCESS);
                     return;
                 }
-                bool openAccepted = false;
-                if (!smokeSources->second.has_value()) {
-                    openAccepted = desktop.reviewLocalFiles({localFileUrl(smokeSources->first)});
-                } else {
-                    const bool sourcesSelected = smokeSources->third.has_value()
-                                                     ? desktop.setSelectedSourcesForAutomation(
-                                                           localFileUrl(smokeSources->first),
-                                                           localFileUrl(*smokeSources->second),
-                                                           localFileUrl(*smokeSources->third))
-                                                     : desktop.setSelectedSourcesForAutomation(
-                                                           localFileUrl(smokeSources->first),
-                                                           localFileUrl(*smokeSources->second));
-                    openAccepted =
-                        sourcesSelected && desktop.clickControlForAutomation("openPairButton");
+                QList<QUrl> sources{localFileUrl(smokeSources->first)};
+                if (smokeSources->second.has_value()) {
+                    sources.push_back(localFileUrl(*smokeSources->second));
                 }
+                if (smokeSources->third.has_value()) {
+                    sources.push_back(localFileUrl(*smokeSources->third));
+                }
+                const bool openAccepted = desktop.openSourcesForAutomation(sources);
                 if (!openAccepted) {
                     std::cerr << "DVS_UI_SMOKE_OPEN_REJECTED\n";
                     desktop.exit(EXIT_FAILURE);
@@ -491,13 +481,11 @@ void writeStandardError(std::string_view message) noexcept {
                     }
                     std::filesystem::path missingSource = smokeSources->first;
                     missingSource += ".missing";
-                    const bool errorOpenAccepted =
-                        smokeSources->second.has_value()
-                            ? desktop.setSelectedSourcesForAutomation(
-                                  localFileUrl(missingSource),
-                                  localFileUrl(*smokeSources->second)) &&
-                                  desktop.clickControlForAutomation("openPairButton")
-                            : desktop.reviewLocalFiles({localFileUrl(missingSource)});
+                    QList<QUrl> errorSources{localFileUrl(missingSource)};
+                    if (smokeSources->second.has_value()) {
+                        errorSources.push_back(localFileUrl(*smokeSources->second));
+                    }
+                    const bool errorOpenAccepted = desktop.openSourcesForAutomation(errorSources);
                     if (!errorOpenAccepted) {
                         std::cerr << "DVS_UI_SMOKE_ERROR_PATH_REJECTED\n";
                         desktop.exit(EXIT_FAILURE);
@@ -573,10 +561,8 @@ void writeStandardError(std::string_view message) noexcept {
     };
     std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
     if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
-        runtime->workspace() == nullptr ||
         !desktop.load(*runtime->controller(),
                       *runtime->preferences(),
-                      *runtime->workspace(),
                       [&runtime](dvs::ui::ComparisonSurface& surface) {
                           return runtime->attachSurface(surface);
                       })) {
@@ -701,20 +687,14 @@ void writeStandardError(std::string_view message) noexcept {
             if (!controller.graphicsReady()) {
                 return;
             }
-            bool openAccepted = false;
-            if (!sources.second.has_value()) {
-                openAccepted = desktop.reviewLocalFiles({localFileUrl(sources.first)});
-            } else {
-                const bool sourcesSelected =
-                    sources.third.has_value()
-                        ? desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                                  localFileUrl(*sources.second),
-                                                                  localFileUrl(*sources.third))
-                        : desktop.setSelectedSourcesForAutomation(localFileUrl(sources.first),
-                                                                  localFileUrl(*sources.second));
-                openAccepted =
-                    sourcesSelected && desktop.clickControlForAutomation("openPairButton");
+            QList<QUrl> automationSources{localFileUrl(sources.first)};
+            if (sources.second.has_value()) {
+                automationSources.push_back(localFileUrl(*sources.second));
             }
+            if (sources.third.has_value()) {
+                automationSources.push_back(localFileUrl(*sources.third));
+            }
+            const bool openAccepted = desktop.openSourcesForAutomation(automationSources);
             if (!openAccepted) {
                 fail("open-rejected");
                 return;

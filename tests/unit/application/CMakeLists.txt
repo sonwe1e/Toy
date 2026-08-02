@@ -8,7 +8,6 @@ add_executable(
     ComparisonExactnessTests.cpp
     PlaybackCoordinatorTests.cpp
     PrefetchSchedulerTests.cpp
-    WorkspaceCoordinatorTests.cpp
 )
 target_link_libraries(
     dvs_application_unit_tests

@@ -6,15 +6,16 @@ multi-source decode/render pipeline, three-up/reference-focus layouts, selectabl
 difference edges, confidence-gated global/sequence alignment, manual anchors, and
 timeline diagnostics are in the codebase today. The GUI project open/save/relink loop and
 schema v4 were removed — VCStation manages only the current open 1–3 video session and does
-not persist projects (see USERPLAN_Refine.md). Phase 6 includes synchronized pan/zoom, ROI,
+not persist projects (see USERPLAN.md). The review surface includes synchronized pan/zoom, ROI,
 threshold masks, the four-panel analysis grid, exact-plane difference with a persistent
 exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
 transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
 array slices flow directly to plane SRVs while an AVFrame lifetime anchor prevents premature
-surface reuse. The active visible-window hardware matrix covers single-/three-source 1080p60 for
-five continuous minutes and single-/two-/three-source 1080p120 for one minute with no source split, bounded
-frame memory, stable worker counts, and shutdown well below the seven-second limit. Small P010
-fixtures retain 10-bit and zero-copy correctness coverage without an active 4K profile.
+surface reuse. The visible-window hardware workflow defines single-/two-/three-source 1080p60
+five-minute gates and single-/two-/three-source 1080p120 one-minute gates, including the dedicated
+two-source 1080p60 path. Those gates require the external fixture root and an interactive 120 Hz
+D3D11VA runner; each release SHA must supply its own uploaded evidence before publication. Small
+P010 fixtures retain local 10-bit and zero-copy correctness coverage without an active 4K profile.
 The historical A/B design is archived in
 [design/architecture-overview.md](design/architecture-overview.md).
 
@@ -48,9 +49,13 @@ the session, not reasons to refuse to open it.
 
 ```text
 QML
-  ├── ReviewActions             (shared menu/button/shortcut command semantics)
+  ├── ApplicationMenuBar        (explicit menu state and intent signals)
+  ├── ReviewShortcuts           (shared ReviewActions and application shortcuts)
+  ├── ComparisonViewport        (explicit render state; owns ROI/pan interaction state)
+  └── TabbedInspector           (explicit preferences/session inputs)
   │
-ReviewController / SourceListModel
+ReviewSessionFacade / ReviewController / SourceListModel
+  ├── active/staged sources, queued intents, startup FIFO, UI chrome, range state
   │
 ComparisonCoordinator          (session, epoch, command/request identity,
   ├── AlignmentService          stale-result filtering — kept from PlaybackCoordinator)
@@ -87,9 +92,13 @@ window enter a bounded eight-request FIFO and are acknowledged only after they a
 delivered; registering the handler drains the queue in order exactly once.
 
 The QML shell is canvas-first: the viewport owns the window and menu/source/comparison/inspector/
-transport chrome only contributes margins while visible. `ReviewActions` remains instantiated when
-chrome is hidden, so transport controls, menus, and shortcuts share one command path. Full screen
-and chrome visibility are independent transient window states and are not persisted.
+transport chrome only contributes margins while visible. `ApplicationMenuBar`, `ReviewShortcuts`,
+`ReviewInputDialogs`, `ComparisonViewport`, and `TabbedInspector` consume explicit inputs and emit
+intent signals instead of accessing the whole Main window. `ReviewActions` remains instantiated
+inside `ReviewShortcuts` when chrome is hidden, so transport controls, menus, and shortcuts share
+one command path. Active/staged sources, queued requests, chrome, and In/Out range state live in the
+session facade; Main only composes them. Full screen and chrome visibility are independent transient
+window states and are not persisted.
 Entering pure-canvas mode explicitly returns keyboard focus to the viewport and removes its border,
 corner radius, surface margin, labels, and analysis controls.
 

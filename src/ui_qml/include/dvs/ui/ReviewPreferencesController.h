@@ -12,7 +12,9 @@ class ReviewPreferencesController final : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(
-        int largeStepFrames READ largeStepFrames WRITE setLargeStepFrames NOTIFY preferencesChanged)
+        int shortcutPreset READ shortcutPreset WRITE setShortcutPreset NOTIFY preferencesChanged)
+    Q_PROPERTY(bool dropFrameTimecode READ dropFrameTimecode WRITE setDropFrameTimecode NOTIFY
+                   preferencesChanged)
     Q_PROPERTY(ViewMode viewMode READ viewMode WRITE setViewMode NOTIFY preferencesChanged)
     Q_PROPERTY(DifferenceMetric differenceMetric READ differenceMetric WRITE setDifferenceMetric
                    NOTIFY preferencesChanged)
@@ -77,7 +79,8 @@ public:
     ReviewPreferencesController(ReviewPreferencesController&&) = delete;
     ReviewPreferencesController& operator=(ReviewPreferencesController&&) = delete;
 
-    [[nodiscard]] int largeStepFrames() const noexcept;
+    [[nodiscard]] int shortcutPreset() const noexcept;
+    [[nodiscard]] bool dropFrameTimecode() const noexcept;
     [[nodiscard]] ViewMode viewMode() const noexcept;
     [[nodiscard]] DifferenceMetric differenceMetric() const noexcept;
     [[nodiscard]] DifferenceGain differenceGain() const noexcept;
@@ -85,7 +88,8 @@ public:
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
     [[nodiscard]] int oscMode() const noexcept;
 
-    void setLargeStepFrames(int value);
+    void setShortcutPreset(int value);
+    void setDropFrameTimecode(bool value);
     void setViewMode(ViewMode value);
     void setDifferenceMetric(DifferenceMetric value);
     void setDifferenceGain(DifferenceGain value);
@@ -94,6 +98,7 @@ public:
     void setOscMode(int value);
 
     Q_INVOKABLE void stop() noexcept;
+    void processRepositoryEvents() noexcept;
 
 Q_SIGNALS:
     void preferencesChanged();

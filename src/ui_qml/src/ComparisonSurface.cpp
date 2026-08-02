@@ -433,6 +433,50 @@ QVariantList ComparisonSurface::sourcePanelRects() const {
     return result;
 }
 
+QVariantMap ComparisonSurface::mapSurfacePoint(const qreal x, const qreal y) const {
+    if (!std::isfinite(x) || !std::isfinite(y) || width() <= 0.0 || height() <= 0.0) {
+        return {};
+    }
+    const qreal devicePixelRatio =
+        window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
+    const auto pixelWidth =
+        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(width() * devicePixelRatio)));
+    const auto pixelHeight =
+        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(height() * devicePixelRatio)));
+    const platform::SurfacePanelLayout layout =
+        platform::computeSurfacePanelLayout(nativeViewMode(viewMode_),
+                                            static_cast<float>(width()),
+                                            static_cast<float>(height()),
+                                            pixelWidth,
+                                            pixelHeight,
+                                            static_cast<std::uint8_t>(referenceSlot_),
+                                            nativeDifferenceEdge(differenceEdge_),
+                                            static_cast<float>(wipePosition_));
+    for (std::size_t index = 0U; index < layout.sourceCount; ++index) {
+        const platform::SurfaceRect& rect = layout.sourceRects[index];
+        if (rect.width <= 0.0F || rect.height <= 0.0F || x < rect.x || y < rect.y ||
+            x > rect.x + rect.width || y > rect.y + rect.height) {
+            continue;
+        }
+        const qreal normalizedX = std::clamp((x - rect.x) / rect.width, 0.0, 1.0);
+        const qreal normalizedY = std::clamp((y - rect.y) / rect.height, 0.0, 1.0);
+        return QVariantMap{
+            {QStringLiteral("panel"), static_cast<int>(index)},
+            {QStringLiteral("panelIndex"), static_cast<int>(index)},
+            {QStringLiteral("sourceSlot"), static_cast<int>(layout.sourceSlots[index])},
+            {QStringLiteral("x"), normalizedX},
+            {QStringLiteral("y"), normalizedY},
+            {QStringLiteral("normalizedX"), normalizedX},
+            {QStringLiteral("normalizedY"), normalizedY},
+        };
+    }
+    return QVariantMap{
+        {QStringLiteral("panel"), -1},
+        {QStringLiteral("panelIndex"), -1},
+        {QStringLiteral("sourceSlot"), -1},
+    };
+}
+
 bool ComparisonSurface::exactPlaneAvailable() const noexcept {
     return exactPlaneAvailable_;
 }

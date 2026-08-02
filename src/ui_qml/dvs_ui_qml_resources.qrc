@@ -1,9 +1,11 @@
 <RCC>
     <qresource prefix="/qml">
         <file alias="Main.qml">qml/Main.qml</file>
+        <file alias="ApplicationMenuBar.qml">qml/ApplicationMenuBar.qml</file>
         <file alias="DropConfirmationDialog.qml">qml/DropConfirmationDialog.qml</file>
         <file alias="ReviewActions.qml">qml/ReviewActions.qml</file>
-        <file alias="SourceBar.qml">qml/SourceBar.qml</file>
+        <file alias="ReviewInputDialogs.qml">qml/ReviewInputDialogs.qml</file>
+        <file alias="ReviewShortcuts.qml">qml/ReviewShortcuts.qml</file>
         <file alias="ComparisonToolbar.qml">qml/ComparisonToolbar.qml</file>
         <file alias="AlignmentInspector.qml">qml/AlignmentInspector.qml</file>
         <file alias="TimelineBar.qml">qml/TimelineBar.qml</file>

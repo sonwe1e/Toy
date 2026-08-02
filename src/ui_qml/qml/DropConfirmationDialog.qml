@@ -9,7 +9,7 @@ Dialog {
     required property var pendingVideos
     required property var fileNameFunction
     property int initialReferenceIndex: 0
-    readonly property int referenceIndex: referenceCombo.currentIndex === pendingVideos.length ? -1 : referenceCombo.currentIndex
+    readonly property int referenceIndex: referenceCombo.currentIndex
 
     signal moveRequested(int fromIndex, int toIndex)
 
@@ -48,7 +48,7 @@ Dialog {
     width: Math.min(600, parent.width - 48)
     title: qsTr("Confirm source order and Reference")
     closePolicy: Popup.CloseOnEscape
-    onOpened: referenceCombo.currentIndex = initialReferenceIndex < 0 ? pendingVideos.length : Math.max(0, Math.min(initialReferenceIndex, pendingVideos.length - 1))
+    onOpened: referenceCombo.currentIndex = Math.max(0, Math.min(initialReferenceIndex, pendingVideos.length - 1))
 
     function requestMove(fromIndex, toIndex) {
         const selected = referenceCombo.currentIndex;
@@ -167,7 +167,7 @@ Dialog {
 
                 objectName: "dropReferenceCombo"
                 width: 240
-                model: control.pendingVideos.length === 3 ? [qsTr("Source A"), qsTr("Source B"), qsTr("Source C"), qsTr("None (prediction-only)")] : [qsTr("Source A"), qsTr("Source B"), qsTr("None (prediction-only)")]
+                model: control.pendingVideos.length === 3 ? [qsTr("Source A"), qsTr("Source B"), qsTr("Source C")] : [qsTr("Source A"), qsTr("Source B")]
             }
         }
     }

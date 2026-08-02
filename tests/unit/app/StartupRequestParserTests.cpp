@@ -50,6 +50,27 @@ TEST(StartupRequestParserTests, ParsesTwoAndThreeSourceComparison) {
     EXPECT_EQ(three.request->sources.size(), 3U);
 }
 
+TEST(StartupRequestParserTests, ParsesOneTwoAndThreeBareVideoPaths) {
+    const auto one = parseStartupRequest(
+        {QStringLiteral("VCStation.exe"), QStringLiteral(R"(C:\one video.mp4)")});
+    const auto two = parseStartupRequest({QStringLiteral("VCStation.exe"),
+                                          QStringLiteral(R"(C:\one.mp4)"),
+                                          QStringLiteral(R"(D:\two.mkv)")});
+    const auto three = parseStartupRequest({QStringLiteral("VCStation.exe"),
+                                            QStringLiteral(R"(C:\one.mp4)"),
+                                            QStringLiteral(R"(D:\two.mkv)"),
+                                            QStringLiteral(R"(E:\three.mov)")});
+
+    ASSERT_TRUE(one);
+    EXPECT_EQ(one.request->kind, StartupRequest::Kind::PlaySingle);
+    ASSERT_TRUE(two);
+    EXPECT_EQ(two.request->kind, StartupRequest::Kind::Compare);
+    EXPECT_EQ(two.request->sources.size(), 2U);
+    ASSERT_TRUE(three);
+    EXPECT_EQ(three.request->kind, StartupRequest::Kind::Compare);
+    EXPECT_EQ(three.request->sources.size(), 3U);
+}
+
 TEST(StartupRequestParserTests, RejectsAmbiguousOrOutOfRangeArguments) {
     EXPECT_FALSE(parseStartupRequest(
         {QStringLiteral("VCStation.exe"), QStringLiteral("--compare"), QStringLiteral("one.mp4")}));
@@ -57,11 +78,13 @@ TEST(StartupRequestParserTests, RejectsAmbiguousOrOutOfRangeArguments) {
                                       QStringLiteral("--play"),
                                       QStringLiteral("one.mp4"),
                                       QStringLiteral("two.mp4")}));
-    const StartupRequestParseResult bare = parseStartupRequest(
-        {QStringLiteral("VCStation.exe"), QStringLiteral("ordinary-video.mp4")});
-    EXPECT_FALSE(bare);
-    EXPECT_TRUE(bare.error.contains(QStringLiteral("--play")));
-    EXPECT_TRUE(bare.error.contains(QStringLiteral("--compare")));
+    EXPECT_FALSE(parseStartupRequest({QStringLiteral("VCStation.exe"),
+                                      QStringLiteral("one.mp4"),
+                                      QStringLiteral("two.mp4"),
+                                      QStringLiteral("three.mp4"),
+                                      QStringLiteral("four.mp4")}));
+    EXPECT_FALSE(
+        parseStartupRequest({QStringLiteral("VCStation.exe"), QStringLiteral("--unknown")}));
 }
 
 TEST(StartupRequestParserTests, BoundedJsonRoundTripPreservesUnicodePaths) {

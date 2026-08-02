@@ -15,7 +15,6 @@ namespace dvs::ui {
 class ComparisonSurface;
 class ReviewController;
 class ReviewPreferencesController;
-class WorkspaceController;
 } // namespace dvs::ui
 
 namespace dvs::app {
@@ -35,7 +34,6 @@ public:
 
     [[nodiscard]] ui::ReviewController* controller() noexcept;
     [[nodiscard]] ui::ReviewPreferencesController* preferences() noexcept;
-    [[nodiscard]] ui::WorkspaceController* workspace() noexcept;
     [[nodiscard]] bool attachSurface(ui::ComparisonSurface& surface) noexcept;
     [[nodiscard]] std::vector<media::DecoderBackendStatus> decoderBackendStatuses() const;
     [[nodiscard]] media::MediaProbeStatistics mediaProbeStatistics() const noexcept;

@@ -1,1024 +1,1110 @@
 # 核心结论
 
-这批新需求是合理的，而且会把 VCStation 从“专用多视频比较器”进一步完善为：
+我检查的 1.2.0 基线为 `259e012f`。当前 `feature/vcstation-userplan`、`main` 和 `v1.2.0` 标签处于同一代码基线。项目已经完成去 Project 化、Player-first 界面、1～3 路统一会话、Wipe/Diff、时间轴、Alignment、Explorer 右键和性能门禁，整体工程完成度较高。
 
-> **支持 1～3 路视频、以逐帧审查为核心，同时兼具单视频播放、资源管理器快捷启动和高可用对比交互的 Windows 视频工作站。**
+但 1.2.0 仍不能视为完全成熟的稳定版。它当前最主要的问题已经不是基础播放或 Renderer，而集中在以下五类：
 
-下一步不建议把所有修改都塞进一个补丁版本。应拆成两个阶段：
+| 维度        | 当前判断                             |
+| --------- | -------------------------------- |
+| 核心播放与比较   | 基本成熟                             |
+| UI 主体结构   | 方向正确，仍有状态和响应式缺陷                  |
+| Alignment | 能用，但搜索范围和长视频扩展性不足                |
+| 媒体兼容性     | 更接近静音视觉审查器，不是通用播放器               |
+| 发布安全      | 无 Authenticode 签名，是最高发布风险        |
+| 架构整洁度     | 去 Project 后仍残留 Workspace 薄壳和重复状态 |
+| 发布证据      | 当前连接器未显示可用于证明该精确 SHA 的完整状态结果     |
 
-| 版本         | 定位       | 内容                                                   |
-| ---------- | -------- | ---------------------------------------------------- |
-| **v1.1.1** | 交互与可靠性修复 | 彻底删除 4K 测试、修复透明确认框、修正 Wipe 坐标、扩大拖动块、重做底部控制按钮、恢复签名    |
-| **v1.2.0** | 能力扩展     | 支持单视频模式、1～3 路统一会话模型、Windows 右键对比、启动参数协议、项目 Schema v4 |
+综合评价：
 
-其中需要特别说明：当前仓库并没有真正删除 4K 测试，只是从 v1.1.0 的发布门禁中排除了它。`performance.4k30-main10` 仍在 CMake 中注册，脚本也仍接受该 Profile，工作流将它描述为“deferred”。下一步应按你的决定从活动测试、脚本、素材清单和文档中彻底移除。
-
----
-
-# 一、对六项新需求的具体评估
-
-## 1. 后续彻底取消 4K 测试
-
-这个决策符合你的真实工作负载。既然绝大多数素材在 1080p、60 FPS，少数为 120 FPS，那么性能预算、缓存策略和发布门禁都应该围绕这些场景设计，而不是继续为几乎不用的 4K 输入增加测试时间和维护成本。
-
-需要删除的内容包括：
-
-```text
-tests/hardware/CMakeLists.txt
-    performance.4k30-main10
-
-tools/run-performance-gate.ps1
-    ValidateSet 中的 4k30-main10
-    4K fixture 映射
-
-.github/workflows/hardware-performance.yml
-    4K deferred 注释
-    exclude-regex
-    release-gate-policy 中的 4K 描述
-
-docs/self-hosted-runner.md
-    4K 素材要求
-
-外部性能素材目录
-    gate-4k30-main10-*.mp4
-```
-
-但应继续保留小分辨率的 P010、10-bit、D3D11VA 和零拷贝正确性测试。这些测试验证的是像素格式和硬件路径，不属于 4K 性能测试。
-
-新的硬件矩阵建议改成：
-
-```text
-1 × 1080p60
-1 × 1080p120
-
-2 × 1080p60
-2 × 1080p120
-
-3 × 1080p60
-3 × 1080p120
-```
-
-其中单视频测试将在 v1.2.0 加入。连续播放门禁可以控制在 60～120 秒，更符合实际视频长度；内存泄漏和线程泄漏则通过多轮打开、播放、跳转、关闭的 lifecycle soak 检测，而不是依赖长时间 4K 播放。
+> **VCStation 1.2.0 是一个能力较完整的专业视觉审查版本，但更适合作为受控发布或 Release Candidate；要成为稳定公开版本，还需要完成发布安全、状态一致性和扩展性加固。**
 
 ---
 
-## 2. 两视频拖入后的确认框透明
+# 一、必须优先解决的 P0 问题
 
-这不是单纯的配色问题。当前 `Main.qml` 同时无别名导入：
+## 1. 无签名发布，尤其不适合直接分发 Shell Extension
 
-```qml
-import QtQuick.Controls
-import QtQuick.Dialogs
+Release workflow 明确为 `v1.2.0` 设置了无签名例外，最终只生成 ZIP、MSI 和 SHA-256，并没有执行 Authenticode 签名。Release Notes 也明确提示会出现 Unknown Publisher 或 SmartScreen 警告。
+
+普通便携 EXE 无签名已经会影响信任；当前 MSI 还安装了一个由 Windows Explorer 加载的原生 COM DLL：
+
+```text
+VCStationShell-1.2.dll
 ```
 
-随后直接使用 `Dialog`。Qt Quick Controls 与 Qt Quick Dialogs 都存在 Dialog 类型，这会造成类型来源、Popup 类型和平台呈现方式不够明确。当前确认框虽然自定义了 `background`，但没有显式指定 `parent: Overlay.overlay`、`popupType`、`dim`、Overlay 遮罩和完整 footer 样式。
+这比普通应用无签名更敏感。企业机器、安全软件或 Windows 策略可能直接阻止安装或加载。
 
-Qt 官方推荐将场景内 Popup 显式放到 `Overlay.overlay`，并可以通过 `Popup.Item` 保证它在同一 Qt Quick scene 中渲染；`Overlay.modal` 用于定义模态背景遮罩。([Qt 文档][1])
+### 技术路线
 
-### 修复方案
+正式稳定版恢复完整签名链：
 
-首先消除类型名冲突：
-
-```qml
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Dialogs as NativeDialogs
+```text
+Release build
+→ 签名 VCStation.exe
+→ 签名 VCStationCli.exe
+→ 签名 VCStationShell-1.2.dll
+→ 生成 ZIP/MSI
+→ 签名 MSI
+→ 验证所有签名和时间戳
+→ 对签名后的包执行 packaged smoke
+→ 生成 SHA256SUMS
 ```
 
-随后：
+建议证书先导入临时证书存储，通过 thumbprint 签名，避免将 PFX 密码暴露在 `signtool /p` 命令行。
 
-```qml
-NativeDialogs.FileDialog { ... }
-NativeDialogs.FolderDialog { ... }
+签名暂时无法恢复时，应采用更安全的发布分层：
+
+```text
+VCStation 1.2.0 Preview ZIP
+    不安装 Shell Extension
+    明确标记 unsigned preview
+
+VCStation Stable MSI
+    必须签名
+    包含 Explorer Shell Extension
 ```
 
-确认界面应单独提取为 `DropConfirmationDialog.qml`，该文件只导入 `QtQuick.Controls`：
+SHA-256 只能验证下载完整性，不能替代发布者身份认证。
+
+---
+
+## 2. Prediction-only 模式的语义是矛盾的
+
+确认框允许选择：
+
+```text
+None (prediction-only)
+```
+
+它会把 Reference 索引设置为 `-1`，所有视频都被标记为 Prediction。Shell 和 ReviewController 已经允许这个输入。
+
+但进入主界面后：
+
+* 系统仍然必须选择一个 canonical timeline source；
+* Source A 通常被当作 canonical source；
+* Source Strip 会把 canonical source 显示为 `R`；
+* Compare 菜单中的 Reference 只能选择 A/B/C；
+* 用户无法再切回 `None`；
+* Reference Focus 仍会使用第一个 Source 作为 Reference panel。
+
+因此用户选择“没有 Reference”，主界面却又显示 A 为 Reference。
+
+### 推荐路线
+
+必须拆分两个概念：
+
+```cpp
+struct ReviewSourceRoles {
+    SourceId canonicalSourceId;           // 必须存在，决定时间轴
+    std::optional<SourceId> referenceId;  // 可以为空，表示没有 GT
+};
+```
+
+确认框改成：
+
+```text
+Timeline source
+    Video A / Video B / Video C
+
+Ground-truth role
+    Same as timeline source
+    Video A / Video B / Video C
+    None
+```
+
+UI 标识也应拆开：
+
+```text
+T = Timeline owner
+R = Reference / Ground truth
+```
+
+只有一个角色时可以合并显示 `T/R`。
+
+若暂时不准备实现两个角色，1.2.x 最稳妥的做法是删除 `None (prediction-only)`，要求始终选择一个 Reference，避免错误表达。
+
+---
+
+## 3. Busy 状态下，本地打开请求可能静默丢失
+
+外部单实例请求已有排队逻辑，但本地操作没有统一进入同一个队列：
+
+* File → Open videos 没有 `!busy` 限制；
+* `Ctrl+O` 始终可执行；
+* DropArea 始终接受拖入；
+* 多视频确认框在某些 busy 场景仍可打开；
+* `ReviewController::openSources()` 在已有 pending command 时直接返回 `false`；
+* 上层多个调用点没有检查返回值并显示错误。
+
+实际体验可能是：
+
+```text
+正在打开视频 A/B
+→ 用户再次拖入视频 C
+→ 确认
+→ 后端拒绝新请求
+→ 界面没有明显反馈
+```
+
+### 技术路线
+
+在 `ReviewShellController` 中建立统一的用户意图队列：
+
+```cpp
+enum class ReviewIntentKind {
+    OpenVideos,
+    AddVideo,
+    ReplaceSources,
+    ChangeReference,
+    CloseVideos
+};
+
+struct ReviewIntent {
+    ReviewIntentKind kind;
+    QList<QUrl> sources;
+    int referenceIndex;
+};
+```
+
+所有来源都进入同一入口：
+
+```text
+File menu
+Drag and drop
+Explorer request
+Command line
+Source + button
+Reference change
+```
+
+策略建议：
+
+* Open/Close/Change Reference：串行执行；
+* 新的 Open Videos 可以覆盖尚未执行的旧 Open Videos；
+* 正在显示确认框时，其余请求排队；
+* 请求被拒绝时显示非模态 Toast；
+* busy 时菜单可以继续点击，但必须明确显示“请求已排队”，不能静默丢弃。
+
+---
+
+## 4. 1.1.0 升级后旧 `.dvsproj` 注册清理没有被证明
+
+1.1.0 安装包曾注册：
+
+* `HKLM\Software\Classes\.dvsproj`
+* `VCStation.Project`
+* `Applications\VCStation.exe\SupportedTypes\.dvsproj`
+
+1.2.0 已经从新安装定义中删除这些组件，但当前升级测试不再检查这些旧注册项是否在 1.1.0→1.2.0 后消失。
+
+通常 Major Upgrade 会卸载旧组件，但发布门禁不能依赖“理论上会清理”。如果残留，用户双击旧 `.dvsproj` 时，Windows 仍可能启动 VCStation，而新版本已不支持该参数。
+
+### 技术路线
+
+在当前 WiX 中增加防御性清理：
+
+```xml
+<RemoveRegistryKey
+    Root="HKLM"
+    Key="Software\Classes\.dvsproj"
+    Action="removeOnInstall"/>
+
+<RemoveRegistryKey
+    Root="HKLM"
+    Key="Software\Classes\VCStation.Project"
+    Action="removeOnInstall"/>
+```
+
+同时处理：
+
+```text
+Software\Classes\Applications\VCStation.exe\SupportedTypes\.dvsproj
+```
+
+升级测试必须验证：
+
+```text
+安装 1.1.0
+→ 确认 .dvsproj 注册存在
+→ 升级 1.2.0
+→ 确认所有旧注册消失
+→ 卸载 1.2.0
+→ 再次确认没有残留
+```
+
+---
+
+## 5. 文档和真实发布行为互相矛盾
+
+当前至少有两处明显不一致：
+
+* Release Notes 仍写着单视频支持 “save and restore”，但 Project 已完全删除；
+* README 声称 Release workflow 会签名 GUI、CLI、Shell DLL 和 MSI，且缺少证书时失败关闭；实际 workflow 明确为 1.2.0 开启无签名例外。
+
+README 还声称“快捷键方案会自动保存”，但当前 `shortcutPreset` 只是 `Main.qml` 的临时属性，没有进入 Settings。
+
+### 技术路线
+
+建立一个发布一致性测试，检查文档中的关键声明：
+
+```text
+Project support
+Signing mode
+Supported startup parameters
+Supported extensions
+Performance matrix
+Active version
+```
+
+Release Notes 不应手工复制这些信息。可以由 CMake 生成一份：
+
+```json
+{
+  "version": "1.2.0",
+  "signed": false,
+  "projectFiles": false,
+  "shellExtension": true,
+  "audioPlayback": false
+}
+```
+
+再由文档和发布 workflow 共同引用。
+
+---
+
+# 二、界面和使用体验问题
+
+## 1. 空状态下 Compare 和 Analyze 仍然可以打开
+
+当前判断为：
 
 ```qml
-Dialog {
-    id: control
+enabled: !root.singleMode
+```
 
-    parent: Overlay.overlay
-    anchors.centerIn: Overlay.overlay
-    popupType: Popup.Item
+空状态时 `sourceCount == 0`，因此 `singleMode == false`，Compare 和 Analyze 菜单会被错误启用。用户可以在没有视频时修改 Wipe、Diff、Analysis Grid 等设置。
 
-    modal: true
-    dim: true
-    focus: true
-    padding: 20
+应改成：
 
-    width: Math.min(600, parent.width - 48)
-    implicitHeight: contentColumn.implicitHeight
-                    + header.implicitHeight
-                    + footer.implicitHeight
-                    + topPadding
-                    + bottomPadding
+```qml
+enabled: root.sourceCount > 1 && !root.busy
+```
 
-    Overlay.modal: Rectangle {
-        color: "#99060a10"
-    }
+Analyze 还应增加：
 
+```qml
+enabled:
+    root.sourceCount > 1
+    && root.graphicsReady
+    && root.currentFrame >= 0
+```
+
+空状态下右键菜单同样会显示多个无意义的禁用项，应在 `sourceCount == 0` 时只保留：
+
+```text
+Open videos…
+Full screen
+```
+
+---
+
+## 2. “Project” 已删除，但用户可见的 “Review” 概念仍然过多
+
+现在界面仍包含：
+
+* Loading review；
+* Drop to review；
+* current review；
+* Review timeline；
+* Review tab；
+* Review preset。
+
+对开发者而言，Review Session 是合理内部术语；但用户要求的是“视频”概念，用户界面不应再要求理解另一种会话对象。
+
+建议统一文案：
+
+| 当前                           | 推荐                     |
+| ---------------------------- | ---------------------- |
+| Loading review               | Loading videos         |
+| Close review                 | Close videos           |
+| Add source to current review | Add video              |
+| Review timeline              | Video timeline         |
+| Review markers               | Analysis markers       |
+| Review preset                | Frame review shortcuts |
+
+内部类名可以继续使用 Review，用户可见文本不必暴露。
+
+---
+
+## 3. 单视频模式仍固定占用一条 Source Strip
+
+单视频时顶部仍显示：
+
+```text
+A · video.mp4   SOURCE   +
+```
+
+它占用 42 px。对比较模式有价值，但对单视频播放器仍显得偏工程化。
+
+建议单视频采用浮动 Source Chip：
+
+```text
+左上角：
+A · video.mp4   [+]
+```
+
+鼠标静止后降低透明度；加入第二个视频后再切换为固定 Active Source Strip。
+
+这样单视频默认 Viewer 可以获得完整高度。
+
+---
+
+## 4. Auto-hide OSC 的触发区域不够自然
+
+OSC Auto 模式隐藏后，只能通过底部 10 px 的 wake area 重新显示。鼠标移动到视频中央不会唤醒控制器。
+
+成熟播放器通常采用：
+
+```text
+鼠标在 Viewer 中明显移动
+→ 显示 OSC
+→ 1.2～2 秒无操作后隐藏
+```
+
+### 技术路线
+
+在 Viewport 层记录鼠标移动时间：
+
+```qml
+PointerHandler {
+    onPointChanged: oscController.reveal()
+}
+```
+
+OSC 状态机：
+
+```cpp
+enum class OscVisibility {
+    Pinned,
+    Revealed,
+    Fading,
+    Hidden
+};
+```
+
+在以下行为发生时强制显示：
+
+* 鼠标移动；
+* 播放/暂停；
+* seek；
+* 设置 In/Out；
+* 切换 Reference；
+* 发生错误。
+
+底部 wake area 可保留为补充入口，而不是唯一入口。
+
+---
+
+## 5. 顶层菜单栏仍没有完全自定义
+
+`VcsMenu` 和 `VcsMenuItem` 已经自定义了 Popup 和行样式，但 `VcsMenuBar` 只定义背景和底边，顶层的 File、Compare、Analyze、View 仍依赖默认 `MenuBarItem`。
+
+在不同 DPI、Basic Style 或键盘焦点下，顶层 hover/focus 仍可能与 Popup 不一致。
+
+应补充：
+
+```qml
+delegate: MenuBarItem {
+    contentItem: Text { ... }
     background: Rectangle {
-        color: "#ff171e2a"
-        radius: 10
-        border.width: 1
-        border.color: "#40516a"
-    }
-
-    footer: DialogButtonBox {
-        background: Rectangle {
-            color: "#ff111823"
-        }
+        color: highlighted ? accent : transparent
     }
 }
 ```
 
-关键点是：
+同时测试：
 
-* 背景颜色显式使用不透明 Alpha；
-* 强制 `Popup.Item`；
-* 显式挂在窗口 Overlay；
-* footer 不依赖平台主题默认透明度；
-* 不再让确认框与 Native FileDialog 共用一个未限定的 `Dialog` 名称。
-
-### 测试方案
-
-当前 QML contract test只验证根组件能实例化，并没有真正打开确认框或检查像素，因此透明问题没有被捕获。
-
-需要增加 WARP 视觉测试：
-
-1. 打开确认框。
-2. 使用 `grabWindow()` 捕获窗口。
-3. 确认对话框中心像素 Alpha 为 255。
-4. 确认框外区域被半透明遮罩变暗。
-5. 检查 OK/Cancel footer 背景不透明。
-6. 在 100%、125%、150% DPI 下执行。
-7. 执行确认和取消，验证 source 顺序没有意外改变。
+* Alt 键激活；
+* Left/Right 切换顶层菜单；
+* 高 DPI；
+* 中文长菜单标题；
+* 菜单靠近屏幕右边缘时自动翻转子菜单。
 
 ---
 
-## 3. 支持单视频播放
+## 6. Context Menu 状态反馈不足
 
-这项需求不能只在 QML 中把 Open 按钮放开，因为当前“至少两路”是贯穿整个系统的结构性不变量：
+当前 Viewer 右键菜单中：
 
-* `ComparisonValidator` 要求 2～3 路；
-* `FrameSet::create()` 拒绝少于两路；
-* `SessionSnapshot::isConsistent()` 要求 Ready 状态至少两路；
-* `MultiSourceFrameProvider` 要求 2～3 路；
-* QML Open 按钮要求 A、B 都存在；
-* `Project::create()` 会直接访问 `sources[0]` 和 `sources[1]` 创建 difference edge。
+* View 下的 Side/Wipe/Diff 不显示当前 checked 状态；
+* Pair 在两路视频时仍可见但禁用；
+* Reference 在单视频或空状态时仍可见；
+* Full screen 不会变成 Exit full screen。
 
-正确路线不是新增一套独立的 `SingleVideoPlayer`，也不应引入 Qt Multimedia 形成第二套时钟。应把现有模型从：
+建议：
 
 ```text
-2～3 路 Comparison Session
+两路：
+    View ✓
+    Inspector
+    Export
+    Full screen
+
+三路：
+    View ✓
+    Pair ✓
+    Reference ✓
+    Inspector
+    Export
+    Full screen
 ```
 
-泛化为：
+禁用的整组功能优先隐藏，而不是展示大量灰色项。
+
+---
+
+## 7. 单视频仍然没有音频
+
+当前应用 ports、媒体能力文档和运行链路只有视频 probe、FrameProvider、Alignment、Render 和 Settings，没有音频解码、重采样、输出或 A/V clock。
+
+因此 1.2.0 的准确定位是：
+
+> **静音视频播放与逐帧视觉审查工具。**
+
+但 UI 使用 “play video” 等普通播放器语言，会让用户期待声音。
+
+### 1.2.x 建议
+
+不要临时加入不成熟音频链路，而是在空状态、Info 页和 README 明确：
 
 ```text
-1～3 路 Review Session
+Visual playback only · Audio is not played
 ```
 
-这样单视频仍然复用：
-
-* FFmpeg probe；
-* 精确帧索引；
-* D3D11VA；
-* SourceDecodeActor；
-* FrameSet；
-* GPU transfer；
-* Presentation ACK；
-* 播放时钟；
-* 逐帧导航；
-* 预取缓存。
-
-### 单视频模式的产品定义
-
-建议将其明确为：
-
-> **单视频画面播放和逐帧审查模式，默认不增加音频链路。**
-
-拖入单个视频后：
-
-1. 立即打开视频；
-2. 显示第一帧并保持暂停；
-3. Space 开始播放；
-4. 可以选择设置“单视频拖入后自动播放”；
-5. 视频充满整个 viewport；
-6. 隐藏 Reference、Compare Pair、Diff、Wipe、Alignment 等无意义功能。
-
-若未来需要声音，那将涉及音频解码、输出设备、A/V 时钟、seek 后音频 flush 和同步策略，应作为独立需求处理，而不是混入这次单视频泛化。
-
-### 具体底层修改
+### 后续完整路线
 
 ```text
-ComparisonValidator.cpp
-    kMinimumSources: 2 → 1
+FFmpeg audio stream selection
+→ decoder
+→ swresample
+→ WASAPI shared-mode output
+→ audio ring buffer
+→ A/V clock strategy
+→ seek flush
+→ pause/resume
+→ source switching
+```
 
-FrameSet.h
-    sources.size() < 2 → sources.empty()
+多视频比较时还需要明确只播放 canonical source 音频，或者允许静音所有音频。
 
-SessionSnapshot.cpp
-    Ready: sources.size() >= 2 → >= 1
+---
 
-MultiSourceFrameProvider.cpp
-    允许 1～3 路
-    单视频只创建一个 SourceDecodeActor
+# 三、媒体兼容性不足
 
+## 1. 编码与 HDR 支持范围较窄
+
+当前正式支持：
+
+* H.264；
+* HEVC；
+* MPEG-4 Part 2；
+* SDR；
+* 部分 YUV/RGB 输入归一化。
+
+PQ 和 HLG 会被拒绝，AV1、VP9 等现代编码也不在当前合同内。
+
+这对于游戏录屏、浏览器视频和现代移动设备素材存在明显限制。
+
+### 技术路线
+
+按优先级扩展：
+
+```text
+第一阶段
+    VP9 + WebM
+    AV1 software decode
+    .ts/.m2ts 常见 H.264/HEVC 容器
+
+第二阶段
+    D3D11VA / D3D12 Video AV1 capability probe
+    失败时软件 fallback
+
+第三阶段
+    PQ/HLG 解码
+    线性光转换
+    可配置 tone mapping
+    Windows Advanced Color / HDR output
+```
+
+HDR Diff 必须明确比较空间：
+
+```text
+Source-linear difference
+Display-referred difference
+Tone-mapped visual difference
+```
+
+不能把 tone-mapped 图像差异称为 pixel-exact。
+
+---
+
+## 2. Explorer 入口与应用能力不完全一致
+
+VCStation 支持 1～3 路视频，但 Explorer Shell Extension 主要面向恰好两路选择。
+
+建议最终提供动态命令：
+
+```text
+选中 1 个：
+    Open in VCStation
+
+选中 2 个：
+    Compare with VCStation
+
+选中 3 个：
+    Compare 3 videos with VCStation
+```
+
+另外，GUI 启动解析目前只支持：
+
+```text
+--play video
+--compare video...
+```
+
+直接传递裸路径会报 unsupported arguments。
+
+应支持 Windows 常见调用：
+
+```text
+VCStation.exe video.mp4
+VCStation.exe a.mp4 b.mp4
+VCStation.exe a.mp4 b.mp4 c.mp4
+```
+
+这样拖文件到 EXE、Open With 和其他工具调用才自然。
+
+---
+
+# 四、Alignment 能力的限制
+
+## 1. 全局 Offset 只搜索 ±16 帧
+
+`GlobalOffsetEstimationOptions` 默认范围为：
+
+```cpp
+minimumOffset = -16;
+maximumOffset = 16;
+```
+
+UI 手工 Offset 也限制在 `[-16, 16]`。
+
+在 60 FPS 视频中只有约 ±267 ms，在 120 FPS 中只有约 ±133 ms。两个录制起点相差一秒就无法自动找到。
+
+### 技术路线：分层搜索
+
+```text
+阶段 1：粗搜索
+    每 0.5～1 秒采样一次
+    感知哈希/低分辨率特征
+    搜索 ±10～60 秒
+
+阶段 2：细搜索
+    在最佳粗 Offset 附近
+    按帧搜索 ±1～2 秒
+
+阶段 3：局部校正
+    使用 banded sequence alignment
+    处理缺帧、重复帧和局部漂移
+```
+
+UI 不应只输入帧数，应支持：
+
+```text
+Search range: ±10 seconds
+Manual offset: +00:00:01.250 / +75 frames
+```
+
+---
+
+## 2. Sequence Alignment 上限为 50,000 帧
+
+Sequence Alignment Request 的最大帧数为 50,000。
+
+对应：
+
+```text
+30 FPS ≈ 27.8 分钟
+60 FPS ≈ 13.9 分钟
+120 FPS ≈ 6.9 分钟
+```
+
+较长的游戏视频会无法完整分析。
+
+### 技术路线：分块层级 Alignment
+
+```text
+Scene boundary / coarse anchor detection
+→ 2～5 分钟分块
+→ 相邻块保留重叠区
+→ 每块进行 banded alignment
+→ 用单调约束拼接映射
+→ 对冲突区域标为 Review Required
+```
+
+内存继续保持：
+
+```text
+O(chunk_size × band_width)
+```
+
+而不是构建全视频 N×M 矩阵。
+
+---
+
+## 3. Timeline Marker 最多只投影 256 个
+
+ReviewController 中存在固定的最大 Timeline Marker 数量：
+
+```cpp
+kMaximumAlignmentTimelineMarkers = 256
+```
+
+超出的异常不会继续进入 UI。
+
+长视频或大量丢帧时，用户可能以为只有前 256 个问题。
+
+### 技术路线
+
+不要直接把全部异常放进 QML，改用两级数据：
+
+```text
+全局 Timeline：
+    按像素/时间 Bucket 聚合
+    显示密度与严重度
+
+局部查询：
+    用户缩放或点击区域
+    请求该时间范围内的详细异常
+```
+
+新增接口：
+
+```cpp
+QVariantList markerBuckets(MediaTime start, MediaTime end, int bucketCount);
+QVariantList markerDetails(MediaTime start, MediaTime end, int limit);
+```
+
+界面必须显示：
+
+```text
+1,284 anomalies · timeline is aggregated
+```
+
+不能静默截断。
+
+---
+
+## 4. 去 Project 时连 Alignment Cache 一并删除
+
+Project 持久化被删除是正确的，但原来的 Derived Alignment Cache 也一起删除。这意味着用户反复打开相同视频并重新执行完整序列分析时，需要重新解码和计算。
+
+缓存不应依赖 Project，应该独立存在。
+
+### 技术路线
+
+建立 content-addressed cache：
+
+```text
+Cache key =
+    source file identity/fingerprint
+    + canonical source identity
+    + algorithm version
+    + alignment options
+    + timing metadata version
+```
+
+缓存内容：
+
+```text
+低分辨率签名
+粗 Offset
+Sequence segments
+异常摘要
+```
+
+缓存失效条件：
+
+* 文件大小或修改时间变化；
+* 快速指纹变化；
+* 算法版本变化；
+* Alignment 参数变化。
+
+它只是性能缓存，不恢复 UI 会话，也不会重新引入 Project 概念。
+
+---
+
+# 五、架构与代码维护问题
+
+## 1. Workspace 层已经退化为多余薄壳
+
+去 Project 后，`WorkspaceCoordinator` 主要只负责：
+
+* 转发 Playback 命令；
+* 记录一个 displayName；
+* Close Review；
+* 转发 terminal。
+
+但它仍保留：
+
+* `acceptedSequenceAlignments` 依赖；
+* `SourceRevalidationDiagnostics`；
+* `WorkspaceSnapshot`；
+* `WorkspaceController`；
+* 未使用的 `ReviewPreferencesController` 注入。
+
+这会造成：
+
+```text
+PlaybackCoordinator
+→ WorkspaceCoordinator
+→ WorkspaceController
+→ Main.qml
+```
+
+仅为了关闭当前视频。
+
+### 技术路线
+
+优先方案：
+
+```text
 ReviewController
-    新增 openSources(QVariantList urls, int referenceIndex)
-    不再依赖固定 A/B/C 参数
-
-D3d11ComparisonRenderer
-    新增 Single View
-    将 Source 0 aspect-fit 到完整 viewport
-
-AlignmentAnalysisService
-    单视频模式禁用分析命令
-
-QML
-    拖入一个视频后直接 openSources()
-    Open 按钮只要求 Source A
-    单视频模式隐藏所有对比控件
+├── openSources
+├── changeReference
+├── closeSources
+├── playback commands
+└── terminal projection
 ```
 
-`GpuFrameSet` 本身没有要求至少两路，因此 GPU transfer 层相对容易适配；真正需要调整的是 FrameSet、validation、snapshot 和 renderer。
+删除：
 
-### 枚举兼容性
-
-新增单视频布局时不能把它插到枚举开头，否则旧设置文件中的数值会改变含义。应使用显式值：
-
-```cpp
-enum class ViewMode {
-    SideBySide    = 0,
-    ThreeUp       = 1,
-    ReferenceFocus = 2,
-    Difference    = 3,
-    AnalysisGrid  = 4,
-    Wipe          = 5,
-    Single        = 6,
-};
+```text
+WorkspaceCoordinator
+WorkspaceController
+WorkspaceSnapshot
+SourceRevalidationDiagnostics
 ```
+
+另一种方案是将其重命名为 `ReviewSessionLifecycle`，只保留明确的 Open/Close 生命周期，不再暴露旧 Workspace 语义。
 
 ---
 
-## 4. Wipe 拖动块太小，并且与视频分割位置不一致
+## 2. Main.qml 仍保存了过多业务状态
 
-当前不一致有一个明确的技术原因。
+虽然已拆出多个组件，`Main.qml` 仍持有：
 
-QML 中拖动线的位置是按整个 `dualVideoSurface.width` 计算的：
+* `selectedSourceA/B/C`；
+* `pendingDroppedVideos`；
+* staged source；
+* startup request；
+* In/Out；
+* range loop；
+  -菜单；
+  -快捷键；
+  -对话框；
+  -打开/关闭状态机。
 
-```qml
-x = surfaceWidth * wipePosition
-```
+同时 `ReviewShellController` 又维护另一套 staged/active sources。
 
-鼠标坐标又先映射到 `viewportFrame`，再除以整个 viewport 宽度。
+部分 `sourceA/B/C FileDialog` 已经没有明显可见入口，隐藏的 `openPairButton` 也仍然留在 Main 中。
 
-但 D3D11 renderer 并不是在整个 viewport 上使用 `wipePosition`。它先对视频执行 aspect-fit，得到一个可能带黑边的 `destination`，然后把 `wipePosition` 当作 `destination.width` 的比例。
+### 技术路线
 
-所以现在存在两个坐标域：
-
-```text
-QML 拖动块：整个 viewport 的 50%
-Renderer 分割：视频内容矩形的 50%
-```
-
-只要视频存在左右 letterbox、窗口尺寸变化或显示比例不同，二者就不会重合。
-
-### 统一坐标语义
-
-建议规定：
-
-> `wipePosition` 永远表示 ComparisonSurface 完整逻辑宽度中的归一化 X 坐标。
-
-Renderer 中改为：
-
-```cpp
-const float splitX =
-    bounds.x + bounds.width * clamp(wipePosition, 0.0F, 1.0F);
-
-const float contentPosition =
-    clamp((splitX - destination.x) / destination.width, 0.0F, 1.0F);
-```
-
-然后分别裁切：
-
-```cpp
-left.destination.right  = splitX;
-right.destination.left  = splitX;
-
-left.sourceUv.right =
-    uv.left + uv.width * contentPosition;
-
-right.sourceUv.left =
-    uv.left + uv.width * contentPosition;
-```
-
-这样实际像素切换位置始终与界面拖动线一致，即使画面有 letterbox。
-
-### QML 侧修改
-
-鼠标坐标必须映射到 `dualVideoSurface`，而不是外层 `viewportFrame`：
-
-```qml
-function updateWipePosition(itemX) {
-    const point = wipeHitArea.mapToItem(
-        dualVideoSurface,
-        itemX,
-        0
-    );
-
-    root.wipePosition = Math.max(
-        0,
-        Math.min(1, point.x / dualVideoSurface.width)
-    );
-}
-```
-
-拖动块建议调整为：
+把业务状态完全收进 C++：
 
 ```text
-分割线宽度：3 px
-可见手柄：44 × 60 px
-鼠标命中区域：64 px 宽、覆盖整个分割线高度
-```
-
-使用 `DragHandler` 替代普通 `MouseArea`，保证拖动过程中持续持有 pointer grab；双击手柄恢复到 50%。
-
-### 验收测试
-
-在 25%、50%、75% 三个位置测试：
-
-* QML 手柄中心；
-* D3D 中实际左右图像切换像素；
-* 二者误差不得超过 1 个物理像素。
-
-还必须覆盖：
-
-* 视频左右 letterbox；
-* 16:9 对比 9:16；
-* 100%、125%、150% DPI；
-* ROI；
-* zoom/pan；
-* A/B、A/C、B/C 三组 edge。
-
----
-
-## 5. 底部按钮语义不一致
-
-当前底部依次使用：
-
-```text
-First
--1 s
--5
--1
-Play
-+1
-+5
-+1 s
-Last
-```
-
-同时快捷键又分为 A/D、Shift+A/D、Ctrl+A/D 和 Up/Down，顶部还有一个 5/10 Frame Step 设置。这几套语义相互重叠，确实容易让用户困惑。
-
-### 推荐布局
-
-保留九个紧凑的图标按钮，但不再显示裸数字：
-
-```text
-⏮  回到首帧
-↶  后退 1 秒
-◀◀ 后退 5 帧
-◀| 上一帧
-▶  播放 / 暂停
-|▶ 下一帧
-▶▶ 前进 5 帧
-↷  前进 1 秒
-⏭  跳到末帧
-```
-
-实际界面使用 SVG 图标，不使用字体 Emoji。`1s`、`5f` 可以作为图标右下角的小徽标。
-
-鼠标停留约 650 ms 后显示：
-
-```text
-上一帧
-快捷键：← / A
-```
-
-其他 Tooltip：
-
-```text
-后退 5 帧
-快捷键：Shift+← / Shift+A
-
-后退 1 秒
-快捷键：Ctrl+← / Ctrl+A
-
-播放 / 暂停
-快捷键：Space
-```
-
-还应增加常规方向键组合：
-
-```text
-Shift + Left / Right
-Ctrl  + Left / Right
-```
-
-A/D 继续作为别名。
-
-### 删除重复语义
-
-建议删除顶部 `Step: 5/10` 设置和 Up/Down 快捷键。统一固定：
-
-```text
-普通逐帧：1 帧
-快速逐帧：5 帧
-时间跳转：1 秒
-```
-
-这样按钮、快捷键和帮助说明只有一套语义。
-
-每个按钮应同时设置：
-
-```qml
-Accessible.name
-Accessible.description
-ToolTip.delay
-ToolTip.text
-```
-
----
-
-## 6. Windows 资源管理器中选中两个视频，右键打开 Compare
-
-可以实现，最终交互建议是：
-
-```text
-选中两个视频
-    ↓
-右键
-    ↓
-“使用 VCStation 对比”
-    ↓
-打开 VCStation
-    ↓
-显示同一个顺序 / Reference 确认界面
-```
-
-> **已废弃（superseded by `USERPLAN_Refine.md`）**：VCStation 不再管理 Project，`.dvsproj` 文件关联、
-> Project 打开/保存/Relink 与启动协议中的 `OpenProject` 均已移除；MSI 只保留视频文件 Shell verb。
-
-当前 MSI 注册了视频文件的 Shell verb；GUI 启动参数只支持 `--play`/`--compare`，不再接受项目文件。
-
-Windows 的 `MultiSelectModel=Player` 专门用于支持多文件选择的 Shell verb；`IExplorerCommand::Invoke()` 可以直接接收包含所有选中文件的 `IShellItemArray`。([Microsoft Learn][2])
-
-### 不建议只写一个简单 Registry command
-
-简单的：
-
-```text
-VCStation.exe "%1"
-```
-
-无法可靠表达两个路径、选择数量、Unicode、混合扩展名和启用条件。
-
-建议新增一个很小的 Shell 扩展：
-
-```text
-VCStationShell.dll
-```
-
-它只负责：
-
-* 实现 `IExplorerCommand`；
-* 读取 `IShellItemArray`；
-* 仅在恰好选中两个本地视频时启用；
-* 使用 `CreateProcessW` 启动 VCStation；
-* 不加载 Qt；
-* 不加载 FFmpeg；
-* 不 probe 视频；
-* 不访问网络。
-
-Microsoft 明确指出 `IExplorerCommand` 方法运行在 Explorer UI 线程，因此不应执行网络或耗时操作。([Microsoft Learn][3])
-
-Shell 扩展启动：
-
-```text
-VCStation.exe --compare "a.mp4" "b.mp4"
-```
-
-应用侧新增类型化启动协议：
-
-```cpp
-struct StartupRequest {
-    enum class Kind {
-        Empty,
-        OpenProject,
-        PlaySingle,
-        Compare,
-    };
-
-    Kind kind;
-    std::vector<std::filesystem::path> sources;
-};
-```
-
-支持：
-
-```text
-VCStation.exe --play "video.mp4"
-VCStation.exe --compare "a.mp4" "b.mp4"
-VCStation.exe --compare "a.mp4" "b.mp4" "c.mp4"
-VCStation.exe "review.dvsproj"
-```
-
-GUI 当前使用 `main(int, char**)` 直接读取窄字符参数。资源管理器集成后，应改为通过 `QCoreApplication::arguments()` 取得 `QStringList`，再转换成宽字符 `std::filesystem::path`，否则中文或特殊字符路径可能在 Windows 本地代码页转换中受损。
-
-### 单实例转发
-
-为了避免 VCStation 已经打开时又启动第二个进程，建议加入：
-
-```text
-Primary VCStation
-    QLocalServer / named pipe
-
-Secondary VCStation
-    发送 StartupRequest JSON
-    退出
-```
-
-主实例收到请求后切到前台，并显示确认框。
-
-Windows 11 的新式右键菜单是否直接显示第三方命令需要真实验证；第一版可以接受它出现在“显示更多选项”中，但 Win10、Win11 都要加入安装测试。
-
----
-
-# 二、当前项目仍存在的整体技术不足
-
-## 1. 核心模型仍把“会话”写死为“比较”
-
-当前至少两路的约束分布在 domain、application、provider、UI 和 persistence 多层，说明“源数量”没有被设计成真正的会话属性。单视频功能会迫使这些分散不变量同时修改。
-
-下一阶段应统一成：
-
-```text
-ReviewSession
-├── sourceCount: 1～3
+ReviewSessionFacade
+├── activeSources
+├── stagedSources
+├── pendingIntent
 ├── canonicalSource
-├── optional reference
-├── optional comparison edge
-└── derived mode: Single / Comparison
+├── referenceSource
+├── rangeState
+└── startupQueue
 ```
 
-不建议再增加类似：
-
-```text
-SingleVideoController
-SingleVideoProvider
-SingleVideoSurface
-```
-
-否则会重新形成两套播放体系。
-
----
-
-## 2. QML 与 Renderer 缺少共享几何契约
-
-Wipe 不一致就是典型结果：
-
-* QML 自己计算线的位置；
-* Renderer 自己计算视频内容位置；
-* 两边使用不同坐标空间。
-
-后续还会影响：
-
-* ROI 框；
-* 面板标签；
-* Difference unavailable overlay；
-* 点击像素取样；
-* 未来放大镜。
-
-应新增共享的 geometry helper，例如：
-
-```cpp
-struct SurfaceLayout {
-    std::array<SurfaceRect, 4> panels;
-    SurfaceRect contentRect;
-    float wipeSplitX;
-};
-```
-
-由 C++ 根据：
-
-```text
-view mode
-logical size
-physical size
-source geometry
-DPR
-wipe position
-```
-
-统一计算。Renderer 使用该结果，QML 通过 `ComparisonSurface` 暴露只读 geometry property 使用同一结果。
-
----
-
-## 3. `Main.qml` 已承担过多职责
-
-目前一个文件同时包含：
-
-* 菜单；
-* 文件对话框；
-* 拖放；
-* 确认框；
-* source cards；
-* comparison toolbar；
-* alignment inspector；
-* viewport；
-* Wipe；
-* ROI；
-* Loading；
-* timeline；
-* transport；
-* Bad Case 导出。
-
-这使得一个确认框的类型冲突或 Popup 样式问题很容易影响整个窗口，也导致现有 contract test只能做浅层实例化检查。
-
-应拆分为：
+QML 拆为：
 
 ```text
 Main.qml
-├── SourceBar.qml
-├── DropOverlay.qml
-├── DropConfirmationDialog.qml
-├── ComparisonToolbar.qml
-├── AlignmentInspector.qml
-├── ComparisonViewport.qml
-├── WipeHandle.qml
-├── TimelineBar.qml
-├── TransportBar.qml
-└── WorkspaceDialogs.qml
+ApplicationMenuBar.qml
+ReviewShortcuts.qml
+ReviewInputDialogs.qml
+ReviewWorkspace.qml
 ```
 
-v1.1.1 至少应先拆出：
-
-```text
-DropConfirmationDialog.qml
-WipeHandle.qml
-TransportBar.qml
-```
+Main.qml 最终只负责布局与信号连接。
 
 ---
 
-## 4. 项目持久化模型落后于现有视图能力
+## 3. QML 子组件仍使用 `required property var host`
 
-> **已废弃（superseded by `USERPLAN_Refine.md`）**：Project Schema 与 Project 持久化整体移除，
-> 视图状态（Wipe/ROI/Zoom/In-Out）只存在于当前运行 Session，不再保存。
+`ComparisonViewport`、`TabbedInspector` 等组件仍能访问 Main 的所有属性和函数。
 
-当前 `ProjectViewLayout` 只有：
+问题包括：
 
-```text
-SideBySide
-ThreeUp
-ReferenceFocus
-Difference
-```
+* 依赖关系不透明；
+* qmllint 难以完整检查；
+* 测试需要模拟整个 Main；
+* 一个 Main 属性变更可能影响多个组件。
 
-没有：
+应逐步改为显式接口：
 
-```text
-AnalysisGrid
-Wipe
-Single
-```
+```qml
+TabbedInspector {
+    sourceCount: session.sourceCount
+    currentMode: preferences.viewMode
+    mediaInfo: controller.sourceMediaInfo
 
-`differenceEdge` 还是必填的两元素数组，因此无法表达单视频项目。
-
-而 UI 偏好已经支持 Wipe 和 AnalysisGrid；Workspace 保存时会把 AnalysisGrid 折叠成 ThreeUp/SideBySide，Wipe 也不能被准确恢复。
-
-v1.2.0 应升级为 Project Schema v4：
-
-```cpp
-enum class ProjectViewLayout {
-    Single,
-    SideBySide,
-    ThreeUp,
-    ReferenceFocus,
-    Difference,
-    AnalysisGrid,
-    Wipe,
-};
-
-struct ProjectViewState {
-    ProjectViewLayout layout;
-    std::optional<std::array<SourceId, 2>> comparisonEdge;
-    DifferenceMetric metric;
-    DifferenceFilter filter;
-    uint8_t gain;
-    float wipePosition;
-    bool thresholdEnabled;
-    float threshold;
-    ViewTransform viewport;
-    optional<NormalizedRect> roi;
-};
-```
-
-并实现 v3 → v4 迁移。
-
----
-
-## 5. Workspace UI 仍以 16 ms 轮询状态
-
-ReviewController 已经改成事件驱动，但 WorkspaceController 仍使用 16 ms QTimer 读取 workspace snapshot。
-
-应为 WorkspaceCoordinator 增加与 PlaybackCoordinator 相同的：
-
-```text
-statePublished callback
-→ queued invoke
-→ WorkspaceController.refresh()
-```
-
-删除常驻 16 ms 轮询。
-
----
-
-## 6. Provider 仍会在单个 FrameSet 内阻塞等待全部 source
-
-SourceDecodeActor 已经使用 callback 发布结果，但 provider worker 仍在：
-
-```cpp
-for (...) {
-    completionMailbox->take();
+    onReferenceRequested:
+        session.changeReference(sourceId)
 }
 ```
 
-中等待全部 source 完成。
+---
 
-对当前 1～3 路短视频，这不是阻断项，但从架构上仍不是真正的非阻塞 aggregator。后续应改为：
+## 4. ROI/Pan 命中仍重复实现 Renderer 布局
 
-```text
-actor completion
-    ↓
-provider completion queue
-    ↓
-pendingSets[operationId]
-    ↓
-所有 slot 完成
-    ↓
-publish FrameSet
+Source 标签已经使用 `sourcePanelRects`，但 `panelPoint()` 仍然在 Main.qml 中手工判断：
+
+* Side-by-side；
+
+* Three-up；
+
+* Reference Focus；
+
+* Analysis Grid。
+
+这意味着 Renderer 布局、标签布局和鼠标命中仍有两套计算。
+
+### 技术路线
+
+由 `ComparisonSurface` 暴露：
+
+```cpp
+Q_INVOKABLE QVariantMap mapSurfacePoint(qreal x, qreal y);
 ```
 
-这样 open、close、cancel 不会等待当前 FrameSet 的慢 source。
+返回：
+
+```json
+{
+  "panelIndex": 1,
+  "sourceSlot": 2,
+  "normalizedX": 0.42,
+  "normalizedY": 0.63
+}
+```
+
+ROI、Pan、Zoom 和 Label 全部使用同一 `SurfacePanelLayout`。
 
 ---
 
-## 7. 下一版本必须恢复签名
+## 5. Settings 持久化与文档不一致
 
-v1.1.0 的 Release workflow包含一个明确的“仅允许 v1.1.0 无签名发布”的例外，并会拒绝其他版本继续沿用该例外。
+当前 Settings 实际保存：
 
-v1.1.1 或 v1.2.0 必须恢复：
+* View mode；
+* Diff metric/gain/edge/filter；
+* OSC mode；
+* largeStepFrames。
 
-* `VCStation.exe` 签名；
-* `VCStationCli.exe` 签名；
-* `VCStationShell.dll` 签名；
-* MSI 签名；
-* 签名后再计算 SHA-256。
+但没有保存：
 
-尤其是 Shell 扩展会由 Explorer 加载，不能继续使用无签名发布策略。
+* Shortcut preset；
+* DF/NDF preference。
 
----
+`largeStepFrames` 仍允许 5/10，但当前快捷键已经固定为 5 帧，这个设置基本成为死配置。
 
-# 三、建议的具体实施路线
+Preferences Controller 还使用 16 ms Timer 轮询 Settings completion，在空闲状态下造成不必要的持续唤醒。
 
-## 阶段 A：v1.1.1 交互与可靠性补丁
+### 技术路线
 
-### A1. 清除所有活动 4K 测试
-
-完成：
-
-```text
-删除 performance.4k30-main10
-删除 4K Profile 参数
-删除 4K fixture 要求
-删除 workflow exclude-regex
-更新 runner 文档
-更新测试策略
-```
-
-仅历史 Release Notes 可以保留曾经测试过 4K 的记录。
-
-### A2. 修复确认框
-
-完成：
-
-* QtQuick.Dialogs 使用 import alias；
-* 新建 `DropConfirmationDialog.qml`；
-* `Popup.Item`；
-* `Overlay.overlay`；
-* 不透明背景；
-* 自定义 footer；
-* WARP 像素回归测试。
-
-### A3. 修复 Wipe
-
-完成：
-
-* `wipePosition` 统一为 surface normalized coordinate；
-* Renderer 从 surface splitX 推导 content UV；
-* QML 鼠标映射到 `dualVideoSurface`；
-* 手柄增大；
-* `DragHandler`；
-* 25/50/75% 像素一致性测试。
-
-### A4. 重做 Transport
-
-完成：
-
-* 新建 `TransportBar.qml`；
-* SVG 图标；
-* 统一 1 帧、5 帧、1 秒；
-* 650 ms Tooltip；
-* 显示快捷键；
-* 增加 Shift/Ctrl + 方向键；
-* 删除 Step 5/10 和 Up/Down 重复语义。
-
-### A5. 恢复发布签名
-
-删除 v1.1.0 unsigned exception，恢复标准 Authenticode 流程。
+* 删除 `largeStepFrames`；
+* 增加 `shortcutPreset`；
+* 增加 `dropFrameTimecode`；
+* 将 Settings repository completion 改为 event-driven queued callback；
+* 增加 settings schema migration；
+* 更新 README 与测试。
 
 ---
 
-## 阶段 B：v1.2.0 单视频与 Windows 集成
+# 六、Bad Case 导出的不足
 
-### B1. 1～3 路统一模型
+当前 Bad Case 导出：
 
-> **已废弃（superseded by `USERPLAN_Refine.md`）**：`Project`/`ProjectJson`/Project 持久化已从该列表中移除。
+* 使用未压缩 BMP；
+* 在 Viewer grab 完成回调中同步写磁盘；
+* evidence.json 只包含 Source、Frame、Alignment 身份；
+* 不包含当前 View/Wipe/Diff/ROI 等呈现状态。
 
-依次修改：
+结果是：用户看到的是一个 Diff 或 Wipe Bad Case，但 evidence 无法完整说明如何复现它。
 
-```text
-ComparisonValidator
-FrameSet
-SessionSnapshot
-MultiSourceFrameProvider
-PlaybackCoordinator
-ReviewController
-ComparisonSurface
-D3d11ComparisonRenderer
-WorkspaceCoordinator
+### 技术路线
+
+升级为 schema v2：
+
+```json
+{
+  "schema_version": 2,
+  "app_version": "1.2.x",
+  "media_time_us": 1234567,
+  "canonical_frame": 100,
+  "view": {
+    "mode": "wipe",
+    "pair": [0, 1],
+    "wipe_position": 0.37,
+    "difference_metric": "luma",
+    "difference_gain": 4,
+    "threshold": 0.08,
+    "roi": {}
+  },
+  "sources": []
+}
 ```
 
-### B2. 单视频 UI
+其他修改：
 
-单视频模式下：
+* `comparison.bmp` 改为 `comparison.png`；
+* 图像编码和文件写入移到低优先级 worker；
+* 显示导出进度；
+* 退出时若导出尚未提交，明确取消或等待；
+* 可选保存 Source 快速指纹，不默认保存绝对路径。
+
+---
+
+# 七、性能门禁仍有空缺
+
+当前矩阵为：
 
 ```text
-显示：
-    视频画面
-    Timeline
-    首帧 / 上一帧 / 播放 / 下一帧 / 末帧
-    Zoom / Pan / ROI
-    Bad Case 导出
-
-隐藏：
-    Reference 选择
-    Compare pair
-    Diff
-    Wipe
-    Alignment
-    Offset
-    Anchors
+1×1080p60
+3×1080p60
+1×1080p120
+2×1080p120
+3×1080p120
 ```
 
-空窗口提示改为：
+没有最常见的：
 
 ```text
-拖入 1～3 个视频，或一个 .dvsproj 项目
+2×1080p60
 ```
 
-文件选择器也改为：
+三路 1080p60 能证明更高负载，但不能完全替代两路 Side/Wipe/Diff 的实际路径门禁。
+
+建议增加：
 
 ```text
-打开 1～3 个视频
+performance.1080p60-2source
 ```
 
-### B3. 启动请求协议
+至少覆盖：
 
-新增：
+* Side-by-side；
+* Wipe；
+* Diff；
+* seek；
+* 连续逐帧；
+* Reference 切换；
+* source rebuild；
+* 关闭。
 
-```text
-StartupRequest.h
-StartupRequest.cpp
-StartupRequestParserTests.cpp
-```
+另外，ASAN 和 Coverage preset 虽然存在，但当前标准 Build/Quality workflow 没有运行 ASAN，也没有对真实代码执行覆盖率门禁。
 
-所有 GUI 参数通过 Unicode `QStringList` 解析。
-
-### B4. Explorer 右键集成
-
-新增轻量目标：
-
-```text
-src/shell_windows/
-├── ExplorerCommand.cpp
-├── ExplorerCommand.h
-├── ClassFactory.cpp
-└── VCStationShell.def
-```
-
-MSI 注册：
+建议：
 
 ```text
-SystemFileAssociations
-supported extensions
-ExplorerCommandHandler
-MultiSelectModel=Player
-```
+每次 PR：
+    Debug / Release / lint
 
-只在选中恰好两个支持的视频时启用：
+定期或关键 PR：
+    ASAN
 
-```text
-使用 VCStation 对比
-```
-
-### B5. 单实例转发
-
-新增：
-
-```text
-StartupRequestBroker
-├── primary QLocalServer
-├── secondary forward
-└── bounded JSON protocol
+主线夜间：
+    Coverage
+    shutdown soak
+    long alignment
 ```
 
 ---
 
-# 四、更新后的验收标准
+# 八、建议版本路线
 
-## 不再测试 4K
+## 1.2.1：发布与正确性补丁
 
-* 活动代码中不存在 `4k30-main10` Profile；
-* workflow 不再 exclude 4K，而是根本没有 4K 测试；
-* runner 不需要 4K fixture；
-* 保留小分辨率 10-bit/P010 正确性测试。
+只处理高风险问题：
 
-## 确认框
+1. 恢复签名，或将无签名包降级为 Preview；
+2. 修复空状态 Compare/Analyze；
+3. 统一 busy 请求队列和错误反馈；
+4. 解决 prediction-only 语义；
+5. 验证并强制清理旧 `.dvsproj` 注册；
+6. 修正文档与真实行为；
+7. 持久化 Shortcut preset 和 DF/NDF；
+8. 增加两路 1080p60 门禁。
 
-* 拖入两个或三个视频后确认框完全不透明；
-* 背景正确 dim；
-* 100%、125%、150% DPI 正常；
-* OK/Cancel 可见；
-* 没有 QML import ambiguity。
+## 1.3.0：架构与体验收口
 
-## 单视频
+1. 删除或重构 Workspace 薄壳；
+2. 建立 `ReviewSessionFacade`；
+3. 删除 QML 重复 staged 状态；
+4. 拆分 Main.qml；
+5. 统一 Surface hit-test；
+6. 完成响应式 Inspector；
+7. 支持裸视频路径启动和 1/2/3 文件 Explorer 命令；
+8. 改进 OSC 鼠标唤醒；
+9. Bad Case schema v2。
 
-* 拖入一个视频后直接打开；
-* 第一帧正确显示；
-* 播放、暂停、seek、逐帧正常；
-* 单视频占满 viewport；
-* 对比和对齐按钮隐藏；
-* ~~单视频项目可保存和恢复。~~（已废弃：项目持久化整体移除，见 `USERPLAN_Refine.md`）
+## 1.4.0：媒体和长视频能力
 
-## Wipe
-
-* 手柄可见尺寸至少 44×60；
-* 命中区域至少 64 px；
-* 手柄与视频切分误差不超过一个物理像素；
-* letterbox、DPI、ROI、zoom 下仍一致。
-
-## Transport
-
-* 不再显示裸 `-1`、`-5`、`+1`；
-* 所有按钮使用统一图标；
-* Tooltip 包含动作和快捷键；
-* 快捷键语义只有 1 帧、5 帧、1 秒三档；
-* 960 像素窗口下无裁切。
-
-## Explorer
-
-* 选中两个视频时出现“使用 VCStation 对比”；
-* 一个或三个以上文件时按定义隐藏或禁用；
-* 中文、空格和长路径正常；
-* 打开后进入顺序/Reference 确认框；
-* 卸载后 Shell verb 与 COM 注册完全清理；
-* Win10 和 Win11 均验证。
+1. 独立 Alignment Cache；
+2. 分层大范围 Offset 搜索；
+3. 分块 Sequence Alignment；
+4. 聚合 Timeline Marker；
+5. VP9/AV1；
+6. HDR/tone mapping；
+7. 视产品定位决定是否实现完整音频。
 
 ---
 
-# 最终优先级
+# 九、最终验收标准
 
-下一步建议严格按以下顺序推进：
+1. 精确发布 SHA 的 Debug、Release、Quality、Hardware、Performance 和 Packaged Smoke 均有可追溯证据。
+2. 所有稳定 MSI/EXE/Shell DLL 都通过 Authenticode 验证。
+3. 1.1.0 升级后没有任何 `.dvsproj` 注册残留。
+4. 空状态不能操作 Compare 或 Analyze。
+5. busy 状态下打开请求不会静默丢失。
+6. Prediction-only 在确认框、Source Strip、菜单、Inspector 和 Renderer 中语义一致。
+7. 单视频 UI 明确说明是否支持音频。
+8. 两路 1080p60 有独立性能门禁。
+9. 相差数秒的视频可以自动估计 Offset。
+10. 超过 50,000 帧的视频可以分块分析。
+11. 超过 256 个异常时 UI 明确聚合展示，而不是静默截断。
+12. Bad Case 能完整复现 View、Pair、Wipe、Diff、Threshold 和 ROI 状态。
+13. Shortcut preset、OSC 和 DF/NDF 偏好重启后保持。
+14. Main.qml 不再保存 Active/Staged Source 双重真值。
+15. README、Release Notes 和 workflow 对签名、保存能力、媒体能力的描述完全一致。
 
-> **彻底移除 4K 测试 → 修复透明确认框 → 修正 Wipe 坐标与手柄 → 重做 Transport → 发布 v1.1.1 → 泛化 1～3 路会话 → 单视频模式 → StartupRequest → Explorer 右键集成 → Schema v4 → 发布 v1.2.0。**
+---
 
-其中，透明确认框和 Wipe 坐标属于明确的现有缺陷；单视频和 Explorer 右键则属于跨层能力扩展。拆成两个版本可以避免把高风险的领域模型变更与紧急 UI 修复绑定在同一次发布中。
+# 最终判断
 
-[1]: https://doc.qt.io/qt-6/qml-qtquick-controls-popup.html "https://doc.qt.io/qt-6/qml-qtquick-controls-popup.html"
-[2]: https://learn.microsoft.com/en-us/windows/win32/shell/how-to-employ-the-verb-selection-model "https://learn.microsoft.com/en-us/windows/win32/shell/how-to-employ-the-verb-selection-model"
-[3]: https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-iexplorercommand "https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nn-shobjidl_core-iexplorercommand"
+VCStation 1.2.0 的主体架构已经成功：它不再是 Project 工具，而是一个清晰的 1～3 路视频视觉审查工作站。
+
+当前最高价值的工作不是继续增加新的比较模式，而是依次解决：
+
+> **发布身份可信度 → 请求和 Reference 状态一致性 → 去 Project 后的架构残留 → Alignment 长视频扩展性 → 媒体兼容性。**
+
+完成 1.2.1 的发布与正确性加固后，当前版本才适合被定义为稳定的 1.2 系列基线。
