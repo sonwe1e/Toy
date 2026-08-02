@@ -31,7 +31,11 @@ using Microsoft::WRL::ComPtr;
 struct alignas(16) ComposeConstants final {
     std::array<float, 16U> clipFromItem{};
     std::array<float, 4U> destinationRect{};
-    std::array<float, 4U> sourceUvRect{};
+    // Texture coordinates and display coordinates deliberately stay separate. Wipe clips the
+    // latter, then rotation is applied in the normalized display space before the result is
+    // projected into the decoder-owned texture region.
+    std::array<float, 4U> textureRegion{};
+    std::array<float, 4U> displayUvRect{0.0F, 0.0F, 1.0F, 1.0F};
     float opacity = 1.0F;
     std::array<float, 3U> padding{};
     std::uint32_t sourceRotation = 0U;
@@ -60,7 +64,7 @@ struct alignas(16) DifferenceConstants final {
     std::array<float, 2U> rotationPadding{};
 };
 
-static_assert(sizeof(ComposeConstants) == 128U);
+static_assert(sizeof(ComposeConstants) == 144U);
 static_assert(sizeof(ColorConstants) == 48U);
 static_assert(sizeof(DifferenceConstants) == 112U);
 
@@ -210,17 +214,20 @@ sourcePlaneDimensions(const application::FrameGeometry& geometry) noexcept {
 [[nodiscard]] ComposeConstants makeComposeConstants(const SurfaceRenderState& state,
                                                     const SurfaceRect& destination,
                                                     const application::TextureRegion& region,
-                                                    const std::uint16_t rotationDegrees = 0U) {
+                                                    const std::uint16_t rotationDegrees = 0U,
+                                                    const std::array<float, 4U>& displayUvRect = {
+                                                        0.0F, 0.0F, 1.0F, 1.0F}) {
     return ComposeConstants{
         .clipFromItem = state.clipFromItem,
         .destinationRect = {destination.x, destination.y, destination.width, destination.height},
-        .sourceUvRect =
+        .textureRegion =
             {
                 region.left,
                 region.top,
                 region.right - region.left,
                 region.bottom - region.top,
             },
+        .displayUvRect = displayUvRect,
         .opacity = std::clamp(state.opacity, 0.0F, 1.0F),
         .sourceRotation = rotationDegrees / 90U,
     };
@@ -671,6 +678,56 @@ SurfaceRect aspectFitRect(const SurfaceRect& bounds,
         bounds, static_cast<float>(sourceWidth), static_cast<float>(sourceHeight));
 }
 
+SurfacePresentationGeometry computeSurfacePresentationGeometry(
+    const SurfaceViewMode viewMode,
+    const float logicalWidth,
+    const float logicalHeight,
+    const std::uint32_t pixelWidth,
+    const std::uint32_t pixelHeight,
+    const std::uint8_t referenceSlot,
+    const SurfaceDifferenceEdge differenceEdge,
+    const float wipePosition,
+    const std::array<SurfaceDisplayExtent, 3U>& sourceDisplayExtents) noexcept {
+    SurfacePresentationGeometry result;
+    result.panels = computeSurfacePanelLayout(viewMode,
+                                              logicalWidth,
+                                              logicalHeight,
+                                              pixelWidth,
+                                              pixelHeight,
+                                              referenceSlot,
+                                              differenceEdge,
+                                              wipePosition);
+    const auto fitted = [&sourceDisplayExtents](const SurfaceRect& bounds,
+                                                const std::uint8_t slot) {
+        if (slot >= sourceDisplayExtents.size() || !sourceDisplayExtents[slot].isValid()) {
+            return SurfaceRect{};
+        }
+        return aspectFitRectFloat(
+            bounds, sourceDisplayExtents[slot].width, sourceDisplayExtents[slot].height);
+    };
+    for (std::size_t index = 0U; index < result.panels.sourceCount; ++index) {
+        result.sourceContentRects[index] =
+            fitted(result.panels.sourceRects[index], result.panels.sourceSlots[index]);
+    }
+
+    std::uint8_t firstDifferenceSlot = 0U;
+    if (differenceEdge == SurfaceDifferenceEdge::Between1And2) {
+        firstDifferenceSlot = 1U;
+    }
+    if (viewMode == SurfaceViewMode::Wipe) {
+        const SurfaceRect full{
+            .x = 0.0F, .y = 0.0F, .width = logicalWidth, .height = logicalHeight};
+        result.wipeContentRect = fitted(full, firstDifferenceSlot);
+        if (result.wipeContentRect->isValid()) {
+            result.sourceContentRects[0U] = *result.wipeContentRect;
+            result.sourceContentRects[1U] = *result.wipeContentRect;
+        }
+    } else if (result.panels.differenceRect.has_value()) {
+        result.differenceContentRect = fitted(*result.panels.differenceRect, firstDifferenceSlot);
+    }
+    return result;
+}
+
 std::optional<D3dScissorRect>
 d3dScissorFromBottomLeft(const SurfaceScissorRect& scissor,
                          const SurfaceViewport& viewport,
@@ -868,7 +925,9 @@ public:
                                                        : ComparisonRenderResult::ResourceFailure;
         }
 
-        drawPreparedSet(prepared, *lease.immediateContext.Get());
+        if (!drawPreparedSet(prepared, lease)) {
+            return ComparisonRenderResult::ResourceFailure;
+        }
         frontPublication_ = publication;
         return acknowledge(publication, *publication.set);
     }
@@ -877,6 +936,8 @@ public:
         // Drop the front publication before the device objects so its deferred-retirement
         // deleters can observe a still-valid broker/device generation during teardown.
         frontPublication_.reset();
+        differenceColorBufferB_.Reset();
+        differenceColorBufferA_.Reset();
         colorBufferC_.Reset();
         colorBufferB_.Reset();
         colorBufferA_.Reset();
@@ -965,6 +1026,10 @@ private:
                        *device_.Get(), sizeof(ColorConstants), colorBufferB_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(ColorConstants), colorBufferC_)) ||
+            FAILED(result = createDynamicConstantBuffer(
+                       *device_.Get(), sizeof(ColorConstants), differenceColorBufferA_)) ||
+            FAILED(result = createDynamicConstantBuffer(
+                       *device_.Get(), sizeof(ColorConstants), differenceColorBufferB_)) ||
             FAILED(result = createDynamicConstantBuffer(
                        *device_.Get(), sizeof(DifferenceConstants), differenceBuffer_))) {
             return failDevice(result, lease);
@@ -1230,6 +1295,16 @@ private:
             return true;
         };
         const auto appendWipe = [&](const SurfaceRect& bounds) {
+            const auto appendUnavailableBlack = [&](const SurfaceRect& rectangle) {
+                if (!rectangle.isValid() ||
+                    prepared.letterboxBarCount >= prepared.letterboxBars.size()) {
+                    return false;
+                }
+                prepared.letterboxBars[prepared.letterboxBarCount] =
+                    makeComposeConstants(state, rectangle, application::TextureRegion{});
+                ++prepared.letterboxBarCount;
+                return true;
+            };
             const GpuFrameResource* leftFrame = frameA.get();
             const D3d11GpuFrameBacking* leftBacking = backingA;
             const GpuFrameResource* rightFrame = frameB.get();
@@ -1243,8 +1318,9 @@ private:
                 rightFrame = frameC.get();
                 rightBacking = backingC;
             }
-            if (!backingUsable(leftFrame, leftBacking) ||
-                !backingUsable(rightFrame, rightBacking)) {
+            const bool leftUsable = backingUsable(leftFrame, leftBacking);
+            const bool rightUsable = backingUsable(rightFrame, rightBacking);
+            if (!leftUsable && !rightUsable) {
                 if (prepared.letterboxBarCount < prepared.letterboxBars.size()) {
                     prepared.letterboxBars[prepared.letterboxBarCount] =
                         makeComposeConstants(state, bounds, application::TextureRegion{});
@@ -1253,8 +1329,8 @@ private:
                 return true;
             }
 
-            const auto [contentWidth, contentHeight] =
-                transformedExtent(leftFrame->geometry(), state.roiEnabled, state.roi);
+            const auto [contentWidth, contentHeight] = transformedExtent(
+                (leftUsable ? leftFrame : rightFrame)->geometry(), state.roiEnabled, state.roi);
             const SurfaceRect destination = aspectFitRectFloat(bounds, contentWidth, contentHeight);
             if (!destination.isValid()) {
                 return false;
@@ -1262,24 +1338,48 @@ private:
             appendLetterboxBars(state, bounds, destination, prepared);
 
             const float position = std::clamp(state.wipePosition, 0.0F, 1.0F);
+            // Wipe is positioned in the full presentation surface, not in the aspect-fitted
+            // content rect. This keeps the renderer, handle, and hit mapping on one logical
+            // coordinate system even while the video is letterboxed.
             const float splitX = bounds.x + bounds.width * position;
             const float leftWidth = std::clamp(splitX - destination.x, 0.0F, destination.width);
             const float contentPosition = leftWidth / destination.width;
-            VideoDraw left = makeVideoDraw(state, destination, *leftFrame, *leftBacking);
-            VideoDraw right = makeVideoDraw(state, destination, *rightFrame, *rightBacking);
-            const float sourceUvWidth = left.compose.sourceUvRect[2U];
-            if (leftWidth > 0.0F) {
+            if (!leftUsable && leftWidth > 0.0F &&
+                !appendUnavailableBlack(SurfaceRect{
+                    .x = destination.x,
+                    .y = destination.y,
+                    .width = leftWidth,
+                    .height = destination.height,
+                })) {
+                return false;
+            }
+            if (leftUsable && leftWidth > 0.0F) {
+                VideoDraw left = makeVideoDraw(state, destination, *leftFrame, *leftBacking);
                 left.compose.destinationRect[2U] = leftWidth;
-                left.compose.sourceUvRect[2U] = sourceUvWidth * contentPosition;
+                left.compose.displayUvRect = {0.0F, 0.0F, contentPosition, 1.0F};
                 prepared.videoDraws[prepared.videoDrawCount] = std::move(left);
                 ++prepared.videoDrawCount;
             }
             const float rightWidth = destination.width - leftWidth;
-            if (rightWidth > 0.0F) {
+            if (!rightUsable && rightWidth > 0.0F &&
+                !appendUnavailableBlack(SurfaceRect{
+                    .x = destination.x + leftWidth,
+                    .y = destination.y,
+                    .width = rightWidth,
+                    .height = destination.height,
+                })) {
+                return false;
+            }
+            if (rightUsable && rightWidth > 0.0F) {
+                VideoDraw right = makeVideoDraw(state, destination, *rightFrame, *rightBacking);
                 right.compose.destinationRect[0U] = destination.x + leftWidth;
                 right.compose.destinationRect[2U] = rightWidth;
-                right.compose.sourceUvRect[0U] += sourceUvWidth * contentPosition;
-                right.compose.sourceUvRect[2U] = sourceUvWidth * (1.0F - contentPosition);
+                right.compose.displayUvRect = {
+                    contentPosition,
+                    0.0F,
+                    1.0F - contentPosition,
+                    1.0F,
+                };
                 prepared.videoDraws[prepared.videoDrawCount] = std::move(right);
                 ++prepared.videoDrawCount;
             }
@@ -1349,8 +1449,9 @@ private:
         return SUCCEEDED(result) || failDevice(result, lease);
     }
 
-    void drawPreparedSet(const PreparedSetDraw& prepared,
-                         ID3D11DeviceContext& context) const noexcept {
+    [[nodiscard]] bool drawPreparedSet(const PreparedSetDraw& prepared,
+                                       const GraphicsDeviceLease& lease) noexcept {
+        ID3D11DeviceContext& context = *lease.immediateContext.Get();
         context.PSSetShader(blackPixelShader_.Get(), nullptr, 0U);
         for (std::size_t index = 0U; index < prepared.letterboxBarCount; ++index) {
             ID3D11Buffer* const composeBuffer = blackComposeBuffers_[index].Get();
@@ -1359,17 +1460,29 @@ private:
         }
 
         if (prepared.videoDrawCount != 0U) {
-            drawVideoSlots(context, prepared);
+            if (!drawVideoSlots(context, prepared, lease)) {
+                const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
+                context.PSSetShaderResources(
+                    0U, static_cast<UINT>(nullViews.size()), nullViews.data());
+                return false;
+            }
         }
         if (prepared.hasDifference) {
-            drawDifference(context, prepared.differenceDraw);
+            if (!drawDifference(context, prepared.differenceDraw, lease)) {
+                const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
+                context.PSSetShaderResources(
+                    0U, static_cast<UINT>(nullViews.size()), nullViews.data());
+                return false;
+            }
         }
         const std::array<ID3D11ShaderResourceView*, 4U> nullViews{};
         context.PSSetShaderResources(0U, static_cast<UINT>(nullViews.size()), nullViews.data());
+        return true;
     }
 
-    void drawVideoSlots(ID3D11DeviceContext& context,
-                        const PreparedSetDraw& prepared) const noexcept {
+    [[nodiscard]] bool drawVideoSlots(ID3D11DeviceContext& context,
+                                      const PreparedSetDraw& prepared,
+                                      const GraphicsDeviceLease& lease) noexcept {
         context.PSSetShader(nv12PixelShader_.Get(), nullptr, 0U);
         ID3D11SamplerState* const sampler = linearSampler_.Get();
         context.PSSetSamplers(0U, 1U, &sampler);
@@ -1388,9 +1501,13 @@ private:
                 colorBufferA_.Get(), colorBufferB_.Get(), colorBufferC_.Get()};
             ID3D11Buffer* const composeBuffer = composeBuffers[index];
             ID3D11Buffer* const colorBuffer = colorBuffers[index];
-            if (FAILED(writeConstantBuffer(context, *composeBuffer, draw.compose)) ||
-                FAILED(writeConstantBuffer(context, *colorBuffer, draw.color))) {
-                return;
+            HRESULT result = writeConstantBuffer(context, *composeBuffer, draw.compose);
+            if (FAILED(result)) {
+                return failDevice(result, lease);
+            }
+            result = writeConstantBuffer(context, *colorBuffer, draw.color);
+            if (FAILED(result)) {
+                return failDevice(result, lease);
             }
             const std::array<ID3D11ShaderResourceView*, 2U> views{draw.yView, draw.uvView};
             context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
@@ -1398,14 +1515,28 @@ private:
             context.PSSetShaderResources(0U, static_cast<UINT>(views.size()), views.data());
             context.Draw(4U, 0U);
         }
+        return true;
     }
 
-    void drawDifference(ID3D11DeviceContext& context, const DifferenceDraw& draw) const noexcept {
-        if (FAILED(writeConstantBuffer(context, *differenceComposeBuffer_.Get(), draw.compose)) ||
-            FAILED(writeConstantBuffer(context, *colorBufferA_.Get(), draw.colorA)) ||
-            FAILED(writeConstantBuffer(context, *colorBufferB_.Get(), draw.colorB)) ||
-            FAILED(writeConstantBuffer(context, *differenceBuffer_.Get(), draw.options))) {
-            return;
+    [[nodiscard]] bool drawDifference(ID3D11DeviceContext& context,
+                                      const DifferenceDraw& draw,
+                                      const GraphicsDeviceLease& lease) noexcept {
+        HRESULT result =
+            writeConstantBuffer(context, *differenceComposeBuffer_.Get(), draw.compose);
+        if (FAILED(result)) {
+            return failDevice(result, lease);
+        }
+        result = writeConstantBuffer(context, *differenceColorBufferA_.Get(), draw.colorA);
+        if (FAILED(result)) {
+            return failDevice(result, lease);
+        }
+        result = writeConstantBuffer(context, *differenceColorBufferB_.Get(), draw.colorB);
+        if (FAILED(result)) {
+            return failDevice(result, lease);
+        }
+        result = writeConstantBuffer(context, *differenceBuffer_.Get(), draw.options);
+        if (FAILED(result)) {
+            return failDevice(result, lease);
         }
         context.PSSetShader(differencePixelShader_.Get(), nullptr, 0U);
         ID3D11SamplerState* const sampler = draw.filter == SurfaceDifferenceFilter::Bilinear
@@ -1415,7 +1546,7 @@ private:
 
         ID3D11Buffer* const composeBuffer = differenceComposeBuffer_.Get();
         const std::array<ID3D11Buffer*, 3U> pixelBuffers{
-            colorBufferA_.Get(), colorBufferB_.Get(), differenceBuffer_.Get()};
+            differenceColorBufferA_.Get(), differenceColorBufferB_.Get(), differenceBuffer_.Get()};
         const std::array<ID3D11ShaderResourceView*, 4U> views{
             draw.yViewA, draw.uvViewA, draw.yViewB, draw.uvViewB};
         context.VSSetConstantBuffers(0U, 1U, &composeBuffer);
@@ -1423,6 +1554,7 @@ private:
             1U, static_cast<UINT>(pixelBuffers.size()), pixelBuffers.data());
         context.PSSetShaderResources(0U, static_cast<UINT>(views.size()), views.data());
         context.Draw(4U, 0U);
+        return true;
     }
 
     [[nodiscard]] bool drawFrontOrBackground(const SurfaceRenderState& state,
@@ -1435,8 +1567,7 @@ private:
         if (!prepareSetDraw(state, *frontPublication_, lease, prepared)) {
             return false;
         }
-        drawPreparedSet(prepared, *lease.immediateContext.Get());
-        return true;
+        return drawPreparedSet(prepared, lease);
     }
 
     void retryPendingAcknowledgement() noexcept {
@@ -1532,6 +1663,8 @@ private:
     ComPtr<ID3D11Buffer> colorBufferA_;
     ComPtr<ID3D11Buffer> colorBufferB_;
     ComPtr<ID3D11Buffer> colorBufferC_;
+    ComPtr<ID3D11Buffer> differenceColorBufferA_;
+    ComPtr<ID3D11Buffer> differenceColorBufferB_;
     ComPtr<ID3D11Buffer> differenceBuffer_;
 };
 

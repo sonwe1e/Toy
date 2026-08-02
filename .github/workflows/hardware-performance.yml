@@ -1,7 +1,8 @@
 name: Hardware and Performance
 
 # Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
-# interactively logged-in self-hosted runner and six external performance fixtures.
+# interactively logged-in self-hosted runner and six external performance fixtures. It includes
+# actual Wipe/Diff pixel captures before the source-count performance profiles.
 # They run on demand instead of accepting pull-request code on the workstation.
 
 on:
@@ -89,6 +90,7 @@ jobs:
             'gate-1080p60-a.mp4',
             'gate-1080p60-b.mp4',
             'gate-1080p60-c.mp4',
+            'gate-1080p60-rot90-a.mp4',
             'gate-1080p120-a.mp4',
             'gate-1080p120-b.mp4',
             'gate-1080p120-c.mp4'
@@ -113,7 +115,7 @@ jobs:
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
           --build --preset release
 
-      - name: D3D11VA and zero-copy tests
+      - name: D3D11VA, zero-copy, and comparison pixel tests
         shell: pwsh
         run: >-
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
@@ -136,6 +138,9 @@ jobs:
           @(
             'Release-blocking profiles:',
             '- resource profile: background-4-cpu (BelowNormal priority)',
+            '- hardware.wipe-2source and hardware.diff-2source (visible pixel capture)',
+            '- hardware.mode-switch-retained-frame (canonical frame retained through Side to Wipe)',
+            '- hardware.rotated-padded-wipe (90-degree D3D11VA texture capture)',
             '- 1080p60-1source',
             '- 1080p60-2source',
             '- 1080p60',
@@ -148,6 +153,10 @@ jobs:
             $profiles = @(
               '1080p60-1source',
               '1080p60-2source',
+              '1080p60-2source-wipe',
+              '1080p60-2source-diff',
+              '1080p60-2source-mode-switch-wipe',
+              '1080p60-2source-rotated-wipe',
               '1080p60',
               '1080p120-1source',
               '1080p120-2source',

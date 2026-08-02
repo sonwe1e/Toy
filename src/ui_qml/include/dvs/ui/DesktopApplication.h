@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QImage>
 #include <QList>
 #include <QUrl>
 
@@ -58,6 +59,14 @@ public:
     [[nodiscard]] std::optional<std::string>
     objectStringPropertyForAutomation(std::string_view objectName,
                                       std::string_view propertyName) const;
+    [[nodiscard]] std::optional<int>
+    objectIntPropertyForAutomation(std::string_view objectName,
+                                   std::string_view propertyName) const;
+    // Captures the named visible QML item's rendered pixels. Hardware gates use this to prove
+    // that a selected comparison mode produced content, not merely that its button accepted a
+    // click.
+    [[nodiscard]] std::optional<QImage>
+    captureControlForAutomation(std::string_view objectName) const;
 
     // Called after the runtime has detached its renderer services. Destroying the engine is the
     // scene-graph barrier that releases the render node's pinned GPU publication.

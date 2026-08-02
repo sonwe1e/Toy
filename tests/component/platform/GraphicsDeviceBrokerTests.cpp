@@ -6,11 +6,13 @@
 #include <QGuiApplication>
 #include <QQuickWindow>
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <d3d10.h>
 #include <dxgi1_2.h>
+#include <future>
 #include <gtest/gtest.h>
 #include <optional>
 #include <string>
@@ -22,6 +24,31 @@ namespace dvs::platform {
 namespace {
 
 using Microsoft::WRL::ComPtr;
+using namespace std::chrono_literals;
+
+TEST(GraphicsDeviceBrokerTests, BlockingWaitWakesForNotificationAndStop) {
+    GraphicsDeviceBroker broker;
+    std::stop_source notificationStop;
+    std::future<std::optional<GraphicsDeviceNotification>> notification =
+        std::async(std::launch::async, [&broker, token = notificationStop.get_token()] {
+            return broker.waitForNotification(token);
+        });
+    EXPECT_EQ(notification.wait_for(20ms), std::future_status::timeout);
+    ASSERT_EQ(broker.reportUnavailable("blocking-wait-test"),
+              GraphicsDeviceBrokerResult::Unavailable);
+    ASSERT_EQ(notification.wait_for(1s), std::future_status::ready);
+    ASSERT_TRUE(notification.get().has_value());
+
+    std::stop_source canceled;
+    std::future<std::optional<GraphicsDeviceNotification>> stopped =
+        std::async(std::launch::async, [&broker, token = canceled.get_token()] {
+            return broker.waitForNotification(token);
+        });
+    EXPECT_EQ(stopped.wait_for(20ms), std::future_status::timeout);
+    canceled.request_stop();
+    ASSERT_EQ(stopped.wait_for(1s), std::future_status::ready);
+    EXPECT_FALSE(stopped.get().has_value());
+}
 
 TEST(GraphicsDeviceBrokerTests, RetainsQtWarpDeviceWithProtectedImmediateContext) {
     GraphicsDeviceBroker broker;

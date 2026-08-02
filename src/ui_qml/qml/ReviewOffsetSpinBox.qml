@@ -6,6 +6,8 @@ import QtQuick.Controls
 SpinBox {
     id: control
 
+    property bool blocksGlobalMediaShortcuts: true
+    property bool textEditingInputContext: true
     property color textColor: "#f3f6fb"
     property color mutedTextColor: "#93a2ba"
     property color accentColor: "#4b8df8"

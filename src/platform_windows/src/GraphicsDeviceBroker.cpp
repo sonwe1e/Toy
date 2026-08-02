@@ -4,6 +4,7 @@
 
 #include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <d3d10.h>
@@ -11,6 +12,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stop_token>
 #include <string>
 #include <utility>
 #include <wrl/client.h>
@@ -291,6 +293,53 @@ public:
     }
 
     [[nodiscard]] std::optional<GraphicsDeviceNotification> tryConsumeNotification() noexcept {
+        return consumeNotification(false);
+    }
+
+    [[nodiscard]] std::optional<GraphicsDeviceNotification>
+    waitForNotification(const std::stop_token stopToken) noexcept {
+        while (!stopToken.stop_requested()) {
+            const std::uint64_t observed = notificationSequence_.load(std::memory_order_acquire);
+            if (std::optional<GraphicsDeviceNotification> notification =
+                    consumeNotification(true)) {
+                return notification;
+            }
+            if (notificationClosed_.load(std::memory_order_acquire)) {
+                return std::nullopt;
+            }
+            std::unique_lock lock{notificationWaitMutex_};
+            static_cast<void>(notificationAvailable_.wait(lock, stopToken, [this, observed] {
+                return notificationClosed_.load(std::memory_order_acquire) ||
+                       notificationSequence_.load(std::memory_order_acquire) != observed;
+            }));
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] domain::DeviceGeneration currentGeneration() const noexcept {
+        return domain::DeviceGeneration{publishedGeneration_.load(std::memory_order_acquire)};
+    }
+
+    void shutdown() noexcept {
+        std::lock_guard lock{stateMutex_};
+        if (state_ == DeviceState::Closed) {
+            return;
+        }
+        clearDevice();
+        state_ = DeviceState::Closed;
+        notificationClosed_.store(true, std::memory_order_release);
+        notificationSequence_.fetch_add(1U, std::memory_order_release);
+        notificationAvailable_.notify_all();
+    }
+
+    [[nodiscard]] bool isClosed() const noexcept {
+        std::unique_lock lock{stateMutex_, std::try_to_lock};
+        return lock.owns_lock() && state_ == DeviceState::Closed;
+    }
+
+private:
+    [[nodiscard]] std::optional<GraphicsDeviceNotification>
+    consumeNotification(const bool blockForOverflow) noexcept {
         bool expected = false;
         if (!notificationConsumerActive_.compare_exchange_strong(
                 expected, true, std::memory_order_acquire, std::memory_order_relaxed)) {
@@ -314,8 +363,13 @@ public:
             return notification;
         }
 
-        std::unique_lock lock{stateMutex_, std::try_to_lock};
-        if (!lock.owns_lock() || !overflowNotification_.has_value()) {
+        std::unique_lock lock{stateMutex_, std::defer_lock};
+        if (blockForOverflow) {
+            lock.lock();
+        } else if (!lock.try_lock()) {
+            return std::nullopt;
+        }
+        if (!overflowNotification_.has_value()) {
             return std::nullopt;
         }
         std::optional<GraphicsDeviceNotification> notification = std::move(overflowNotification_);
@@ -323,25 +377,6 @@ public:
         return notification;
     }
 
-    [[nodiscard]] domain::DeviceGeneration currentGeneration() const noexcept {
-        return domain::DeviceGeneration{publishedGeneration_.load(std::memory_order_acquire)};
-    }
-
-    void shutdown() noexcept {
-        std::lock_guard lock{stateMutex_};
-        if (state_ == DeviceState::Closed) {
-            return;
-        }
-        clearDevice();
-        state_ = DeviceState::Closed;
-    }
-
-    [[nodiscard]] bool isClosed() const noexcept {
-        std::unique_lock lock{stateMutex_, std::try_to_lock};
-        return lock.owns_lock() && state_ == DeviceState::Closed;
-    }
-
-private:
     [[nodiscard]] GraphicsDeviceBrokerResult
     reportObservedDeviceLost(const domain::DeviceGeneration observedGeneration,
                              const HRESULT reason) noexcept {
@@ -383,18 +418,24 @@ private:
         // ring entry is drained. Notification pressure must never veto device invalidation.
         if (overflowNotification_.has_value()) {
             overflowNotification_.emplace(std::move(notification));
+            notificationSequence_.fetch_add(1U, std::memory_order_release);
+            notificationAvailable_.notify_one();
             return;
         }
 
         const std::uint64_t write = notificationWrite_.load(std::memory_order_relaxed);
         if (write - notificationRead_.load(std::memory_order_acquire) >= kNotificationCapacity) {
             overflowNotification_.emplace(std::move(notification));
+            notificationSequence_.fetch_add(1U, std::memory_order_release);
+            notificationAvailable_.notify_one();
             return;
         }
 
         const std::size_t index = static_cast<std::size_t>(write % kNotificationCapacity);
         notifications_[index].emplace(std::move(notification));
         notificationWrite_.store(write + 1U, std::memory_order_release);
+        notificationSequence_.fetch_add(1U, std::memory_order_release);
+        notificationAvailable_.notify_one();
     }
 
     void clearDevice() noexcept {
@@ -416,6 +457,10 @@ private:
     std::atomic<std::uint64_t> notificationRead_{0U};
     std::atomic<std::uint64_t> notificationWrite_{0U};
     std::atomic<bool> notificationConsumerActive_{false};
+    std::atomic<std::uint64_t> notificationSequence_{0U};
+    std::atomic<bool> notificationClosed_{false};
+    std::mutex notificationWaitMutex_;
+    std::condition_variable_any notificationAvailable_;
 };
 
 GraphicsDeviceBroker::GraphicsDeviceBroker() : impl_(std::make_unique<Impl>()) {}
@@ -447,6 +492,11 @@ GraphicsDeviceLeaseResult GraphicsDeviceBroker::tryLease() const noexcept {
 
 std::optional<GraphicsDeviceNotification> GraphicsDeviceBroker::tryConsumeNotification() noexcept {
     return impl_->tryConsumeNotification();
+}
+
+std::optional<GraphicsDeviceNotification>
+GraphicsDeviceBroker::waitForNotification(const std::stop_token stopToken) noexcept {
+    return impl_->waitForNotification(stopToken);
 }
 
 domain::DeviceGeneration GraphicsDeviceBroker::currentGeneration() const noexcept {

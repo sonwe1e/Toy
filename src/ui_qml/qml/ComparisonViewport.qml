@@ -36,7 +36,9 @@ Rectangle {
     required property string combinedAlignmentStatus
     required property bool singleMode
     required property int differenceFirstSlot
+    required property int effectiveDifferenceEdge
     required property var sourceNames
+    required property var sourceMediaInfo
     required property bool frameErrorBannerVisible
     required property string errorDetail
     required property bool overlayVisible
@@ -128,7 +130,7 @@ Rectangle {
             viewMode: control.effectiveViewMode
             differenceMetric: control.preferences ? control.preferences.differenceMetric : ComparisonSurface.RgbAbsolute
             differenceGain: control.preferences ? control.preferences.differenceGain : ComparisonSurface.Gain1x
-            differenceEdge: control.preferences ? control.preferences.differenceEdge : ComparisonSurface.Edge0And1
+            differenceEdge: control.effectiveDifferenceEdge
             differenceFilter: control.preferences ? control.preferences.differenceFilter : ComparisonSurface.Bilinear
             wipePosition: control.wipePosition
             exactPlaneAvailable: control.selectedDifferenceExactness === 0
@@ -136,6 +138,7 @@ Rectangle {
             threshold: Number(control.differenceThresholdCode) / 255
             thresholdPolicy: control.differenceThresholdPolicy
             referenceSlot: control.referenceSourceIndex >= 0 ? control.referenceSourceIndex : 0
+            sourceDisplayInfo: control.sourceMediaInfo
             anchors.fill: parent
         }
         // qmllint enable import unqualified unresolved-type
@@ -270,6 +273,10 @@ Rectangle {
         onWheel: wheel => {
             control.oscRevealRequested();
             const point = control.panelPoint(wheel.x, wheel.y);
+            if (!point.insideContent) {
+                wheel.accepted = false;
+                return;
+            }
             dualVideoSurface.zoomAt(point.x, point.y, wheel.angleDelta.y > 0 ? 1.25 : 0.8);
             wheel.accepted = true;
         }
@@ -280,6 +287,11 @@ Rectangle {
                 return;
             }
             const point = control.panelPoint(mouse.x, mouse.y);
+            if (!point.insideContent) {
+                control.roiPanel = -1;
+                control.forceActiveFocus();
+                return;
+            }
             control.roiPanel = point.panel;
             control.panLastX = point.x;
             control.panLastY = point.y;
@@ -298,7 +310,7 @@ Rectangle {
             if (control.roiSelecting) {
                 control.roiCurrentX = mouse.x;
                 control.roiCurrentY = mouse.y;
-            } else if (pressed && point.panel === control.roiPanel) {
+            } else if (pressed && point.insideContent && point.panel === control.roiPanel) {
                 dualVideoSurface.panBy(point.x - control.panLastX, point.y - control.panLastY);
                 control.panLastX = point.x;
                 control.panLastY = point.y;
@@ -308,8 +320,8 @@ Rectangle {
             if (control.roiSelecting) {
                 const start = control.panelPoint(control.roiStartX, control.roiStartY);
                 const end = control.panelPoint(mouse.x, mouse.y);
-                if (start.panel === end.panel)
-                    dualVideoSurface.setRoiNormalized(start.x, start.y, end.x, end.y);
+                if (start.insideContent && end.insideContent && start.panel === end.panel && start.sourceX !== undefined && start.sourceY !== undefined && end.sourceX !== undefined && end.sourceY !== undefined)
+                    dualVideoSurface.setRoiNormalized(start.sourceX, start.sourceY, end.sourceX, end.sourceY);
             }
             control.roiSelecting = false;
             control.roiPanel = -1;

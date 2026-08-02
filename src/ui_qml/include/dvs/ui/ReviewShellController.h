@@ -1,14 +1,18 @@
 #pragma once
 
 #include <QObject>
+#include <QStringList>
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <cstdint>
 #include <deque>
+#include <optional>
 
 namespace dvs::ui {
 
 class ReviewController;
+class ReviewPreferencesController;
 
 // Owns review-shell state that must remain coherent across QML dialogs and external startup
 // requests. Media truth stays in ReviewController; this object separates active backend sources
@@ -20,11 +24,15 @@ class ReviewShellController final : public QObject {
     Q_PROPERTY(QVariantList stagedSources READ stagedSources NOTIFY stateChanged)
     Q_PROPERTY(int canonicalSourceIndex READ canonicalSourceIndex NOTIFY stateChanged)
     Q_PROPERTY(qulonglong activeGeneration READ activeGeneration NOTIFY stateChanged)
+    Q_PROPERTY(int effectiveViewMode READ effectiveViewMode NOTIFY stateChanged)
+    Q_PROPERTY(int effectiveDifferenceEdge READ effectiveDifferenceEdge NOTIFY stateChanged)
+    Q_PROPERTY(bool comparisonEdgeAvailable READ comparisonEdgeAvailable NOTIFY stateChanged)
     Q_PROPERTY(int stagedReferenceIndex READ stagedReferenceIndex WRITE setStagedReferenceIndex
                    NOTIFY stateChanged)
-    Q_PROPERTY(int queuedStartupRequestCount READ queuedStartupRequestCount NOTIFY stateChanged)
     Q_PROPERTY(int queuedIntentCount READ queuedIntentCount NOTIFY stateChanged)
-    Q_PROPERTY(bool startupRequestActive READ startupRequestActive NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList queuedIntents READ queuedIntents NOTIFY stateChanged)
+    Q_PROPERTY(QVariantMap activeIntent READ activeIntent NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList pendingSourceIndexes READ pendingSourceIndexes NOTIFY stateChanged)
     Q_PROPERTY(bool chromeVisible READ chromeVisible WRITE setChromeVisible NOTIFY stateChanged)
     Q_PROPERTY(
         bool inspectorVisible READ inspectorVisible WRITE setInspectorVisible NOTIFY stateChanged)
@@ -46,16 +54,61 @@ public:
     };
     Q_ENUM(OpenIntent)
 
+    enum ReviewIntentKind {
+        OpenSourcesIntent = 0,
+        ReplaceSourcesIntent = 1,
+        AddSourcesIntent = 2,
+        RemoveSourceIntent = 3,
+        ChangeReferenceIntent = 4,
+        CloseSourcesIntent = 5,
+    };
+    Q_ENUM(ReviewIntentKind)
+
+    enum ReviewIntentOrigin {
+        UserInterfaceOrigin = 0,
+        DragDropOrigin = 1,
+        StartupOrigin = 2,
+    };
+    Q_ENUM(ReviewIntentOrigin)
+
+    enum ReviewIntentStatus {
+        QueuedStatus = 0,
+        RunningStatus = 1,
+        SucceededStatus = 2,
+        FailedStatus = 3,
+        CanceledStatus = 4,
+        RejectedStatus = 5,
+        ReplacedStatus = 6,
+    };
+    Q_ENUM(ReviewIntentStatus)
+
+    enum ReviewIntentError {
+        NoIntentError = 0,
+        InvalidIntentError = 1,
+        QueueFullError = 2,
+        StaleTopologyError = 3,
+        SubmissionRejectedError = 4,
+        CommandFailedError = 5,
+    };
+    Q_ENUM(ReviewIntentError)
+
     explicit ReviewShellController(ReviewController& review, QObject* parent = nullptr);
+    ReviewShellController(ReviewController& review,
+                          ReviewPreferencesController& preferences,
+                          QObject* parent = nullptr);
 
     [[nodiscard]] QVariantList activeSources() const;
     [[nodiscard]] QVariantList stagedSources() const;
     [[nodiscard]] int canonicalSourceIndex() const noexcept;
     [[nodiscard]] qulonglong activeGeneration() const noexcept;
+    [[nodiscard]] int effectiveViewMode() const noexcept;
+    [[nodiscard]] int effectiveDifferenceEdge() const noexcept;
+    [[nodiscard]] bool comparisonEdgeAvailable() const noexcept;
     [[nodiscard]] int stagedReferenceIndex() const noexcept;
-    [[nodiscard]] int queuedStartupRequestCount() const noexcept;
     [[nodiscard]] int queuedIntentCount() const noexcept;
-    [[nodiscard]] bool startupRequestActive() const noexcept;
+    [[nodiscard]] QVariantList queuedIntents() const;
+    [[nodiscard]] QVariantMap activeIntent() const;
+    [[nodiscard]] QVariantList pendingSourceIndexes() const;
     [[nodiscard]] bool chromeVisible() const noexcept;
     [[nodiscard]] bool inspectorVisible() const noexcept;
     [[nodiscard]] bool hasPendingAction() const noexcept;
@@ -79,12 +132,12 @@ public:
     Q_INVOKABLE bool removeActiveSource(int sourceIndex);
     Q_INVOKABLE bool changeReference(int sourceIndex);
     Q_INVOKABLE bool closeSources();
+    Q_INVOKABLE bool cancelQueuedIntent(qulonglong intentId);
+    Q_INVOKABLE void cancelAllQueuedIntents();
     Q_INVOKABLE bool beginPendingAction(const QVariantMap& action);
     Q_INVOKABLE QVariantMap takePendingAction();
     Q_INVOKABLE void cancelPendingAction();
     Q_INVOKABLE bool enqueueStartupRequest(int kind, const QVariantList& files);
-    Q_INVOKABLE QVariantMap takeNextStartupRequest();
-    Q_INVOKABLE void completeStartupRequest();
     Q_INVOKABLE bool setRangeIn(qint64 frame, double mediaTime);
     Q_INVOKABLE bool setRangeOut(qint64 frame, double mediaTime);
     Q_INVOKABLE void remapRange(qint64 inFrame, qint64 outFrame);
@@ -94,45 +147,54 @@ public:
 
 Q_SIGNALS:
     void stateChanged();
-    void startupRequestAvailable();
-    void intentQueued(const QString& message);
-    void intentRejected(const QString& message);
+    void intentEvent(qulonglong intentId, int status, int kind, int error, int sourceCount);
+    void intentFinished(qulonglong intentId, int kind, int outcome, const QString& errorKey);
 
 private:
-    enum class ReviewIntentKind {
-        OpenSources,
-        ReplaceSources,
-        ChangeReference,
-        CloseSources,
+    struct EffectiveComparisonState final {
+        int viewMode = 6;
+        int differenceEdge = 0;
+        bool edgeAvailable = false;
     };
 
     struct ReviewIntent final {
-        ReviewIntentKind kind = ReviewIntentKind::OpenSources;
+        std::uint64_t id = 0U;
+        ReviewIntentKind kind = OpenSourcesIntent;
+        ReviewIntentOrigin origin = UserInterfaceOrigin;
         QVariantList sources;
         int referenceIndex = 0;
+        QString referenceIdentity;
+        QString targetIdentity;
+        qulonglong expectedGeneration = 0U;
+        QStringList expectedSources;
+        std::uint64_t commandId = 0U;
     };
 
-    struct StartupRequest final {
-        int kind = 0;
-        QVariantList files;
-    };
-
-    void synchronizeActiveSources();
+    void synchronizeActiveSources(bool advanceGeneration = false);
     [[nodiscard]] bool submitOrQueue(ReviewIntent intent);
-    [[nodiscard]] bool submitIntent(const ReviewIntent& intent);
-    void enqueueIntent(ReviewIntent intent);
+    [[nodiscard]] bool submitIntent(ReviewIntent& intent);
+    [[nodiscard]] bool enqueueIntent(ReviewIntent intent);
     void drainIntentQueue();
-    [[nodiscard]] static QString intentDescription(ReviewIntentKind kind);
+    void finishIntent(int outcome, const QString& errorKey);
+    [[nodiscard]] bool rebaseIntent(ReviewIntent& intent) const;
+    [[nodiscard]] QVariantMap intentMap(const ReviewIntent& intent,
+                                        ReviewIntentStatus status) const;
+    [[nodiscard]] QStringList activeSourceIdentities() const;
+    [[nodiscard]] static QString sourceIdentity(const QVariant& source);
+    [[nodiscard]] std::uint64_t allocateIntentId() noexcept;
+    [[nodiscard]] EffectiveComparisonState effectiveComparisonState() const noexcept;
 
     ReviewController& review_;
+    ReviewPreferencesController* preferences_ = nullptr;
     QVariantList activeSources_;
     QVariantList stagedSources_;
     int canonicalSourceIndex_ = -1;
     qulonglong activeGeneration_ = 0U;
     int stagedReferenceIndex_ = 0;
-    std::deque<StartupRequest> startupRequests_;
     std::deque<ReviewIntent> reviewIntents_;
-    bool startupRequestActive_ = false;
+    std::optional<ReviewIntent> activeIntent_;
+    std::uint64_t nextIntentId_ = 1U;
+    bool intentIdsExhausted_ = false;
     bool chromeVisible_ = true;
     bool inspectorVisible_ = false;
     QVariantMap pendingAction_;

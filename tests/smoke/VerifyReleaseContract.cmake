@@ -12,11 +12,17 @@ string(JSON metadata_audio GET "${metadata}" audioPlayback)
 string(JSON metadata_sources GET "${metadata}" maximumSourceCount)
 string(JSON metadata_shell GET "${metadata}" shellBinaryName)
 
-if(NOT metadata_version STREQUAL DVS_EXPECTED_VERSION OR
-   NOT metadata_shell STREQUAL DVS_EXPECTED_SHELL OR
-   metadata_signed OR metadata_projects OR metadata_audio OR
-   NOT metadata_sources EQUAL 3)
-    message(FATAL_ERROR "Generated release metadata does not match the VCStation 1.4 contract.")
+if(NOT "${metadata_version}" STREQUAL "${DVS_EXPECTED_VERSION}")
+    message(FATAL_ERROR "Release metadata version is '${metadata_version}', expected '${DVS_EXPECTED_VERSION}'.")
+endif()
+if(NOT "${metadata_shell}" STREQUAL "${DVS_EXPECTED_SHELL}")
+    message(FATAL_ERROR "Release metadata shell is '${metadata_shell}', expected '${DVS_EXPECTED_SHELL}'.")
+endif()
+if(metadata_signed OR metadata_projects OR metadata_audio)
+    message(FATAL_ERROR "Release metadata must keep signing, project files, and audio disabled.")
+endif()
+if(NOT "${metadata_sources}" STREQUAL "3")
+    message(FATAL_ERROR "Release metadata maximumSourceCount must be 3, got '${metadata_sources}'.")
 endif()
 
 set(release_notes "${DVS_SOURCE_DIR}/docs/releases/v${DVS_EXPECTED_VERSION}.md")
@@ -37,7 +43,7 @@ endforeach()
 file(READ "${DVS_SOURCE_DIR}/README.md" readme)
 foreach(required_text IN ITEMS
         "${DVS_EXPECTED_SHELL}"
-        "1.1.0→${DVS_EXPECTED_VERSION}"
+        "1.2.0→${DVS_EXPECTED_VERSION}"
         "不解码或播放音频")
     string(FIND "${readme}" "${required_text}" position)
     if(position EQUAL -1)

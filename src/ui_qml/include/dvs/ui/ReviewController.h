@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 class QUrl;
@@ -65,6 +66,8 @@ class ReviewController final : public QObject {
     Q_PROPERTY(QString manualAnchorStatus READ manualAnchorStatus NOTIFY stateChanged)
     Q_PROPERTY(
         QVariantList alignmentTimelineMarkers READ alignmentTimelineMarkers NOTIFY stateChanged)
+    Q_PROPERTY(qulonglong alignmentTimelineMarkerOverflowCount READ
+                   alignmentTimelineMarkerOverflowCount NOTIFY stateChanged)
     Q_PROPERTY(bool manualAnchorActive READ manualAnchorActive NOTIFY stateChanged)
     Q_PROPERTY(bool autoAlignmentActive READ autoAlignmentActive NOTIFY frameStateChanged)
     Q_PROPERTY(bool alignmentRequired READ alignmentRequired NOTIFY stateChanged)
@@ -92,10 +95,19 @@ public:
     };
     Q_ENUM(ReviewDisplayState)
 
+    // Adapter-neutral snapshot of the decoder selected for a source. The application runtime
+    // publishes these from coordinator work; the QML projection must not query decoder actors.
+    struct DecoderBackendState final {
+        domain::SourceId sourceId = 0U;
+        bool d3d11Va = false;
+        std::string fallbackReason;
+    };
+
     struct Dependencies final {
         std::function<application::PortSubmitResult(application::PlaybackCommand)> submit;
         std::function<std::shared_ptr<const application::SessionSnapshot>()> snapshot;
         std::function<std::vector<application::CommandTerminal>()> takeCompletedCommands;
+        std::function<std::vector<DecoderBackendState>()> decoderBackendStates;
         bool eventDriven = false;
     };
 
@@ -147,6 +159,7 @@ public:
     [[nodiscard]] QString alignmentAnalysisStatus() const;
     [[nodiscard]] QString manualAnchorStatus() const;
     [[nodiscard]] QVariantList alignmentTimelineMarkers() const;
+    [[nodiscard]] qulonglong alignmentTimelineMarkerOverflowCount() const noexcept;
     [[nodiscard]] bool manualAnchorActive() const noexcept;
     [[nodiscard]] bool autoAlignmentActive() const noexcept;
     [[nodiscard]] bool alignmentRequired() const noexcept;
@@ -162,6 +175,9 @@ public:
     [[nodiscard]] bool canLast() const noexcept;
     [[nodiscard]] bool canPlay() const noexcept;
     [[nodiscard]] bool canPause() const noexcept;
+    // The most recently accepted foreground session command. Shell orchestration uses this
+    // identity to associate the coordinator's exact terminal with one ReviewIntent.
+    [[nodiscard]] qulonglong lastSubmittedCommandId() const noexcept;
 
     Q_INVOKABLE bool openComparison(const QUrl& first, const QUrl& second);
     Q_INVOKABLE bool openSources(const QVariantList& urls, int referenceSourceIndex);
@@ -178,6 +194,7 @@ public:
                                        const QUrl& third,
                                        int referenceSourceIndex);
     Q_INVOKABLE bool closeSources();
+    Q_INVOKABLE void clearCandidateSourceErrors() noexcept;
     Q_INVOKABLE QVariantMap handleDroppedUrls(const QVariantList& urls) const;
     Q_INVOKABLE bool first();
     Q_INVOKABLE bool previous();
@@ -211,6 +228,7 @@ public:
 Q_SIGNALS:
     void stateChanged();
     void frameStateChanged();
+    void foregroundCommandFinished(qulonglong commandId, int outcome, const QString& errorKey);
 
 private:
     class Impl;

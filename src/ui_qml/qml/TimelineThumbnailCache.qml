@@ -44,8 +44,9 @@ QtObject {
         if (sample !== Number(frame) || urls[sample] !== undefined)
             return;
         const requestedGeneration = generation;
+        const requestedFrame = Number(frame);
         sourceItem.grabToImage(result => {
-            if (requestedGeneration !== cache.generation || !result || !result.url)
+            if (requestedGeneration !== cache.generation || requestedFrame !== cache.currentFrame || !result || !result.url)
                 return;
             const nextUrls = Object.assign({}, cache.urls);
             const nextHandles = Object.assign({}, cache.handles);

@@ -10,6 +10,7 @@ Item {
     required property var fileNameFunction
     required property int initialReferenceIndex
     readonly property bool comparisonVisible: comparisonDialog.visible
+    readonly property bool modalVisible: comparisonDialog.visible || videoFilesDialog.visible || addVideoDialog.visible
 
     signal openVideosAccepted(var urls)
     signal addVideoAccepted(url url)

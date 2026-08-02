@@ -7,6 +7,7 @@ T.ComboBox {
     id: control
 
     property bool blocksGlobalMediaShortcuts: true
+    property bool popupInputContext: popup.visible
     property color panelColor: "#1d2635"
     property color disabledPanelColor: "#202938"
     property color textColor: "#f3f6fb"
@@ -30,6 +31,7 @@ T.ComboBox {
 
         required property int index
         property bool blocksGlobalMediaShortcuts: true
+        property bool popupInputContext: true
 
         objectName: "toolbarComboDelegate-" + index
         width: ListView.view ? ListView.view.width : control.width
@@ -105,6 +107,7 @@ T.ComboBox {
         contentItem: ListView {
             objectName: "toolbarComboList"
             property bool blocksGlobalMediaShortcuts: true
+            property bool popupInputContext: true
 
             clip: true
             implicitHeight: contentHeight

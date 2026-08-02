@@ -167,6 +167,7 @@ public:
     application::PortSubmitResult submitResult = application::PortSubmitResult::Accepted;
     std::vector<application::PlaybackCommand> submitted;
     std::vector<application::CommandTerminal> terminals;
+    std::vector<ReviewController::DecoderBackendState> decoderBackendStates;
     std::size_t submitCalls = 0U;
     std::size_t snapshotCalls = 0U;
     std::size_t drainCalls = 0U;
@@ -208,6 +209,12 @@ dependenciesFor(const std::weak_ptr<FakeBackend>& weakBackend) {
                 backend->terminals.clear();
                 return result;
             },
+        .decoderBackendStates =
+            [weakBackend] {
+                const std::shared_ptr<FakeBackend> backend = weakBackend.lock();
+                return backend ? backend->decoderBackendStates
+                               : std::vector<ReviewController::DecoderBackendState>{};
+            },
     };
 }
 
@@ -243,6 +250,17 @@ TEST_F(ReviewControllerTests, ProjectsMediaTimeTimecodeAndDetailedSourceInformat
     auto backend = std::make_shared<FakeBackend>();
     backend->currentSnapshot =
         readySnapshotWithSources({"C:/media/reference.mp4", "C:/media/prediction.mp4"});
+    backend->decoderBackendStates = {
+        ReviewController::DecoderBackendState{
+            .sourceId = 0U,
+            .d3d11Va = false,
+            .fallbackReason = "shared-device-unavailable",
+        },
+        ReviewController::DecoderBackendState{
+            .sourceId = 1U,
+            .d3d11Va = true,
+        },
+    };
     ReviewController controller{dependenciesFor(backend)};
 
     EXPECT_EQ(controller.currentMediaTime(), 66'667);
@@ -258,7 +276,11 @@ TEST_F(ReviewControllerTests, ProjectsMediaTimeTimecodeAndDetailedSourceInformat
     EXPECT_EQ(first.value(QStringLiteral("width")).toUInt(), 1'920U);
     EXPECT_EQ(first.value(QStringLiteral("height")).toUInt(), 1'080U);
     EXPECT_EQ(first.value(QStringLiteral("codec")).toString(), QStringLiteral("h264"));
-    EXPECT_EQ(first.value(QStringLiteral("decodeBackend")).toString(), QStringLiteral("D3D11VA"));
+    EXPECT_EQ(first.value(QStringLiteral("decodeBackend")).toString(), QStringLiteral("Software"));
+    EXPECT_EQ(first.value(QStringLiteral("decodeFallbackReason")).toString(),
+              QStringLiteral("shared-device-unavailable"));
+    EXPECT_EQ(info[1].toMap().value(QStringLiteral("decodeBackend")).toString(),
+              QStringLiteral("D3D11VA"));
 }
 
 TEST_F(ReviewControllerTests, FormatsFractionalDropFrameAndVariableRateMediaTime) {
@@ -610,29 +632,50 @@ TEST_F(ReviewControllerTests, ControllerClosesTheActiveSessionWithoutAWorkspaceB
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, ShellBoundsAndSerializesStartupRequests) {
+TEST_F(ReviewControllerTests, ShellRoutesAndSerializesStartupRequestsThroughTheIntentQueue) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString firstPath = createFile(directory, QStringLiteral("startup_a.mp4"));
+    const QString secondPath = createFile(directory, QStringLiteral("startup_b.mp4"));
     auto backend = std::make_shared<FakeBackend>();
     ReviewController controller{dependenciesFor(backend)};
     ReviewShellController shell{controller};
-    const QVariantList files{QUrl::fromLocalFile(QStringLiteral("C:/media/a.mp4"))};
+    const QVariantList first{QUrl::fromLocalFile(firstPath)};
+    const QVariantList second{QUrl::fromLocalFile(secondPath)};
 
-    ASSERT_TRUE(shell.enqueueStartupRequest(2, files));
-    const QVariantMap active = shell.takeNextStartupRequest();
-    EXPECT_EQ(active.value(QStringLiteral("kind")).toInt(), 2);
-    EXPECT_TRUE(shell.startupRequestActive());
-    EXPECT_TRUE(shell.takeNextStartupRequest().isEmpty());
-    for (int index = 0; index < 8; ++index) {
-        EXPECT_TRUE(shell.enqueueStartupRequest(2, files));
-    }
-    EXPECT_FALSE(shell.enqueueStartupRequest(2, files));
-    EXPECT_EQ(shell.queuedStartupRequestCount(), 8);
-    shell.completeStartupRequest();
-    EXPECT_FALSE(shell.startupRequestActive());
-    EXPECT_EQ(shell.takeNextStartupRequest().value(QStringLiteral("kind")).toInt(), 2);
+    ASSERT_TRUE(shell.enqueueStartupRequest(2, first));
+    EXPECT_EQ(shell.activeIntent().value(QStringLiteral("origin")).toInt(),
+              ReviewShellController::StartupOrigin);
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const application::CommandContext firstContext =
+        application::commandContext(backend->submitted.front());
+
+    ASSERT_TRUE(shell.enqueueStartupRequest(2, second));
+    EXPECT_EQ(shell.queuedIntentCount(), 1);
+    EXPECT_EQ(shell.queuedIntents().front().toMap().value(QStringLiteral("origin")).toInt(),
+              ReviewShellController::StartupOrigin);
+
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{firstPath.toStdWString()}});
+    backend->terminals.push_back(application::CommandTerminal{
+        .context = firstContext,
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    ASSERT_TRUE(waitUntil([&backend] { return backend->submitted.size() == 2U; }));
+    EXPECT_EQ(shell.activeIntent().value(QStringLiteral("origin")).toInt(),
+              ReviewShellController::StartupOrigin);
+    EXPECT_EQ(shell.queuedIntentCount(), 0);
+    const auto* secondCommand =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.back());
+    ASSERT_NE(secondCommand, nullptr);
+    ASSERT_EQ(secondCommand->sources.size(), 1U);
+    EXPECT_EQ(secondCommand->sources.front().path,
+              std::filesystem::path{secondPath.toStdWString()});
     controller.stop();
 }
 
-TEST_F(ReviewControllerTests, ShellQueuesBusyIntentsAndDrainsThemInOrder) {
+TEST_F(ReviewControllerTests, ShellPrioritizesCloseAndCancelsOlderQueuedIntents) {
     QTemporaryDir directory;
     ASSERT_TRUE(directory.isValid());
     const QString sourceAPath = createFile(directory, QStringLiteral("queued_a.mp4"));
@@ -656,7 +699,9 @@ TEST_F(ReviewControllerTests, ShellQueuesBusyIntentsAndDrainsThemInOrder) {
         {QUrl::fromLocalFile(sourceAPath), QUrl::fromLocalFile(sourceBPath)}, 0));
     EXPECT_TRUE(shell.openStagedSources(false));
     EXPECT_TRUE(shell.closeSources());
-    EXPECT_EQ(shell.queuedIntentCount(), 2);
+    ASSERT_EQ(shell.queuedIntentCount(), 1);
+    EXPECT_EQ(shell.queuedIntents().front().toMap().value(QStringLiteral("kind")).toInt(),
+              ReviewShellController::CloseSourcesIntent);
     EXPECT_EQ(backend->submitted.size(), 1U);
 
     backend->currentSnapshot =
@@ -667,10 +712,85 @@ TEST_F(ReviewControllerTests, ShellQueuesBusyIntentsAndDrainsThemInOrder) {
         .outcome = application::CommandOutcome::Succeeded,
     });
     controller.refreshProjection();
-    QCoreApplication::processEvents();
-    ASSERT_EQ(backend->submitted.size(), 2U);
-    EXPECT_NE(std::get_if<application::OpenComparisonCommand>(&backend->submitted.back()), nullptr);
-    EXPECT_EQ(shell.queuedIntentCount(), 1);
+    ASSERT_TRUE(waitUntil([&backend] { return backend->submitted.size() == 2U; }));
+    EXPECT_NE(std::get_if<application::CloseSessionCommand>(&backend->submitted.back()), nullptr);
+    EXPECT_EQ(shell.queuedIntentCount(), 0);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellRebasesQueuedAddBySourceIdentityAfterGenerationChange) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceA = createFile(directory, QStringLiteral("a.mp4"));
+    const QString sourceB = createFile(directory, QStringLiteral("b.mp4"));
+    const QString sourceC = createFile(directory, QStringLiteral("c.mp4"));
+    const QString sourceD = createFile(directory, QStringLiteral("d.mp4"));
+    const QString sourceE = createFile(directory, QStringLiteral("e.mp4"));
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceA.toStdWString()},
+                                  std::filesystem::path{sourceB.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    ASSERT_TRUE(
+        shell.stageSources({QUrl::fromLocalFile(sourceC), QUrl::fromLocalFile(sourceD)}, 0));
+    ASSERT_TRUE(shell.openStagedSources(false));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    const application::CommandContext openContext =
+        application::commandContext(backend->submitted.front());
+
+    ASSERT_TRUE(shell.stageSources(
+        {QUrl::fromLocalFile(sourceA), QUrl::fromLocalFile(sourceB), QUrl::fromLocalFile(sourceE)},
+        0));
+    ASSERT_TRUE(shell.openStagedSources(true));
+    ASSERT_EQ(shell.queuedIntentCount(), 1);
+
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceC.toStdWString()},
+                                  std::filesystem::path{sourceD.toStdWString()}});
+    backend->terminals.push_back(application::CommandTerminal{
+        .context = openContext,
+        .outcome = application::CommandOutcome::Succeeded,
+    });
+    controller.refreshProjection();
+    ASSERT_TRUE(waitUntil([&backend] { return backend->submitted.size() == 2U; }));
+    const auto* rebased =
+        std::get_if<application::OpenComparisonCommand>(&backend->submitted.back());
+    ASSERT_NE(rebased, nullptr);
+    ASSERT_EQ(rebased->sources.size(), 3U);
+    EXPECT_EQ(rebased->sources[0U].path, std::filesystem::path{sourceC.toStdWString()});
+    EXPECT_EQ(rebased->sources[1U].path, std::filesystem::path{sourceD.toStdWString()});
+    EXPECT_EQ(rebased->sources[2U].path, std::filesystem::path{sourceE.toStdWString()});
+    EXPECT_EQ(shell.activeGeneration(), 1U);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellBoundsExposesAndCancelsQueuedIntents) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceA = createFile(directory, QStringLiteral("a.mp4"));
+    const QString sourceB = createFile(directory, QStringLiteral("b.mp4"));
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceA.toStdWString()},
+                                  std::filesystem::path{sourceB.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    ASSERT_TRUE(
+        controller.openSources({QUrl::fromLocalFile(sourceA), QUrl::fromLocalFile(sourceB)}, 0));
+    for (int index = 0; index < 8; ++index) {
+        EXPECT_TRUE(shell.removeActiveSource(index % 2));
+    }
+    EXPECT_FALSE(shell.removeActiveSource(0));
+    ASSERT_EQ(shell.queuedIntents().size(), 8);
+    const qulonglong firstId =
+        shell.queuedIntents().front().toMap().value(QStringLiteral("id")).toULongLong();
+    EXPECT_TRUE(shell.cancelQueuedIntent(firstId));
+    EXPECT_EQ(shell.queuedIntentCount(), 7);
+    shell.cancelAllQueuedIntents();
+    EXPECT_EQ(shell.queuedIntentCount(), 0);
     controller.stop();
 }
 
@@ -782,6 +902,14 @@ TEST_F(ReviewControllerTests, RejectsNonLocalMissingAndDirectoryUrlsWithoutDispa
                                            QUrl::fromLocalFile(validPath)));
     EXPECT_EQ(controller.sourceAErrorKey(), QStringLiteral("source-missing"));
     EXPECT_TRUE(backend->submitted.empty());
+
+    // Closing an already-empty review is a successful no-op, but it must still clear errors
+    // that came from the rejected candidate rather than an active session.
+    ReviewShellController shell{controller};
+    EXPECT_TRUE(shell.closeSources());
+    EXPECT_TRUE(controller.sourceAErrorKey().isEmpty());
+    EXPECT_TRUE(controller.sourceBErrorKey().isEmpty());
+    EXPECT_TRUE(controller.sourceCErrorKey().isEmpty());
     controller.stop();
 }
 

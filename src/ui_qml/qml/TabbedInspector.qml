@@ -281,6 +281,8 @@ Rectangle {
                 SpinBox {
                     id: thresholdSpinBox
 
+                    property bool blocksGlobalMediaShortcuts: true
+                    property bool textEditingInputContext: true
                     visible: control.differenceMode && control.differenceThresholdEnabled
                     width: parent.width
                     from: 0
@@ -527,6 +529,14 @@ Rectangle {
                     text: qsTr("Red · Missing    Orange · Duplicate    Purple · Extra\nCyan · Anchor    Yellow · Low confidence")
                     color: control.mutedTextColor
                 }
+                Label {
+                    objectName: "markerOverflowNotice"
+                    width: parent.width
+                    visible: Boolean(control.controller) && Number(control.controller.alignmentTimelineMarkerOverflowCount) > 0
+                    wrapMode: Text.WordWrap
+                    text: qsTr("%1 additional alignment markers are not shown on the timeline.").arg(Number(control.controller.alignmentTimelineMarkerOverflowCount))
+                    color: "#efbf83"
+                }
             }
         }
 
@@ -568,7 +578,8 @@ Rectangle {
                             x: 10
                             y: 10
                             wrapMode: Text.Wrap
-                            text: qsTr("Source %1 · %2\n%3 × %4 · %5 · %6 frames\n%7 · %8 · %9-bit\n%10 · %11 · %12\nDecode: %13 · Role: %14").arg(String(mediaCard.modelData.label)).arg(String(mediaCard.modelData.filename)).arg(Number(mediaCard.modelData.width)).arg(Number(mediaCard.modelData.height)).arg(String(mediaCard.modelData.frameRate)).arg(Number(mediaCard.modelData.frameCount)).arg(String(mediaCard.modelData.timingMode)).arg(String(mediaCard.modelData.codec)).arg(Number(mediaCard.modelData.bitDepth)).arg(String(mediaCard.modelData.pixelFormat)).arg(String(mediaCard.modelData.colorMatrix)).arg(String(mediaCard.modelData.colorRange)).arg(String(mediaCard.modelData.decodeBackend)).arg(String(mediaCard.modelData.role))
+                            readonly property string decoderFallbackSuffix: mediaCard.modelData.decodeFallbackReason ? qsTr(" (%1)").arg(String(mediaCard.modelData.decodeFallbackReason)) : ""
+                            text: qsTr("Source %1 · %2\n%3 × %4 · %5 · %6 frames\n%7 · %8 · %9-bit\n%10 · %11 · %12\nDecode: %13%14 · Role: %15").arg(String(mediaCard.modelData.label)).arg(String(mediaCard.modelData.filename)).arg(Number(mediaCard.modelData.width)).arg(Number(mediaCard.modelData.height)).arg(String(mediaCard.modelData.frameRate)).arg(Number(mediaCard.modelData.frameCount)).arg(String(mediaCard.modelData.timingMode)).arg(String(mediaCard.modelData.codec)).arg(Number(mediaCard.modelData.bitDepth)).arg(String(mediaCard.modelData.pixelFormat)).arg(String(mediaCard.modelData.colorMatrix)).arg(String(mediaCard.modelData.colorRange)).arg(String(mediaCard.modelData.decodeBackend)).arg(decoderFallbackSuffix).arg(String(mediaCard.modelData.role))
                             color: control.mutedTextColor
                             font.pixelSize: 11
                         }

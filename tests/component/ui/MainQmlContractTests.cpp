@@ -140,7 +140,12 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
         },
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
-    ReviewShellController shell{controller};
+    // A persisted three-source-only pair must not make a two-source session black. The
+    // preference remains intact for a later third source, while the render-facing state
+    // resolves to the valid A/B edge.
+    preferences.setViewMode(ReviewPreferencesController::ViewMode::Wipe);
+    preferences.setDifferenceEdge(ReviewPreferencesController::DifferenceEdge::Edge0And2);
+    ReviewShellController shell{controller, preferences};
 
     QQmlEngine engine;
     engine.addImportPath(
@@ -156,32 +161,18 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(qobject_cast<QQuickWindow*>(root.get()), nullptr);
     QCoreApplication::processEvents();
     ASSERT_EQ(controller.sources()->rowCount(), 2);
+    EXPECT_EQ(root->property("effectiveViewMode").toInt(), ComparisonSurface::Wipe);
+    EXPECT_EQ(root->property("differenceEdge").toInt(), ComparisonSurface::Edge0And1);
+    EXPECT_EQ(static_cast<int>(preferences.differenceEdge()),
+              static_cast<int>(ReviewPreferencesController::DifferenceEdge::Edge0And2));
     ASSERT_TRUE(QMetaObject::invokeMethod(root.get(), "setInPoint"));
     EXPECT_EQ(shell.inFrame(), 0);
     EXPECT_EQ(shell.inMediaTime(), controller.mediaTimeForFrame(0));
     shell.clearRange();
 
-    const QVariant requestUrls = QVariantList{QUrl::fromLocalFile(QStringLiteral("C:/a.mp4"))};
-    ASSERT_TRUE(shell.enqueueStartupRequest(2, requestUrls.toList()));
-    EXPECT_FALSE(shell.takeNextStartupRequest().isEmpty());
-    for (int requestIndex = 0; requestIndex < 8; ++requestIndex) {
-        QVariant accepted;
-        ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
-                                              "enqueueStartupRequest",
-                                              Q_RETURN_ARG(QVariant, accepted),
-                                              Q_ARG(QVariant, QVariant{2}),
-                                              Q_ARG(QVariant, requestUrls)));
-        EXPECT_TRUE(accepted.toBool());
-    }
-    QVariant overflowAccepted;
-    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
-                                          "enqueueStartupRequest",
-                                          Q_RETURN_ARG(QVariant, overflowAccepted),
-                                          Q_ARG(QVariant, QVariant{2}),
-                                          Q_ARG(QVariant, requestUrls)));
-    EXPECT_FALSE(overflowAccepted.toBool());
-    EXPECT_EQ(shell.queuedStartupRequestCount(), 8);
-    shell.completeStartupRequest();
+    EXPECT_EQ(shell.queuedIntentCount(), 0);
+    EXPECT_TRUE(shell.queuedIntents().isEmpty());
+    EXPECT_TRUE(shell.activeIntent().isEmpty());
 
     EXPECT_TRUE(root->property("manualAnchorActive").toBool());
     EXPECT_FALSE(root->property("manualOffsetActive").toBool());
@@ -253,6 +244,8 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     ASSERT_NE(transportBar, nullptr);
     ASSERT_NE(viewport, nullptr);
     ASSERT_NE(surface, nullptr);
+    EXPECT_EQ(surface->property("viewMode").toInt(), ComparisonSurface::Wipe);
+    EXPECT_EQ(surface->property("differenceEdge").toInt(), ComparisonSurface::Edge0And1);
     ASSERT_NE(sideModeButton, nullptr);
     ASSERT_NE(analysisChrome, nullptr);
     ASSERT_NE(surfaceLabelRepeater, nullptr);
@@ -444,6 +437,9 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     preferences.setViewMode(ReviewPreferencesController::ViewMode::ThreeUp);
     controller.refreshProjection();
     QCoreApplication::processEvents();
+    EXPECT_EQ(controller.sourceCount(), 3);
+    EXPECT_EQ(shell.effectiveViewMode(), ComparisonSurface::ThreeUp);
+    EXPECT_EQ(root->property("effectiveViewMode").toInt(), ComparisonSurface::ThreeUp);
     EXPECT_EQ(surfaceLabelRepeater->property("count").toInt(), 3);
     EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 3);
     EXPECT_EQ(root->property("availableViewModes").toList().size(), 6);
@@ -523,7 +519,10 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     controller.refreshProjection();
     preferences.setViewMode(ReviewPreferencesController::ViewMode::AnalysisGrid);
     QCoreApplication::processEvents();
-    EXPECT_EQ(preferences.viewMode(), ReviewPreferencesController::ViewMode::SideBySide);
+    // Two-source effective state falls back safely without overwriting the persisted three-up
+    // preference, which becomes valid again if a third source is later restored.
+    EXPECT_EQ(preferences.viewMode(), ReviewPreferencesController::ViewMode::AnalysisGrid);
+    EXPECT_EQ(root->property("effectiveViewMode").toInt(), ComparisonSurface::SideBySide);
     EXPECT_EQ(root->property("availableViewModes").toList().size(), 3);
     EXPECT_EQ(activeSourceRepeater->property("count").toInt(), 2);
     EXPECT_FALSE(analysisGridMenuItem->property("enabled").toBool());

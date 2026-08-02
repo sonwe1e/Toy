@@ -38,6 +38,8 @@ class ComparisonSurface : public QQuickItem {
     Q_PROPERTY(qreal wipeSplitLogicalX READ wipeSplitLogicalX NOTIFY presentationGeometryChanged)
     Q_PROPERTY(
         QVariantList sourcePanelRects READ sourcePanelRects NOTIFY presentationGeometryChanged)
+    Q_PROPERTY(QVariantList sourceDisplayInfo READ sourceDisplayInfo WRITE setSourceDisplayInfo
+                   NOTIFY presentationGeometryChanged)
     Q_PROPERTY(bool exactPlaneAvailable READ exactPlaneAvailable WRITE setExactPlaneAvailable NOTIFY
                    exactPlaneAvailableChanged)
     Q_PROPERTY(bool thresholdEnabled READ thresholdEnabled WRITE setThresholdEnabled NOTIFY
@@ -109,6 +111,14 @@ public:
     };
     Q_ENUM(ThresholdPolicy)
 
+    enum SurfaceRegionKind {
+        SourceRegion = 0,
+        DifferenceRegion = 1,
+        WipeCompositeRegion = 2,
+        EmptyRegion = 3,
+    };
+    Q_ENUM(SurfaceRegionKind)
+
     explicit ComparisonSurface(QQuickItem* parent = nullptr);
     ~ComparisonSurface() override;
 
@@ -127,8 +137,10 @@ public:
     void setDifferenceFilter(DifferenceFilter value);
     [[nodiscard]] qreal wipePosition() const noexcept;
     void setWipePosition(qreal value);
-    [[nodiscard]] qreal wipeSplitLogicalX() const noexcept;
+    [[nodiscard]] qreal wipeSplitLogicalX() const;
     [[nodiscard]] QVariantList sourcePanelRects() const;
+    [[nodiscard]] QVariantList sourceDisplayInfo() const;
+    void setSourceDisplayInfo(const QVariantList& value);
     [[nodiscard]] bool exactPlaneAvailable() const noexcept;
     void setExactPlaneAvailable(bool value);
     [[nodiscard]] bool thresholdEnabled() const noexcept;
@@ -161,6 +173,7 @@ public:
                                      qreal roiTop,
                                      qreal roiRight,
                                      qreal roiBottom);
+    Q_INVOKABLE qreal wipePositionForLogicalX(qreal x) const;
     Q_INVOKABLE QVariantMap mapSurfacePoint(qreal x, qreal y) const;
 
     [[nodiscard]] bool
@@ -201,6 +214,7 @@ private:
     DifferenceEdge differenceEdge_ = Edge0And1;
     DifferenceFilter differenceFilter_ = Bilinear;
     qreal wipePosition_ = 0.5;
+    QVariantList sourceDisplayInfo_;
     bool exactPlaneAvailable_ = false;
     bool thresholdEnabled_ = false;
     qreal threshold_ = 0.0;

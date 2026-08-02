@@ -3,6 +3,7 @@ param(
     [ValidateSet(
         '1080p60-1source',
         '1080p60-2source',
+        '1080p60-2source-rotated',
         '1080p60',
         '1080p120-1source',
         '1080p120-2source',
@@ -16,13 +17,21 @@ param(
     [ValidateRange(5, 3600)]
     [int]$DurationSeconds = 300,
 
+    [ValidateSet('side', 'wipe', 'diff')]
+    [string]$ComparisonMode = 'side',
+
+    [switch]$RequireRetainedFrame,
+
     [string]$FixtureRoot = $env:DVS_PERFORMANCE_FIXTURE_ROOT,
 
-    [string]$LogRoot
+    [string]$LogRoot,
+
+    [string]$RunName
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$ComparisonMode = $ComparisonMode.ToLowerInvariant()
 
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 if (-not $FixtureRoot) {
@@ -42,6 +51,9 @@ $fixtureNames = switch ($Profile) {
     '1080p60-2source' {
         @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4')
     }
+    '1080p60-2source-rotated' {
+        @('gate-1080p60-rot90-a.mp4', 'gate-1080p60-b.mp4')
+    }
     '1080p60' {
         @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4', 'gate-1080p60-c.mp4')
     }
@@ -59,9 +71,12 @@ $fixtures = foreach ($name in $fixtureNames) {
     (Resolve-Path -LiteralPath (Join-Path $resolvedFixtureRoot $name)).Path
 }
 
-$stderrPath = Join-Path $resolvedLogRoot "$Profile-stderr.log"
-$stdoutPath = Join-Path $resolvedLogRoot "$Profile-stdout.log"
-$arguments = @('--ui-performance') + $fixtures + @('--seconds', $DurationSeconds)
+if (-not $RunName) {
+    $RunName = if ($ComparisonMode -eq 'side') { $Profile } else { "$Profile-$ComparisonMode" }
+}
+$stderrPath = Join-Path $resolvedLogRoot "$runName-stderr.log"
+$stdoutPath = Join-Path $resolvedLogRoot "$runName-stdout.log"
+$arguments = @('--ui-performance') + $fixtures + @('--seconds', $DurationSeconds, '--mode', $ComparisonMode)
 $process = Start-Process `
     -FilePath $resolvedExecutable `
     -ArgumentList $arguments `
@@ -97,8 +112,8 @@ if (-not $resultLine) {
 
 $json = $resultLine.Substring('DVS_PERFORMANCE_RESULT '.Length) | ConvertFrom-Json
 $expectedSourceCount = switch -Wildcard ($Profile) {
-    '*-1source' { 1 }
-    '*-2source' { 2 }
+    '*-1source*' { 1 }
+    '*-2source*' { 2 }
     default { 3 }
 }
 if ($json.expected_source_count -ne $expectedSourceCount) {
@@ -106,6 +121,21 @@ if ($json.expected_source_count -ne $expectedSourceCount) {
         "The $Profile gate reported expected_source_count=" +
         "$($json.expected_source_count), expected $expectedSourceCount."
     )
+}
+if ($json.comparison_mode -ne $ComparisonMode -or -not $json.comparison_mode_verified) {
+    throw (
+        "The $runName gate did not verify comparison mode $ComparisonMode. " +
+        "Reported mode=$($json.comparison_mode), verified=$($json.comparison_mode_verified)."
+    )
+}
+if ($ComparisonMode -ne 'side' -and $json.comparison_bright_pixel_ratio -lt 0.01) {
+    throw (
+        "The $runName gate captured no meaningful rendered comparison pixels; " +
+        "ratio=$($json.comparison_bright_pixel_ratio)."
+    )
+}
+if ($RequireRetainedFrame -and -not $json.comparison_frame_retained) {
+    throw "$runName did not preserve the canonical frame while switching comparison modes."
 }
 if (-not $json.screen_refresh_hz -or $json.screen_refresh_hz -lt 120) {
     throw (
@@ -118,11 +148,12 @@ if ($process.ExitCode -ne 0 -or -not $json.passed) {
 }
 
 $summaryTemplate =
-    'DVS_GATE_PASSED profile={0} duration={1}s presented={2} dropped={3} ' +
-    'seek_p95={4}ms shutdown={5}ms'
+    'DVS_GATE_PASSED profile={0} mode={1} duration={2}s presented={3} dropped={4} ' +
+    'seek_p95={5}ms shutdown={6}ms'
 Write-Output (
     $summaryTemplate -f
     $Profile,
+    $ComparisonMode,
     $DurationSeconds,
     $json.presented_frames,
     $json.dropped_frames,

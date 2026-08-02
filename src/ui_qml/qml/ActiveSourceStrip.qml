@@ -11,6 +11,7 @@ Rectangle {
     required property bool singleMode
     required property int canonicalSourceIndex
     required property bool busy
+    required property var pendingSourceIndexes
     property color panelColor: "#111823"
     property color borderColor: "#303d51"
     property color accentColor: "#4b8df8"
@@ -65,6 +66,7 @@ Rectangle {
                 radius: 15
                 color: chip.sourceId === control.canonicalSourceIndex ? "#243f68" : "#1d2635"
                 border.color: chip.sourceId === control.canonicalSourceIndex ? control.accentColor : control.borderColor
+                readonly property bool pending: control.pendingSourceIndexes.indexOf(chip.sourceId) >= 0
 
                 Text {
                     id: chipText
@@ -76,8 +78,22 @@ Rectangle {
                     anchors {
                         left: parent.left
                         leftMargin: 12
-                        right: roleButton.left
-                        rightMargin: 6
+                        right: control.singleMode ? parent.right : pendingIndicator.left
+                        rightMargin: control.singleMode ? 12 : 6
+                        verticalCenter: parent.verticalCenter
+                    }
+                }
+
+                BusyIndicator {
+                    id: pendingIndicator
+
+                    visible: chip.pending
+                    running: visible
+                    width: 22
+                    height: 22
+                    anchors {
+                        right: roleButton.visible ? roleButton.left : parent.right
+                        rightMargin: roleButton.visible ? 2 : 7
                         verticalCenter: parent.verticalCenter
                     }
                 }
@@ -89,7 +105,7 @@ Rectangle {
                     width: 30
                     height: 30
                     text: chip.sourceId === control.canonicalSourceIndex ? "R" : "⋯"
-                    enabled: true
+                    enabled: !chip.pending
                     padding: 0
                     ToolTip.visible: hovered
                     ToolTip.text: chip.sourceId === control.canonicalSourceIndex ? qsTr("Canonical reference") : qsTr("Make Source %1 the reference").arg(String.fromCharCode(65 + chip.sourceId))

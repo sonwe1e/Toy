@@ -11,6 +11,7 @@ VcsMenuBar {
     required property int sourceCount
     required property bool busy
     required property int canonicalSourceIndex
+    required property int currentViewMode
     required property bool inspectorOpen
     required property bool graphicsReady
     required property int currentFrame
@@ -68,7 +69,7 @@ VcsMenuBar {
         VcsMenuItem {
             text: qsTr("Side by side")
             checkable: true
-            checked: Number(control.preferences.viewMode) === 0
+            checked: control.currentViewMode === 0
             onTriggered: {
                 control.preferences.viewMode = 0;
                 control.viewerFocusRequested();
@@ -77,7 +78,7 @@ VcsMenuBar {
         VcsMenuItem {
             text: qsTr("Wipe")
             checkable: true
-            checked: Number(control.preferences.viewMode) === 5
+            checked: control.currentViewMode === 5
             onTriggered: {
                 control.preferences.viewMode = 5;
                 control.viewerFocusRequested();
@@ -86,7 +87,7 @@ VcsMenuBar {
         VcsMenuItem {
             text: qsTr("Difference")
             checkable: true
-            checked: Number(control.preferences.viewMode) === 3
+            checked: control.currentViewMode === 3
             onTriggered: {
                 control.preferences.viewMode = 3;
                 control.viewerFocusRequested();
@@ -98,8 +99,10 @@ VcsMenuBar {
 
             VcsMenuItem {
                 text: qsTr("Three up")
+                enabled: control.sourceCount === 3
+                visible: control.sourceCount === 3
                 checkable: true
-                checked: Number(control.preferences.viewMode) === 1
+                checked: control.currentViewMode === 1
                 onTriggered: {
                     control.preferences.viewMode = 1;
                     control.viewerFocusRequested();
@@ -107,8 +110,10 @@ VcsMenuBar {
             }
             VcsMenuItem {
                 text: qsTr("Reference focus")
+                enabled: control.sourceCount === 3
+                visible: control.sourceCount === 3
                 checkable: true
-                checked: Number(control.preferences.viewMode) === 2
+                checked: control.currentViewMode === 2
                 onTriggered: {
                     control.preferences.viewMode = 2;
                     control.viewerFocusRequested();
@@ -119,7 +124,7 @@ VcsMenuBar {
                 text: qsTr("Analysis grid")
                 enabled: control.sourceCount === 3
                 checkable: true
-                checked: Number(control.preferences.viewMode) === 4
+                checked: control.currentViewMode === 4
                 onTriggered: {
                     control.preferences.viewMode = 4;
                     control.viewerFocusRequested();

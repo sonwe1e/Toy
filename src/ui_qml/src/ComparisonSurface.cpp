@@ -183,6 +183,86 @@ nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept
     };
 }
 
+[[nodiscard]] std::array<platform::SurfaceDisplayExtent, 3U>
+sourceDisplayExtents(const ComparisonSurface& surface) {
+    std::array<platform::SurfaceDisplayExtent, 3U> result{};
+    const QVariantList info = surface.sourceDisplayInfo();
+    const qreal roiWidth = surface.roiEnabled() ? surface.roiRight() - surface.roiLeft() : 1.0;
+    const qreal roiHeight = surface.roiEnabled() ? surface.roiBottom() - surface.roiTop() : 1.0;
+    for (qsizetype index = 0; index < info.size() && index < 3; ++index) {
+        const QVariantMap source = info[index].toMap();
+        const double width = source.value(QStringLiteral("width")).toDouble();
+        const double height = source.value(QStringLiteral("height")).toDouble();
+        const double sarNumerator =
+            source.value(QStringLiteral("sampleAspectNumerator"), 1U).toDouble();
+        const double sarDenominator =
+            source.value(QStringLiteral("sampleAspectDenominator"), 1U).toDouble();
+        const int rotation = source.value(QStringLiteral("rotationDegrees")).toInt();
+        if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(sarNumerator) ||
+            !std::isfinite(sarDenominator) || width <= 0.0 || height <= 0.0 ||
+            sarNumerator <= 0.0 || sarDenominator <= 0.0) {
+            continue;
+        }
+        const float displayWidth =
+            static_cast<float>(width * roiWidth * sarNumerator / sarDenominator);
+        const float displayHeight = static_cast<float>(height * roiHeight);
+        if (rotation == 90 || rotation == 270) {
+            result[static_cast<std::size_t>(index)] =
+                platform::SurfaceDisplayExtent{.width = displayHeight, .height = displayWidth};
+        } else {
+            result[static_cast<std::size_t>(index)] =
+                platform::SurfaceDisplayExtent{.width = displayWidth, .height = displayHeight};
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] platform::SurfacePresentationGeometry
+surfacePresentationGeometry(const ComparisonSurface& surface) {
+    const qreal devicePixelRatio =
+        surface.window() != nullptr ? surface.window()->effectiveDevicePixelRatio() : 1.0;
+    const auto pixelWidth = static_cast<std::uint32_t>(
+        std::max<qreal>(1.0, std::round(surface.width() * devicePixelRatio)));
+    const auto pixelHeight = static_cast<std::uint32_t>(
+        std::max<qreal>(1.0, std::round(surface.height() * devicePixelRatio)));
+    return platform::computeSurfacePresentationGeometry(
+        nativeViewMode(surface.viewMode()),
+        static_cast<float>(surface.width()),
+        static_cast<float>(surface.height()),
+        pixelWidth,
+        pixelHeight,
+        static_cast<std::uint8_t>(surface.referenceSlot()),
+        nativeDifferenceEdge(surface.differenceEdge()),
+        static_cast<float>(surface.wipePosition()),
+        sourceDisplayExtents(surface));
+}
+
+[[nodiscard]] int sourceRotationDegrees(const ComparisonSurface& surface, const int sourceSlot) {
+    if (sourceSlot < 0 || sourceSlot >= surface.sourceDisplayInfo().size()) {
+        return 0;
+    }
+    const int raw = surface.sourceDisplayInfo()[sourceSlot]
+                        .toMap()
+                        .value(QStringLiteral("rotationDegrees"))
+                        .toInt();
+    const int normalized = ((raw % 360) + 360) % 360;
+    return normalized == 90 || normalized == 180 || normalized == 270 ? normalized : 0;
+}
+
+[[nodiscard]] std::pair<qreal, qreal>
+sourceOrientedPoint(const qreal displayX, const qreal displayY, const int rotationDegrees) {
+    switch (rotationDegrees) {
+    case 90:
+        return {1.0 - displayY, displayX};
+    case 180:
+        return {1.0 - displayX, 1.0 - displayY};
+    case 270:
+        return {displayY, 1.0 - displayX};
+    default:
+        return {displayX, displayY};
+    }
+}
+
 [[nodiscard]] std::uint32_t pixelExtent(const qreal logicalExtent, const qreal dpr) noexcept {
     if (!std::isfinite(logicalExtent) || !std::isfinite(dpr) || logicalExtent <= 0.0 ||
         dpr <= 0.0) {
@@ -398,7 +478,7 @@ void ComparisonSurface::setWipePosition(const qreal value) {
     update();
 }
 
-qreal ComparisonSurface::wipeSplitLogicalX() const noexcept {
+qreal ComparisonSurface::wipeSplitLogicalX() const {
     return width() * wipePosition_;
 }
 
@@ -433,47 +513,124 @@ QVariantList ComparisonSurface::sourcePanelRects() const {
     return result;
 }
 
+QVariantList ComparisonSurface::sourceDisplayInfo() const {
+    return sourceDisplayInfo_;
+}
+
+void ComparisonSurface::setSourceDisplayInfo(const QVariantList& value) {
+    if (sourceDisplayInfo_ == value) {
+        return;
+    }
+    sourceDisplayInfo_ = value;
+    emit presentationGeometryChanged();
+}
+
+qreal ComparisonSurface::wipePositionForLogicalX(const qreal x) const {
+    if (!std::isfinite(x) || width() <= 0.0 || viewMode_ != Wipe) {
+        return 0.5;
+    }
+    return std::clamp(x / width(), 0.0, 1.0);
+}
+
 QVariantMap ComparisonSurface::mapSurfacePoint(const qreal x, const qreal y) const {
     if (!std::isfinite(x) || !std::isfinite(y) || width() <= 0.0 || height() <= 0.0) {
         return {};
     }
-    const qreal devicePixelRatio =
-        window() != nullptr ? window()->effectiveDevicePixelRatio() : 1.0;
-    const auto pixelWidth =
-        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(width() * devicePixelRatio)));
-    const auto pixelHeight =
-        static_cast<std::uint32_t>(std::max<qreal>(1.0, std::round(height() * devicePixelRatio)));
-    const platform::SurfacePanelLayout layout =
-        platform::computeSurfacePanelLayout(nativeViewMode(viewMode_),
-                                            static_cast<float>(width()),
-                                            static_cast<float>(height()),
-                                            pixelWidth,
-                                            pixelHeight,
-                                            static_cast<std::uint8_t>(referenceSlot_),
-                                            nativeDifferenceEdge(differenceEdge_),
-                                            static_cast<float>(wipePosition_));
-    for (std::size_t index = 0U; index < layout.sourceCount; ++index) {
-        const platform::SurfaceRect& rect = layout.sourceRects[index];
-        if (rect.width <= 0.0F || rect.height <= 0.0F || x < rect.x || y < rect.y ||
-            x > rect.x + rect.width || y > rect.y + rect.height) {
-            continue;
-        }
-        const qreal normalizedX = std::clamp((x - rect.x) / rect.width, 0.0, 1.0);
-        const qreal normalizedY = std::clamp((y - rect.y) / rect.height, 0.0, 1.0);
-        return QVariantMap{
-            {QStringLiteral("panel"), static_cast<int>(index)},
-            {QStringLiteral("panelIndex"), static_cast<int>(index)},
-            {QStringLiteral("sourceSlot"), static_cast<int>(layout.sourceSlots[index])},
-            {QStringLiteral("x"), normalizedX},
-            {QStringLiteral("y"), normalizedY},
-            {QStringLiteral("normalizedX"), normalizedX},
-            {QStringLiteral("normalizedY"), normalizedY},
+    const platform::SurfacePresentationGeometry geometry = surfacePresentationGeometry(*this);
+    const auto contains = [x, y](const platform::SurfaceRect& rect) {
+        return rect.isValid() && x >= rect.x && y >= rect.y && x <= rect.x + rect.width &&
+               y <= rect.y + rect.height;
+    };
+    const platform::SurfaceNormalizedRect sample = platform::effectiveSurfaceSampleRect(
+        platform::SurfaceViewTransform{
+            .centerX = static_cast<float>(viewCenterX_),
+            .centerY = static_cast<float>(viewCenterY_),
+            .scale = static_cast<float>(viewScale_),
+        },
+        roiEnabled_,
+        platform::SurfaceNormalizedRect{
+            .left = static_cast<float>(roiLeft_),
+            .top = static_cast<float>(roiTop_),
+            .right = static_cast<float>(roiRight_),
+            .bottom = static_cast<float>(roiBottom_),
+        });
+    const auto hit = [this, x, y, &sample](const SurfaceRegionKind region,
+                                           const int panelIndex,
+                                           const int sourceSlot,
+                                           const int coordinateSlot,
+                                           const bool insidePanel,
+                                           const platform::SurfaceRect& content) {
+        const bool insideContent = content.isValid() && x >= content.x && y >= content.y &&
+                                   x <= content.x + content.width &&
+                                   y <= content.y + content.height;
+        QVariantMap result{
+            {QStringLiteral("region"), region},
+            {QStringLiteral("panel"), panelIndex},
+            {QStringLiteral("panelIndex"), panelIndex},
+            {QStringLiteral("sourceSlot"), sourceSlot},
+            {QStringLiteral("insidePanel"), insidePanel},
+            {QStringLiteral("insideContent"), insideContent},
+            {QStringLiteral("insideVideoContent"), insideContent},
         };
+        if (insideContent) {
+            const qreal displayX = std::clamp((x - content.x) / content.width, 0.0, 1.0);
+            const qreal displayY = std::clamp((y - content.y) / content.height, 0.0, 1.0);
+            const auto [normalizedX, normalizedY] = sourceOrientedPoint(
+                displayX, displayY, sourceRotationDegrees(*this, coordinateSlot));
+            result.insert(QStringLiteral("displayX"), displayX);
+            result.insert(QStringLiteral("displayY"), displayY);
+            result.insert(QStringLiteral("x"), normalizedX);
+            result.insert(QStringLiteral("y"), normalizedY);
+            result.insert(QStringLiteral("normalizedX"), normalizedX);
+            result.insert(QStringLiteral("normalizedY"), normalizedY);
+            if (sample.isValid()) {
+                result.insert(QStringLiteral("sourceX"),
+                              sample.left + (normalizedX * (sample.right - sample.left)));
+                result.insert(QStringLiteral("sourceY"),
+                              sample.top + (normalizedY * (sample.bottom - sample.top)));
+            }
+        }
+        return result;
+    };
+
+    if (viewMode_ == Wipe && geometry.wipeContentRect.has_value()) {
+        const bool insidePanel = x >= 0.0 && y >= 0.0 && x <= width() && y <= height();
+        const int panelIndex = x <= wipeSplitLogicalX() ? 0 : 1;
+        const int sourceSlot = static_cast<int>(geometry.panels.sourceSlots[panelIndex]);
+        return hit(WipeCompositeRegion,
+                   panelIndex,
+                   sourceSlot,
+                   sourceSlot,
+                   insidePanel,
+                   *geometry.wipeContentRect);
+    }
+    for (std::size_t index = 0U; index < geometry.panels.sourceCount; ++index) {
+        if (contains(geometry.panels.sourceRects[index])) {
+            return hit(SourceRegion,
+                       static_cast<int>(index),
+                       static_cast<int>(geometry.panels.sourceSlots[index]),
+                       static_cast<int>(geometry.panels.sourceSlots[index]),
+                       true,
+                       geometry.sourceContentRects[index]);
+        }
+    }
+    if (geometry.panels.differenceRect.has_value() && contains(*geometry.panels.differenceRect)) {
+        const int firstDifferenceSlot = differenceEdge_ == Edge1And2 ? 1 : 0;
+        return hit(DifferenceRegion,
+                   static_cast<int>(geometry.panels.sourceCount),
+                   -1,
+                   firstDifferenceSlot,
+                   true,
+                   geometry.differenceContentRect.value_or(platform::SurfaceRect{}));
     }
     return QVariantMap{
+        {QStringLiteral("region"), EmptyRegion},
         {QStringLiteral("panel"), -1},
         {QStringLiteral("panelIndex"), -1},
         {QStringLiteral("sourceSlot"), -1},
+        {QStringLiteral("insidePanel"), false},
+        {QStringLiteral("insideContent"), false},
+        {QStringLiteral("insideVideoContent"), false},
     };
 }
 

@@ -3,6 +3,7 @@
 #include "dvs/application/Commands.h"
 #include "dvs/application/PlaybackCoordinator.h"
 #include "dvs/media/AlignmentAnalysisService.h"
+#include "dvs/media/DecoderBackend.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
 #include "dvs/persistence/SettingsRepository.h"
@@ -25,7 +26,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <memory>
 #include <mutex>
@@ -42,7 +42,6 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr std::size_t kPlaybackFrameBudgetBytes = 224U * 1024U * 1024U;
-constexpr auto kGraphicsPollInterval = 2ms;
 constexpr auto kAdapterShutdownTimeout = 2s;
 constexpr auto kTotalShutdownTimeout = 7s;
 constexpr auto kShutdownReturnMargin = 50ms;
@@ -116,6 +115,59 @@ private:
     ui::ReviewController* controller_ = nullptr;
 };
 
+// The coordinator worker snapshots decoder selection after publishing session state. The GUI
+// reads only this immutable cache, so media-info projection never waits on decoder actors.
+class DecoderBackendStateCache final {
+public:
+    void refresh(const std::weak_ptr<media::MultiSourceFrameProvider>& weakProvider) noexcept {
+        try {
+            const std::shared_ptr<media::MultiSourceFrameProvider> provider = weakProvider.lock();
+            if (!provider) {
+                states_.store({}, std::memory_order_release);
+                return;
+            }
+
+            const std::vector<media::DecoderBackendStatus> backendStatuses =
+                provider->decoderBackendStatuses();
+            std::vector<ui::ReviewController::DecoderBackendState> next;
+            next.reserve(backendStatuses.size());
+            for (const media::DecoderBackendStatus& status : backendStatuses) {
+                const bool initialized = status.backend == media::DecoderBackend::D3d11Va ||
+                                         status.deviceGeneration.value() != 0U ||
+                                         !status.fallbackReason.empty() ||
+                                         status.completedDecodeCount != 0U;
+                if (!initialized) {
+                    continue;
+                }
+                next.push_back(ui::ReviewController::DecoderBackendState{
+                    .sourceId = status.sourceId,
+                    .d3d11Va = status.backend == media::DecoderBackend::D3d11Va,
+                    .fallbackReason = status.fallbackReason,
+                });
+            }
+            states_.store(
+                std::make_shared<const std::vector<ui::ReviewController::DecoderBackendState>>(
+                    std::move(next)),
+                std::memory_order_release);
+        } catch (...) {
+            states_.store({}, std::memory_order_release);
+        }
+    }
+
+    [[nodiscard]] std::vector<ui::ReviewController::DecoderBackendState> snapshot() const noexcept {
+        try {
+            const auto states = states_.load(std::memory_order_acquire);
+            return states ? *states : std::vector<ui::ReviewController::DecoderBackendState>{};
+        } catch (...) {
+            return {};
+        }
+    }
+
+private:
+    std::atomic<std::shared_ptr<const std::vector<ui::ReviewController::DecoderBackendState>>>
+        states_;
+};
+
 class GraphicsNotificationPump final {
 public:
     GraphicsNotificationPump(std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker,
@@ -126,7 +178,7 @@ public:
         if (!deviceBroker_ || !frameMailbox_) {
             throw std::invalid_argument{"Graphics notification pump dependencies are required."};
         }
-        worker_ = std::thread{[this] { run(); }};
+        worker_ = std::jthread{[this](const std::stop_token stopToken) { run(stopToken); }};
     }
 
     ~GraphicsNotificationPump() {
@@ -137,8 +189,7 @@ public:
     GraphicsNotificationPump& operator=(const GraphicsNotificationPump&) = delete;
 
     void requestStop() noexcept {
-        stopping_.store(true, std::memory_order_release);
-        wake_.notify_all();
+        worker_.request_stop();
     }
 
     void stop() noexcept {
@@ -154,13 +205,7 @@ public:
     }
 
 private:
-    [[nodiscard]] bool drainOne() noexcept {
-        std::optional<platform::GraphicsDeviceNotification> notification =
-            deviceBroker_->tryConsumeNotification();
-        if (!notification.has_value()) {
-            return false;
-        }
-
+    [[nodiscard]] bool dispatch(platform::GraphicsDeviceNotification notification) noexcept {
         try {
             std::visit(
                 [this](auto&& event) {
@@ -173,33 +218,27 @@ private:
                         }));
                     }
                 },
-                std::move(*notification));
+                std::move(notification));
         } catch (...) {
-            stopping_.store(true, std::memory_order_release);
-            wake_.notify_all();
+            return false;
         }
         return true;
     }
 
-    void run() noexcept {
-        while (!stopping_.load(std::memory_order_acquire)) {
-            while (!stopping_.load(std::memory_order_acquire) && drainOne()) {
+    void run(const std::stop_token stopToken) noexcept {
+        while (!stopToken.stop_requested()) {
+            std::optional<platform::GraphicsDeviceNotification> notification =
+                deviceBroker_->waitForNotification(stopToken);
+            if (!notification.has_value() || !dispatch(std::move(*notification))) {
+                return;
             }
-
-            std::unique_lock lock{waitMutex_};
-            static_cast<void>(wake_.wait_for(lock, kGraphicsPollInterval, [this] {
-                return stopping_.load(std::memory_order_acquire);
-            }));
         }
     }
 
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker_;
     std::shared_ptr<platform::FrameMailbox> frameMailbox_;
     std::weak_ptr<application::IApplicationEventSink> events_;
-    std::atomic<bool> stopping_{false};
-    std::mutex waitMutex_;
-    std::condition_variable wake_;
-    std::thread worker_;
+    std::jthread worker_;
 };
 
 [[nodiscard]] std::chrono::milliseconds
@@ -326,9 +365,11 @@ public:
         settingsRepository_ = std::make_shared<persistence::SettingsRepository>();
         frameProvider_ = std::make_shared<media::MultiSourceFrameProvider>(
             *frameBudget_, 16U, false, deviceBroker_);
+        decoderBackendStateCache_ = std::make_shared<DecoderBackendStateCache>();
         alignmentAnalysisService_ = std::make_shared<media::AlignmentAnalysisService>();
         deadlineScheduler_ = std::make_shared<platform::SteadyDeadlineScheduler>();
         clock_ = std::make_shared<platform::SystemSteadyClock>();
+        const std::weak_ptr<media::MultiSourceFrameProvider> weakFrameProvider = frameProvider_;
         coordinator_ = application::PlaybackCoordinator::create(
             domain::SessionId{1U},
             application::PlaybackCoordinator::Dependencies{
@@ -338,7 +379,13 @@ public:
                 .deadlineScheduler = deadlineScheduler_,
                 .clock = clock_,
                 .renderChannel = renderChannel_,
-                .statePublished = [bridge = projectionBridge_] { bridge->notify(); },
+                .statePublished =
+                    [bridge = projectionBridge_,
+                     weakFrameProvider,
+                     decoderBackendStateCache = decoderBackendStateCache_] {
+                        decoderBackendStateCache->refresh(weakFrameProvider);
+                        bridge->notify();
+                    },
             });
         if (!coordinator_) {
             throw std::runtime_error{"The playback coordinator could not be created."};
@@ -372,6 +419,10 @@ public:
                         return coordinator->takeCompletedCommands();
                     }
                     return std::vector<application::CommandTerminal>{};
+                },
+            .decoderBackendStates =
+                [decoderBackendStateCache = decoderBackendStateCache_] {
+                    return decoderBackendStateCache->snapshot();
                 },
             .eventDriven = true,
         });
@@ -570,6 +621,7 @@ private:
     std::shared_ptr<media::MediaProbe> mediaProbe_;
     std::shared_ptr<application::ISettingsRepository> settingsRepository_;
     std::shared_ptr<media::MultiSourceFrameProvider> frameProvider_;
+    std::shared_ptr<DecoderBackendStateCache> decoderBackendStateCache_;
     std::shared_ptr<media::AlignmentAnalysisService> alignmentAnalysisService_;
     std::shared_ptr<platform::SteadyDeadlineScheduler> deadlineScheduler_;
     std::shared_ptr<platform::SystemSteadyClock> clock_;

@@ -6,11 +6,12 @@ cbuffer ComposeConstants : register(b0) {
     float4 clipFromItemRow2 : packoffset(c2);
     float4 clipFromItemRow3 : packoffset(c3);
     float4 destinationRect : packoffset(c4);
-    float4 sourceUvRect : packoffset(c5);
-    float opacity : packoffset(c6.x);
-    float3 composePadding : packoffset(c6.y);
-    uint sourceRotation : packoffset(c7.x);
-    float3 rotationPadding : packoffset(c7.y);
+    float4 textureRegion : packoffset(c5);
+    float4 displayUvRect : packoffset(c6);
+    float opacity : packoffset(c7.x);
+    float3 composePadding : packoffset(c7.y);
+    uint sourceRotation : packoffset(c8.x);
+    float3 rotationPadding : packoffset(c8.y);
 };
 
 struct ComposeVertexOutput {
@@ -33,7 +34,7 @@ ComposeVertexOutput ComposeVertexShader(uint vertexId : SV_VertexID) {
         dot(clipFromItemRow1, item),
         dot(clipFromItemRow2, item),
         dot(clipFromItemRow3, item));
-    float2 displayUv = sourceUvRect.xy + (corner * sourceUvRect.zw);
+    float2 displayUv = displayUvRect.xy + (corner * displayUvRect.zw);
     if (sourceRotation == 1U) {
         displayUv = float2(1.0f - displayUv.y, displayUv.x);
     } else if (sourceRotation == 2U) {
@@ -41,7 +42,7 @@ ComposeVertexOutput ComposeVertexShader(uint vertexId : SV_VertexID) {
     } else if (sourceRotation == 3U) {
         displayUv = float2(displayUv.y, 1.0f - displayUv.x);
     }
-    output.uv = displayUv;
+    output.uv = textureRegion.xy + (displayUv * textureRegion.zw);
     output.opacity = opacity;
     return output;
 }

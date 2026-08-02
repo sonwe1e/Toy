@@ -366,6 +366,10 @@ TEST(ComparisonSurfaceGeometryTests, MapsPointerInputThroughTheRendererPanelLayo
     ComparisonSurface surface;
     surface.setWidth(800.0);
     surface.setHeight(450.0);
+    surface.setSourceDisplayInfo(
+        {QVariantMap{{QStringLiteral("width"), 1920}, {QStringLiteral("height"), 1080}},
+         QVariantMap{{QStringLiteral("width"), 1920}, {QStringLiteral("height"), 1080}},
+         QVariantMap{{QStringLiteral("width"), 1920}, {QStringLiteral("height"), 1080}}});
     surface.setViewMode(ComparisonSurface::Wipe);
     surface.setDifferenceEdge(ComparisonSurface::Edge1And2);
     surface.setWipePosition(0.25);
@@ -373,14 +377,80 @@ TEST(ComparisonSurfaceGeometryTests, MapsPointerInputThroughTheRendererPanelLayo
     const QVariantMap left = surface.mapSurfacePoint(100.0, 225.0);
     EXPECT_EQ(left.value(QStringLiteral("panelIndex")).toInt(), 0);
     EXPECT_EQ(left.value(QStringLiteral("sourceSlot")).toInt(), 1);
-    EXPECT_DOUBLE_EQ(left.value(QStringLiteral("normalizedX")).toDouble(), 0.5);
+    EXPECT_EQ(left.value(QStringLiteral("region")).toInt(), ComparisonSurface::WipeCompositeRegion);
+    EXPECT_TRUE(left.value(QStringLiteral("insideContent")).toBool());
+    EXPECT_DOUBLE_EQ(left.value(QStringLiteral("normalizedX")).toDouble(), 0.125);
     EXPECT_DOUBLE_EQ(left.value(QStringLiteral("normalizedY")).toDouble(), 0.5);
 
     const QVariantMap right = surface.mapSurfacePoint(500.0, 225.0);
     EXPECT_EQ(right.value(QStringLiteral("panelIndex")).toInt(), 1);
     EXPECT_EQ(right.value(QStringLiteral("sourceSlot")).toInt(), 2);
-    EXPECT_DOUBLE_EQ(right.value(QStringLiteral("normalizedX")).toDouble(), 0.5);
+    EXPECT_TRUE(right.value(QStringLiteral("insideContent")).toBool());
+    EXPECT_DOUBLE_EQ(right.value(QStringLiteral("normalizedX")).toDouble(), 0.625);
     EXPECT_DOUBLE_EQ(right.value(QStringLiteral("normalizedY")).toDouble(), 0.5);
+}
+
+TEST(ComparisonSurfaceGeometryTests, RejectsLetterboxAndMapsAnalysisDifferenceContent) {
+    ComparisonSurface surface;
+    surface.setWidth(800.0);
+    surface.setHeight(800.0);
+    surface.setSourceDisplayInfo(
+        {QVariantMap{{QStringLiteral("width"), 1920}, {QStringLiteral("height"), 1080}},
+         QVariantMap{{QStringLiteral("width"), 1080}, {QStringLiteral("height"), 1920}},
+         QVariantMap{{QStringLiteral("width"), 1920}, {QStringLiteral("height"), 1080}}});
+    surface.setViewMode(ComparisonSurface::Single);
+
+    const QVariantMap letterbox = surface.mapSurfacePoint(400.0, 50.0);
+    EXPECT_TRUE(letterbox.value(QStringLiteral("insidePanel")).toBool());
+    EXPECT_FALSE(letterbox.value(QStringLiteral("insideContent")).toBool());
+
+    surface.setViewMode(ComparisonSurface::AnalysisGrid);
+    const QVariantMap difference = surface.mapSurfacePoint(600.0, 600.0);
+    EXPECT_EQ(difference.value(QStringLiteral("region")).toInt(),
+              ComparisonSurface::DifferenceRegion);
+    EXPECT_EQ(difference.value(QStringLiteral("panelIndex")).toInt(), 3);
+    EXPECT_TRUE(difference.value(QStringLiteral("insideContent")).toBool());
+    EXPECT_DOUBLE_EQ(difference.value(QStringLiteral("normalizedX")).toDouble(), 0.5);
+    EXPECT_DOUBLE_EQ(difference.value(QStringLiteral("normalizedY")).toDouble(), 0.5);
+}
+
+TEST(ComparisonSurfaceGeometryTests, MapsRotatedRoiAndZoomPointsBackToSourceCoordinates) {
+    ComparisonSurface surface;
+    surface.setWidth(800.0);
+    surface.setHeight(800.0);
+    surface.setSourceDisplayInfo({QVariantMap{{QStringLiteral("width"), 1920},
+                                              {QStringLiteral("height"), 1080},
+                                              {QStringLiteral("rotationDegrees"), 90}}});
+    surface.setViewMode(ComparisonSurface::Single);
+    surface.restoreViewport(0.5, 0.5, 2.0, true, 0.2, 0.1, 0.8, 0.9);
+
+    // The displayed ROI is 600 x 800 with a 90-degree source rotation. Its top-left
+    // logical point is therefore the source's upper-right point in the zoomed ROI.
+    const QVariantMap point = surface.mapSurfacePoint(100.0, 0.0);
+    EXPECT_TRUE(point.value(QStringLiteral("insideContent")).toBool());
+    EXPECT_NEAR(point.value(QStringLiteral("displayX")).toDouble(), 0.0, 0.0001);
+    EXPECT_NEAR(point.value(QStringLiteral("displayY")).toDouble(), 0.0, 0.0001);
+    EXPECT_NEAR(point.value(QStringLiteral("normalizedX")).toDouble(), 1.0, 0.0001);
+    EXPECT_NEAR(point.value(QStringLiteral("normalizedY")).toDouble(), 0.0, 0.0001);
+    EXPECT_NEAR(point.value(QStringLiteral("sourceX")).toDouble(), 0.65, 0.0001);
+    EXPECT_NEAR(point.value(QStringLiteral("sourceY")).toDouble(), 0.3, 0.0001);
+}
+
+TEST(ComparisonSurfaceGeometryTests, KeepsWipeHandleAlignedWithSurfaceCoordinates) {
+    ComparisonSurface surface;
+    surface.setWidth(800.0);
+    surface.setHeight(800.0);
+    surface.setSourceDisplayInfo(
+        {QVariantMap{{QStringLiteral("width"), 1080}, {QStringLiteral("height"), 1920}},
+         QVariantMap{{QStringLiteral("width"), 1080}, {QStringLiteral("height"), 1920}}});
+    surface.setViewMode(ComparisonSurface::Wipe);
+    surface.setWipePosition(0.25);
+
+    // The divider remains in surface coordinates even when portrait content is letterboxed.
+    EXPECT_NEAR(surface.wipeSplitLogicalX(), 200.0, 0.0001);
+    EXPECT_NEAR(surface.wipePositionForLogicalX(200.0), 0.25, 0.0001);
+    EXPECT_NEAR(surface.wipePositionForLogicalX(0.0), 0.0, 0.0001);
+    EXPECT_NEAR(surface.wipePositionForLogicalX(800.0), 1.0, 0.0001);
 }
 
 TEST(ComparisonSurfaceColorTests, ConvertsFullRangeBt601AndBt709WithDifferentMatrices) {
@@ -992,6 +1062,12 @@ public:
     [[nodiscard]] QImage grab() {
         requestRender();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        // A QQuickRenderNode synchronizes GUI-thread properties on the next scene-graph frame.
+        // Consume that frame before capturing so a setter immediately followed by grab() cannot
+        // observe the previous Wipe/ROI state.
+        static_cast<void>(window.grabWindow());
+        requestRender();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         return window.grabWindow();
     }
 
@@ -1537,6 +1613,35 @@ TEST(ComparisonSurfaceWarpTests, WipeUsesTheSelectedPairAndDraggableSplitPositio
         EXPECT_LT(pairLeft.green(), pairRight.green());
         EXPECT_LT(pairLeft.blue(), pairRight.blue());
     }
+
+    harness.releaseRenderer();
+    EXPECT_TRUE(actor.shutdown(2s));
+}
+
+TEST(ComparisonSurfaceWarpTests, WipeLeavesOnlyTheUnavailableSideBlack) {
+    SurfaceWarpHarness harness;
+    harness.surface.setViewMode(ComparisonSurface::Wipe);
+    harness.surface.setDifferenceEdge(ComparisonSurface::Edge0And1);
+    harness.surface.setWipePosition(0.5);
+    ASSERT_TRUE(harness.start());
+
+    auto budget = std::make_shared<platform::FrameBudget>(16U * 1024U * 1024U);
+    platform::GpuTransferActor actor{budget, harness.broker, harness.mailbox, harness.activitySink};
+    std::optional<application::FrameSet> set =
+        makeThreeSolidSetWithMissingMiddle(*budget, domain::FrameId{43});
+    ASSERT_TRUE(set.has_value());
+    ASSERT_EQ(actor.submit(makeContext(43U), std::move(*set)),
+              platform::GpuTransferSubmitResult::Accepted);
+    ASSERT_TRUE(actor.waitUntilIdle(5s));
+
+    const QImage image = harness.grab().convertToFormat(QImage::Format_RGBA8888);
+    ASSERT_FALSE(image.isNull());
+    const int middleY = image.height() / 2;
+    const QColor available = image.pixelColor(image.width() / 4, middleY);
+    const QColor unavailable = image.pixelColor(image.width() * 3 / 4, middleY);
+    EXPECT_GT(available.red() + available.green() + available.blue(), 20);
+    expectColorNear(unavailable, QColor{0, 0, 0}, 2);
+    EXPECT_TRUE(harness.acknowledgementMailbox->tryPop().has_value());
 
     harness.releaseRenderer();
     EXPECT_TRUE(actor.shutdown(2s));

@@ -10,6 +10,7 @@
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMetaObject>
 #include <QMouseEvent>
@@ -19,6 +20,7 @@
 #include <QQmlEngine>
 #include <QQmlError>
 #include <QQuickGraphicsConfiguration>
+#include <QQuickItem>
 #include <QQuickWindow>
 #include <QResource>
 #include <QScreen>
@@ -82,7 +84,7 @@ public:
         engine->rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewPreferences"),
                                                   &preferences);
-        shellController_ = std::make_unique<ReviewSessionFacade>(controller);
+        shellController_ = std::make_unique<ReviewSessionFacade>(controller, preferences);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewSession"),
                                                   shellController_.get());
         const QMetaObject::Connection warningConnection = QObject::connect(
@@ -316,6 +318,55 @@ public:
                                : std::nullopt;
     }
 
+    [[nodiscard]] std::optional<int>
+    objectIntPropertyForAutomation(const std::string_view objectName,
+                                   const std::string_view propertyName) const {
+        if (window_ == nullptr || objectName.empty() || propertyName.empty()) {
+            return std::nullopt;
+        }
+        const QObject* const object = window_->findChild<QObject*>(
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (object == nullptr) {
+            return std::nullopt;
+        }
+        const std::string property{propertyName};
+        bool converted = false;
+        const int value = object->property(property.c_str()).toInt(&converted);
+        return converted ? std::optional<int>{value} : std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<QImage>
+    captureControlForAutomation(const std::string_view objectName) const {
+        if (window_ == nullptr || objectName.empty() || window_->width() <= 0 ||
+            window_->height() <= 0) {
+            return std::nullopt;
+        }
+        auto* const item = window_->findChild<QQuickItem*>(
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (item == nullptr || !item->isVisible() || item->width() <= 0.0 ||
+            item->height() <= 0.0) {
+            return std::nullopt;
+        }
+        const QImage windowImage = window_->grabWindow();
+        if (windowImage.isNull()) {
+            return std::nullopt;
+        }
+        const QPointF topLeft = item->mapToScene(QPointF{});
+        const qreal scaleX = static_cast<qreal>(windowImage.width()) / window_->width();
+        const qreal scaleY = static_cast<qreal>(windowImage.height()) / window_->height();
+        const QRect pixelBounds{
+            static_cast<int>(std::floor(topLeft.x() * scaleX)),
+            static_cast<int>(std::floor(topLeft.y() * scaleY)),
+            static_cast<int>(std::ceil(item->width() * scaleX)),
+            static_cast<int>(std::ceil(item->height() * scaleY)),
+        };
+        const QRect bounded = pixelBounds.intersected(windowImage.rect());
+        if (bounded.isEmpty()) {
+            return std::nullopt;
+        }
+        return windowImage.copy(bounded);
+    }
+
     void releaseSceneGraph() noexcept {
         if (!engine_) {
             return;
@@ -414,6 +465,17 @@ std::optional<std::string>
 DesktopApplication::objectStringPropertyForAutomation(const std::string_view objectName,
                                                       const std::string_view propertyName) const {
     return impl_->objectStringPropertyForAutomation(objectName, propertyName);
+}
+
+std::optional<int>
+DesktopApplication::objectIntPropertyForAutomation(const std::string_view objectName,
+                                                   const std::string_view propertyName) const {
+    return impl_->objectIntPropertyForAutomation(objectName, propertyName);
+}
+
+std::optional<QImage>
+DesktopApplication::captureControlForAutomation(const std::string_view objectName) const {
+    return impl_->captureControlForAutomation(objectName);
 }
 
 void DesktopApplication::releaseSceneGraph() noexcept {

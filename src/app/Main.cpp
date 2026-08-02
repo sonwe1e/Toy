@@ -3,6 +3,7 @@
 #endif
 
 #include "dvs/platform/ProcessTelemetry.h"
+#include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/DesktopApplication.h"
 #include "dvs/ui/GraphicsBackend.h"
 #include "dvs/ui/ReviewController.h"
@@ -16,6 +17,7 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -68,6 +70,18 @@ struct SmokeSources final {
     std::optional<std::filesystem::path> third;
 };
 
+enum class PerformanceComparisonMode {
+    Side,
+    Wipe,
+    Difference,
+};
+
+struct PerformanceInvocation final {
+    SmokeSources sources;
+    std::chrono::seconds duration;
+    PerformanceComparisonMode comparisonMode = PerformanceComparisonMode::Side;
+};
+
 struct PerformanceMetrics final {
     std::uint64_t presentedFrames = 0U;
     std::uint64_t droppedFrames = 0U;
@@ -86,6 +100,10 @@ struct PerformanceMetrics final {
     qint64 analysisMilliseconds = -1;
     std::uint64_t analysisDecodedFrames = 0U;
     qint64 shutdownMilliseconds = -1;
+    std::uint64_t comparisonSampledPixels = 0U;
+    double comparisonBrightPixelRatio = 0.0;
+    bool comparisonModeVerified = false;
+    bool comparisonFrameRetained = false;
 };
 
 void writeStandardError(std::string_view message) noexcept {
@@ -115,6 +133,145 @@ void writeStandardError(std::string_view message) noexcept {
         return std::nullopt;
     }
     return std::chrono::seconds{seconds};
+}
+
+[[nodiscard]] std::optional<PerformanceComparisonMode>
+parsePerformanceComparisonMode(const std::string_view text) {
+    if (text == "side") {
+        return PerformanceComparisonMode::Side;
+    }
+    if (text == "wipe") {
+        return PerformanceComparisonMode::Wipe;
+    }
+    if (text == "diff") {
+        return PerformanceComparisonMode::Difference;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string_view
+performanceComparisonModeName(const PerformanceComparisonMode comparisonMode) noexcept {
+    switch (comparisonMode) {
+    case PerformanceComparisonMode::Side:
+        return "side";
+    case PerformanceComparisonMode::Wipe:
+        return "wipe";
+    case PerformanceComparisonMode::Difference:
+        return "diff";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] std::string_view
+performanceModeControlName(const PerformanceComparisonMode comparisonMode) noexcept {
+    switch (comparisonMode) {
+    case PerformanceComparisonMode::Side:
+        return "sideModeButton";
+    case PerformanceComparisonMode::Wipe:
+        return "wipeModeButton";
+    case PerformanceComparisonMode::Difference:
+        return "diffModeButton";
+    }
+    return {};
+}
+
+[[nodiscard]] dvs::ui::ComparisonSurface::ViewMode
+performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept {
+    switch (comparisonMode) {
+    case PerformanceComparisonMode::Side:
+        return dvs::ui::ComparisonSurface::SideBySide;
+    case PerformanceComparisonMode::Wipe:
+        return dvs::ui::ComparisonSurface::Wipe;
+    case PerformanceComparisonMode::Difference:
+        return dvs::ui::ComparisonSurface::Difference;
+    }
+    return dvs::ui::ComparisonSurface::SideBySide;
+}
+
+[[nodiscard]] std::optional<PerformanceInvocation> parsePerformanceInvocation(const int argc,
+                                                                              char** const argv) {
+    if (argc < 5 || argv == nullptr || std::string_view{argv[1]} != "--ui-performance") {
+        return std::nullopt;
+    }
+    std::vector<std::filesystem::path> sourcePaths;
+    std::optional<std::chrono::seconds> duration;
+    PerformanceComparisonMode comparisonMode = PerformanceComparisonMode::Side;
+    for (int index = 2; index < argc;) {
+        const std::string_view argument{argv[index]};
+        if (argument == "--seconds") {
+            if (duration.has_value() || index + 1 >= argc) {
+                return std::nullopt;
+            }
+            duration = parseDuration(argv[index + 1]);
+            if (!duration.has_value()) {
+                return std::nullopt;
+            }
+            index += 2;
+            continue;
+        }
+        if (argument == "--mode") {
+            if (index + 1 >= argc) {
+                return std::nullopt;
+            }
+            const std::optional<PerformanceComparisonMode> parsed =
+                parsePerformanceComparisonMode(argv[index + 1]);
+            if (!parsed.has_value()) {
+                return std::nullopt;
+            }
+            comparisonMode = *parsed;
+            index += 2;
+            continue;
+        }
+        if (argument.starts_with("--") || sourcePaths.size() == 3U) {
+            return std::nullopt;
+        }
+        sourcePaths.emplace_back(argv[index]);
+        ++index;
+    }
+    if (sourcePaths.empty() || !duration.has_value() ||
+        (comparisonMode != PerformanceComparisonMode::Side && sourcePaths.size() < 2U)) {
+        return std::nullopt;
+    }
+    SmokeSources sources{.first = std::move(sourcePaths.front())};
+    if (sourcePaths.size() >= 2U) {
+        sources.second = std::move(sourcePaths[1U]);
+    }
+    if (sourcePaths.size() == 3U) {
+        sources.third = std::move(sourcePaths[2U]);
+    }
+    return PerformanceInvocation{
+        .sources = std::move(sources),
+        .duration = *duration,
+        .comparisonMode = comparisonMode,
+    };
+}
+
+[[nodiscard]] double brightPixelRatio(const QImage& source, std::uint64_t& sampledPixels) {
+    const QImage image = source.convertToFormat(QImage::Format_RGBA8888);
+    if (image.isNull()) {
+        sampledPixels = 0U;
+        return 0.0;
+    }
+    const int horizontalStep = (std::max)(1, image.width() / 192);
+    const int verticalStep = (std::max)(1, image.height() / 108);
+    std::uint64_t brightPixels = 0U;
+    sampledPixels = 0U;
+    for (int y = 0; y < image.height(); y += verticalStep) {
+        const auto* const row = image.constScanLine(y);
+        for (int x = 0; x < image.width(); x += horizontalStep) {
+            const int offset = x * 4;
+            const unsigned int intensity = static_cast<unsigned int>(row[offset]) +
+                                           static_cast<unsigned int>(row[offset + 1]) +
+                                           static_cast<unsigned int>(row[offset + 2]);
+            ++sampledPixels;
+            if (intensity >= 96U) {
+                ++brightPixels;
+            }
+        }
+    }
+    return sampledPixels == 0U
+               ? 0.0
+               : static_cast<double>(brightPixels) / static_cast<double>(sampledPixels);
 }
 
 [[nodiscard]] bool hasReviewError(const dvs::ui::ReviewController& controller) {
@@ -543,10 +700,141 @@ void writeStandardError(std::string_view message) noexcept {
     return result;
 }
 
+[[nodiscard]] int runUpgradeSettingsSmoke(int& argc, char** argv, const SmokeSources& sources) {
+    if (!sources.second.has_value()) {
+        writeStandardError("DVS_UPGRADE_SETTINGS_SMOKE_REQUIRES_TWO_SOURCES\n");
+        return EXIT_FAILURE;
+    }
+    dvs::ui::configureGraphicsBackend();
+    dvs::ui::DesktopApplication desktop{
+        argc,
+        argv,
+        dvs::ui::DesktopApplicationOptions{
+            .smokeMode = true,
+            .preferSoftwareDevice = true,
+        },
+    };
+    std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
+    if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
+        !desktop.load(*runtime->controller(),
+                      *runtime->preferences(),
+                      [&runtime](dvs::ui::ComparisonSurface& surface) {
+                          return runtime->attachSurface(surface);
+                      })) {
+        writeStandardError("DVS_UPGRADE_SETTINGS_UI_LOAD_FAILED\n");
+        return EXIT_FAILURE;
+    }
+
+    enum class Stage {
+        WaitingForPreferences,
+        WaitingForGraphics,
+        WaitingForFirstFrame,
+        WaitingForEffectiveState,
+    };
+    Stage stage = Stage::WaitingForPreferences;
+    bool passed = false;
+    bool failed = false;
+    std::string failureReason;
+    const auto fail = [&](std::string reason) {
+        if (!failed) {
+            failed = true;
+            failureReason = std::move(reason);
+            desktop.exit(EXIT_FAILURE);
+        }
+    };
+
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, runtime->controller(), [&] {
+        dvs::ui::ReviewController& controller = *runtime->controller();
+        const dvs::ui::ReviewPreferencesController& preferences = *runtime->preferences();
+        switch (stage) {
+        case Stage::WaitingForPreferences:
+            if (preferences.viewMode() != dvs::ui::ReviewPreferencesController::ViewMode::Wipe ||
+                preferences.differenceEdge() !=
+                    dvs::ui::ReviewPreferencesController::DifferenceEdge::Edge0And2) {
+                return;
+            }
+            stage = Stage::WaitingForGraphics;
+            return;
+        case Stage::WaitingForGraphics: {
+            if (!controller.graphicsReady()) {
+                return;
+            }
+            const QList<QUrl> automationSources{localFileUrl(sources.first),
+                                                localFileUrl(*sources.second)};
+            if (!desktop.openSourcesForAutomation(automationSources)) {
+                fail("upgrade-settings-open-rejected");
+                return;
+            }
+            stage = Stage::WaitingForFirstFrame;
+            return;
+        }
+        case Stage::WaitingForFirstFrame:
+            if (controller.busy()) {
+                return;
+            }
+            if (hasReviewError(controller)) {
+                fail("upgrade-settings-media-error");
+                return;
+            }
+            if (controller.currentFrame() != 0) {
+                return;
+            }
+            stage = Stage::WaitingForEffectiveState;
+            return;
+        case Stage::WaitingForEffectiveState: {
+            const std::optional<int> effectiveMode =
+                desktop.objectIntPropertyForAutomation("dualVideoSurface", "viewMode");
+            const std::optional<int> effectiveEdge =
+                desktop.objectIntPropertyForAutomation("dualVideoSurface", "differenceEdge");
+            if (!effectiveMode.has_value() || !effectiveEdge.has_value()) {
+                return;
+            }
+            if (*effectiveMode != static_cast<int>(dvs::ui::ComparisonSurface::Wipe) ||
+                *effectiveEdge != static_cast<int>(dvs::ui::ComparisonSurface::Edge0And1)) {
+                return;
+            }
+            passed = true;
+            desktop.exit(EXIT_SUCCESS);
+            return;
+        }
+        }
+    });
+
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.setInterval(15'000);
+    QObject::connect(&timeout, &QTimer::timeout, runtime->controller(), [&] {
+        fail("upgrade-settings-timeout");
+    });
+    poll.start();
+    timeout.start();
+    int result = desktop.exec();
+    poll.stop();
+    timeout.stop();
+    if (!passed) {
+        result = EXIT_FAILURE;
+        if (!failed) {
+            failureReason = "upgrade-settings-incomplete";
+        }
+        writeStandardError("DVS_UPGRADE_SETTINGS_SMOKE_FAILED " + failureReason + '\n');
+    }
+
+    runtime->prepareForSceneGraphRelease();
+    desktop.releaseSceneGraph();
+    if (!runtime->shutdownAfterSceneGraphRelease()) {
+        writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+        return EXIT_FAILURE;
+    }
+    return result;
+}
+
 [[nodiscard]] int runPerformance(int& argc,
                                  char** argv,
                                  const SmokeSources& sources,
-                                 const std::chrono::seconds duration) {
+                                 const std::chrono::seconds duration,
+                                 const PerformanceComparisonMode comparisonMode) {
     constexpr auto kWarmup = std::chrono::seconds{2};
     constexpr std::size_t kMaximumFrameBytes = 256U * 1024U * 1024U;
     dvs::ui::configureGraphicsBackend();
@@ -572,6 +860,8 @@ void writeStandardError(std::string_view message) noexcept {
     enum class Stage {
         WaitingForGraphics,
         WaitingForFirstFrame,
+        WaitingForComparisonMode,
+        WaitingForComparisonPixels,
         WaitingForPlayback,
         Running,
         WaitingForPause,
@@ -587,7 +877,9 @@ void writeStandardError(std::string_view message) noexcept {
     QElapsedTimer seekTimer;
     QElapsedTimer warmStepTimer;
     QElapsedTimer analysisTimer;
+    QElapsedTimer comparisonModeTimer;
     qint64 lastCountedFrame = -1;
+    qint64 comparisonFrameBeforeSwitch = -1;
     std::vector<qint64> seekTargets;
     std::vector<qint64> seekMilliseconds;
     std::vector<qint64> warmStepMilliseconds;
@@ -606,6 +898,8 @@ void writeStandardError(std::string_view message) noexcept {
     const std::size_t expectedSourceCount = 1U +
                                             static_cast<std::size_t>(sources.second.has_value()) +
                                             static_cast<std::size_t>(sources.third.has_value());
+    const bool requiresComparisonPixels =
+        expectedSourceCount > 1U && comparisonMode != PerformanceComparisonMode::Side;
 
     const auto fail = [&](std::string reason) {
         if (!failed) {
@@ -710,6 +1004,73 @@ void writeStandardError(std::string_view message) noexcept {
             metrics.openFirstFrameMilliseconds = openTimer.elapsed();
             metrics.baselineThreads = dvs::platform::sampleCurrentProcessTelemetry().threadCount;
             metrics.peakThreads = metrics.baselineThreads;
+            if (expectedSourceCount > 1U) {
+                comparisonFrameBeforeSwitch = controller.currentFrame();
+                if (!desktop.clickControlForAutomation(
+                        performanceModeControlName(comparisonMode))) {
+                    fail("comparison-mode-click-rejected");
+                    return;
+                }
+                stage = Stage::WaitingForComparisonMode;
+                return;
+            }
+            metrics.comparisonModeVerified = true;
+            responseTimer.start();
+            if (!controller.play()) {
+                fail("play-rejected");
+                return;
+            }
+            stage = Stage::WaitingForPlayback;
+            return;
+        case Stage::WaitingForComparisonMode: {
+            if (controller.busy() || comparisonFrameBeforeSwitch < 0 ||
+                controller.currentFrame() != comparisonFrameBeforeSwitch) {
+                fail("comparison-mode-lost-frame");
+                return;
+            }
+            const std::optional<int> effectiveMode =
+                desktop.objectIntPropertyForAutomation("dualVideoSurface", "viewMode");
+            if (!effectiveMode.has_value()) {
+                fail("comparison-mode-surface-missing");
+                return;
+            }
+            if (*effectiveMode != static_cast<int>(performanceSurfaceMode(comparisonMode))) {
+                return;
+            }
+            comparisonModeTimer.start();
+            stage = Stage::WaitingForComparisonPixels;
+            return;
+        }
+        case Stage::WaitingForComparisonPixels:
+            // A scene-graph frame must be allowed to consume the selected mode before its pixels
+            // are captured. The capture is intentionally performed through the visible surface.
+            if (controller.busy() || comparisonFrameBeforeSwitch < 0 ||
+                controller.currentFrame() != comparisonFrameBeforeSwitch) {
+                fail("comparison-mode-lost-frame");
+                return;
+            }
+            if (comparisonModeTimer.elapsed() < 100) {
+                return;
+            }
+            if (requiresComparisonPixels) {
+                const std::optional<QImage> image =
+                    desktop.captureControlForAutomation("dualVideoSurface");
+                if (!image.has_value()) {
+                    fail("comparison-mode-capture-failed");
+                    return;
+                }
+                metrics.comparisonBrightPixelRatio =
+                    brightPixelRatio(*image, metrics.comparisonSampledPixels);
+                metrics.comparisonModeVerified = metrics.comparisonSampledPixels > 0U &&
+                                                 metrics.comparisonBrightPixelRatio >= 0.01;
+                if (!metrics.comparisonModeVerified) {
+                    fail("comparison-mode-black-output");
+                    return;
+                }
+            } else {
+                metrics.comparisonModeVerified = true;
+            }
+            metrics.comparisonFrameRetained = true;
             responseTimer.start();
             if (!controller.play()) {
                 fail("play-rejected");
@@ -938,7 +1299,9 @@ void writeStandardError(std::string_view message) noexcept {
         metrics.warmStepP95Milliseconds < 0 ||
         (expectedSourceCount > 1U && metrics.analysisDecodedFrames == 0U) ||
         metrics.peakFrameBytes > kMaximumFrameBytes || !allHardware ||
-        metrics.finalThreads > metrics.baselineThreads + 2U || transfer.deviceLossReports != 0U) {
+        metrics.finalThreads > metrics.baselineThreads + 2U || !metrics.comparisonModeVerified ||
+        (expectedSourceCount > 1U && !metrics.comparisonFrameRetained) ||
+        transfer.deviceLossReports != 0U) {
         result = EXIT_FAILURE;
     }
 
@@ -976,6 +1339,14 @@ void writeStandardError(std::string_view message) noexcept {
     addNumber(QStringLiteral("analysis_ms"), metrics.analysisMilliseconds);
     addNumber(QStringLiteral("analysis_decoded_frames"), metrics.analysisDecodedFrames);
     addNumber(QStringLiteral("analysis_frames_per_second"), analysisFramesPerSecond);
+    const std::string_view comparisonModeName = performanceComparisonModeName(comparisonMode);
+    report.insert(QStringLiteral("comparison_mode"),
+                  QString::fromUtf8(comparisonModeName.data(),
+                                    static_cast<qsizetype>(comparisonModeName.size())));
+    addNumber(QStringLiteral("comparison_sampled_pixels"), metrics.comparisonSampledPixels);
+    addNumber(QStringLiteral("comparison_bright_pixel_ratio"), metrics.comparisonBrightPixelRatio);
+    report.insert(QStringLiteral("comparison_mode_verified"), metrics.comparisonModeVerified);
+    report.insert(QStringLiteral("comparison_frame_retained"), metrics.comparisonFrameRetained);
     addNumber(QStringLiteral("shutdown_ms"), metrics.shutdownMilliseconds);
     addNumber(QStringLiteral("peak_frame_bytes"), metrics.peakFrameBytes);
     addNumber(QStringLiteral("peak_working_set_bytes"), metrics.peakWorkingSetBytes);
@@ -1107,27 +1478,25 @@ int main(int argc, char* argv[]) {
                                   .third = std::filesystem::path{argv[4]},
                               });
         }
-        if ((argc >= 5 && argc <= 7) && std::string_view{argv[1]} == "--ui-performance" &&
-            std::string_view{argv[argc - 2]} == "--seconds") {
-            const auto duration = parseDuration(argv[argc - 1]);
-            if (!duration) {
+        if (argc == 4 && std::string_view{argv[1]} == "--ui-upgrade-settings-smoke") {
+            return runUpgradeSettingsSmoke(argc,
+                                           argv,
+                                           SmokeSources{
+                                               .first = std::filesystem::path{argv[2]},
+                                               .second = std::filesystem::path{argv[3]},
+                                           });
+        }
+        if (argc >= 2 && std::string_view{argv[1]} == "--ui-performance") {
+            const std::optional<PerformanceInvocation> invocation =
+                parsePerformanceInvocation(argc, argv);
+            if (!invocation.has_value()) {
                 return dvs::app::reportFatalStartup(
-                    "Performance duration must be between 5 and 3600 seconds.", true);
+                    "Usage: --ui-performance <one to three sources> --seconds <5-3600> "
+                    "[--mode side|wipe|diff]. Wipe and diff require at least two sources.",
+                    true);
             }
-            const std::optional<std::filesystem::path> second =
-                argc >= 6 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[3]}}
-                          : std::nullopt;
-            const std::optional<std::filesystem::path> third =
-                argc == 7 ? std::optional<std::filesystem::path>{std::filesystem::path{argv[4]}}
-                          : std::nullopt;
-            return runPerformance(argc,
-                                  argv,
-                                  SmokeSources{
-                                      .first = std::filesystem::path{argv[2]},
-                                      .second = second,
-                                      .third = third,
-                                  },
-                                  *duration);
+            return runPerformance(
+                argc, argv, invocation->sources, invocation->duration, invocation->comparisonMode);
         }
         if (argc == 4 && std::string_view{argv[1]} == "--ui-shutdown-smoke") {
             return runDesktop(argc,

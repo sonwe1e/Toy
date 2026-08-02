@@ -21,7 +21,10 @@ Item {
 
     function updatePosition(sceneX) {
         const point = surfaceItem.mapFromItem(null, sceneX, 0);
-        positionRequested(Math.max(0, Math.min(1, point.x / Math.max(1, surfaceItem.width))));
+        if (surfaceItem && typeof surfaceItem.wipePositionForLogicalX === "function")
+            positionRequested(surfaceItem.wipePositionForLogicalX(point.x));
+        else
+            positionRequested(Math.max(0, Math.min(1, point.x / Math.max(1, surfaceItem.width))));
     }
 
     Rectangle {

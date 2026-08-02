@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(VCStation VERSION 1.4.0 LANGUAGES CXX)
+project(VCStation VERSION 1.4.2 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "VCStation supports Windows only.")
@@ -66,10 +66,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 option(DVS_ENABLE_ASAN "Enable MSVC AddressSanitizer for project targets" OFF)
 option(DVS_ENABLE_COVERAGE "Enable native MSVC coverage instrumentation" OFF)
 set(
-    DVS_PREVIOUS_RELEASE_MSI
+    DVS_PREVIOUS_RELEASE_1_2_MSI
     ""
     CACHE FILEPATH
-    "Optional previous MSI used by the real packaged upgrade test"
+    "Optional VCStation 1.2.0 MSI used by the real packaged upgrade test"
 )
 
 if(DVS_ENABLE_ASAN AND DVS_ENABLE_COVERAGE)

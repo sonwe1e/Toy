@@ -7,6 +7,7 @@
 #include <d3d11.h>
 #include <memory>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <variant>
 #include <wrl/client.h>
@@ -72,6 +73,8 @@ public:
 
     [[nodiscard]] GraphicsDeviceLeaseResult tryLease() const noexcept;
     [[nodiscard]] std::optional<GraphicsDeviceNotification> tryConsumeNotification() noexcept;
+    [[nodiscard]] std::optional<GraphicsDeviceNotification>
+    waitForNotification(std::stop_token stopToken) noexcept;
     [[nodiscard]] domain::DeviceGeneration currentGeneration() const noexcept;
 
     // Shutdown is owned by the composition thread after render/transfer users are quiescent.

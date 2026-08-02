@@ -20,6 +20,102 @@ dvs_add_test(
 )
 set_tests_properties(hardware.d3d11_zero_copy PROPERTIES RUN_SERIAL TRUE TIMEOUT 60)
 
+# These execute through the real QML controls on the GPU runner. Unlike the regular source-count
+# performance profiles, they capture the resulting Wipe/Diff surface and reject a black output.
+foreach(dvs_comparison_mode IN ITEMS wipe diff)
+    dvs_add_test(
+        NAME hardware.${dvs_comparison_mode}-2source
+        LAYER hardware
+        MODULE app
+        COMMAND
+            "${DVS_POWERSHELL_EXECUTABLE}"
+            -NoLogo
+            -NoProfile
+            -ExecutionPolicy
+            Bypass
+            -File
+            "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+            -Profile
+            1080p60-2source
+            -ComparisonMode
+            "${dvs_comparison_mode}"
+            -Executable
+            $<TARGET_FILE:VCStation>
+            -DurationSeconds
+            300
+    )
+    set_tests_properties(
+        hardware.${dvs_comparison_mode}-2source
+        PROPERTIES
+            RUN_SERIAL TRUE
+            TIMEOUT 480
+    )
+endforeach()
+
+# Mode changes must not drop the already presented canonical frame. The performance entry point
+# starts in Side, switches through the real Wipe control, and captures that retained frame.
+dvs_add_test(
+    NAME hardware.mode-switch-retained-frame
+    LAYER hardware
+    MODULE app
+    COMMAND
+        "${DVS_POWERSHELL_EXECUTABLE}"
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy
+        Bypass
+        -File
+        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        -Profile
+        1080p60-2source
+        -ComparisonMode
+        wipe
+        -RequireRetainedFrame
+        -RunName
+        1080p60-2source-mode-switch-wipe
+        -Executable
+        $<TARGET_FILE:VCStation>
+        -DurationSeconds
+        300
+)
+set_tests_properties(
+    hardware.mode-switch-retained-frame
+    PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 480
+)
+
+# This fixture carries a 90-degree presentation transform. D3D11VA supplies aligned decoder
+# textures, so the visible Wipe capture covers both rotation and decoder padding on the GPU path.
+dvs_add_test(
+    NAME hardware.rotated-padded-wipe
+    LAYER hardware
+    MODULE app
+    COMMAND
+        "${DVS_POWERSHELL_EXECUTABLE}"
+        -NoLogo
+        -NoProfile
+        -ExecutionPolicy
+        Bypass
+        -File
+        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        -Profile
+        1080p60-2source-rotated
+        -ComparisonMode
+        wipe
+        -RequireRetainedFrame
+        -Executable
+        $<TARGET_FILE:VCStation>
+        -DurationSeconds
+        300
+)
+set_tests_properties(
+    hardware.rotated-padded-wipe
+    PROPERTIES
+        RUN_SERIAL TRUE
+        TIMEOUT 480
+)
+
 dvs_add_test(
     NAME performance.1080p60-1source
     LAYER performance

@@ -1,27 +1,60 @@
 #include "dvs/ui/ReviewShellController.h"
 
 #include "dvs/ui/ReviewController.h"
+#include "dvs/ui/ReviewPreferencesController.h"
+
+#include <QDir>
+#include <QFileInfo>
+#include <QUrl>
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <utility>
 
 namespace dvs::ui {
 namespace {
 
-constexpr std::size_t kMaximumQueuedStartupRequests = 9U;
+constexpr std::size_t kMaximumQueuedIntents = 8U;
 
 } // namespace
 
 ReviewShellController::ReviewShellController(ReviewController& review, QObject* const parent)
     : QObject(parent), review_(review) {
     QObject::connect(&review_, &ReviewController::stateChanged, this, [this] {
-        synchronizeActiveSources();
-        if (!review_.busy() && !reviewIntents_.empty()) {
+        if (!activeIntent_.has_value()) {
+            synchronizeActiveSources();
+        }
+        if (!review_.busy() && !activeIntent_.has_value() && !reviewIntents_.empty()) {
             QMetaObject::invokeMethod(this, [this] { drainIntentQueue(); }, Qt::QueuedConnection);
         }
+        // Effective comparison mode also depends on the controller's committed source count.
+        // That count can change while the Active Sources identity list remains stable, so forward
+        // every controller projection to QML instead of relying only on list synchronization.
+        Q_EMIT stateChanged();
     });
+    QObject::connect(
+        &review_,
+        &ReviewController::foregroundCommandFinished,
+        this,
+        [this](const qulonglong commandId, const int outcome, const QString& errorKey) {
+            if (!activeIntent_.has_value() || activeIntent_->commandId != commandId) {
+                return;
+            }
+            finishIntent(outcome, errorKey);
+        });
     synchronizeActiveSources();
+}
+
+ReviewShellController::ReviewShellController(ReviewController& review,
+                                             ReviewPreferencesController& preferences,
+                                             QObject* const parent)
+    : ReviewShellController(review, parent) {
+    preferences_ = &preferences;
+    QObject::connect(preferences_, &ReviewPreferencesController::preferencesChanged, this, [this] {
+        Q_EMIT stateChanged();
+    });
+    Q_EMIT stateChanged();
 }
 
 QVariantList ReviewShellController::activeSources() const {
@@ -40,20 +73,60 @@ qulonglong ReviewShellController::activeGeneration() const noexcept {
     return activeGeneration_;
 }
 
-int ReviewShellController::stagedReferenceIndex() const noexcept {
-    return stagedReferenceIndex_;
+int ReviewShellController::effectiveViewMode() const noexcept {
+    return effectiveComparisonState().viewMode;
 }
 
-int ReviewShellController::queuedStartupRequestCount() const noexcept {
-    return static_cast<int>(startupRequests_.size());
+int ReviewShellController::effectiveDifferenceEdge() const noexcept {
+    return effectiveComparisonState().differenceEdge;
+}
+
+bool ReviewShellController::comparisonEdgeAvailable() const noexcept {
+    return effectiveComparisonState().edgeAvailable;
+}
+
+int ReviewShellController::stagedReferenceIndex() const noexcept {
+    return stagedReferenceIndex_;
 }
 
 int ReviewShellController::queuedIntentCount() const noexcept {
     return static_cast<int>(reviewIntents_.size());
 }
 
-bool ReviewShellController::startupRequestActive() const noexcept {
-    return startupRequestActive_;
+QVariantList ReviewShellController::queuedIntents() const {
+    QVariantList result;
+    result.reserve(static_cast<qsizetype>(reviewIntents_.size()));
+    for (const ReviewIntent& intent : reviewIntents_) {
+        result.push_back(intentMap(intent, QueuedStatus));
+    }
+    return result;
+}
+
+QVariantMap ReviewShellController::activeIntent() const {
+    return activeIntent_.has_value() ? intentMap(*activeIntent_, RunningStatus) : QVariantMap{};
+}
+
+QVariantList ReviewShellController::pendingSourceIndexes() const {
+    QVariantList result;
+    const QStringList identities = activeSourceIdentities();
+    const auto appendIntent = [&result, &identities](const ReviewIntent& intent) {
+        for (qsizetype index = 0; index < identities.size(); ++index) {
+            if ((!intent.targetIdentity.isEmpty() && identities[index] == intent.targetIdentity) ||
+                (!intent.referenceIdentity.isEmpty() &&
+                 identities[index] == intent.referenceIdentity)) {
+                if (!result.contains(index)) {
+                    result.push_back(index);
+                }
+            }
+        }
+    };
+    if (activeIntent_.has_value()) {
+        appendIntent(*activeIntent_);
+    }
+    for (const ReviewIntent& intent : reviewIntents_) {
+        appendIntent(intent);
+    }
+    return result;
 }
 
 bool ReviewShellController::chromeVisible() const noexcept {
@@ -172,11 +245,15 @@ bool ReviewShellController::openStagedSources(const bool preserveDisplayedTime) 
     }
     openIntent_ = preserveDisplayedTime ? ReplaceSources : NewReview;
     Q_EMIT stateChanged();
+    ReviewIntentKind kind = preserveDisplayedTime ? ReplaceSourcesIntent : OpenSourcesIntent;
+    if (preserveDisplayedTime && stagedSources_.size() > activeSources_.size()) {
+        kind = AddSourcesIntent;
+    }
     return submitOrQueue(ReviewIntent{
-        .kind = preserveDisplayedTime ? ReviewIntentKind::ReplaceSources
-                                      : ReviewIntentKind::OpenSources,
+        .kind = kind,
         .sources = stagedSources_,
         .referenceIndex = stagedReferenceIndex_,
+        .referenceIdentity = sourceIdentity(stagedSources_[stagedReferenceIndex_]),
     });
 }
 
@@ -198,9 +275,11 @@ bool ReviewShellController::removeActiveSource(const int sourceIndex) {
     openIntent_ = ReplaceSources;
     Q_EMIT stateChanged();
     return submitOrQueue(ReviewIntent{
-        .kind = ReviewIntentKind::ReplaceSources,
+        .kind = RemoveSourceIntent,
         .sources = std::move(replacement),
         .referenceIndex = stagedReferenceIndex_,
+        .referenceIdentity = sourceIdentity(stagedSources_[stagedReferenceIndex_]),
+        .targetIdentity = sourceIdentity(activeSources_[sourceIndex]),
     });
 }
 
@@ -212,13 +291,42 @@ bool ReviewShellController::changeReference(const int sourceIndex) {
     openIntent_ = ChangeReference;
     Q_EMIT stateChanged();
     return submitOrQueue(ReviewIntent{
-        .kind = ReviewIntentKind::ChangeReference,
+        .kind = ChangeReferenceIntent,
         .referenceIndex = sourceIndex,
+        .referenceIdentity = sourceIdentity(activeSources_[sourceIndex]),
     });
 }
 
 bool ReviewShellController::closeSources() {
-    return submitOrQueue(ReviewIntent{.kind = ReviewIntentKind::CloseSources});
+    return submitOrQueue(ReviewIntent{.kind = CloseSourcesIntent});
+}
+
+bool ReviewShellController::cancelQueuedIntent(const qulonglong intentId) {
+    const auto found =
+        std::find_if(reviewIntents_.begin(),
+                     reviewIntents_.end(),
+                     [intentId](const ReviewIntent& intent) { return intent.id == intentId; });
+    if (found == reviewIntents_.end()) {
+        return false;
+    }
+    const ReviewIntent canceled = *found;
+    reviewIntents_.erase(found);
+    Q_EMIT stateChanged();
+    Q_EMIT intentEvent(
+        canceled.id, CanceledStatus, canceled.kind, NoIntentError, canceled.sources.size());
+    return true;
+}
+
+void ReviewShellController::cancelAllQueuedIntents() {
+    std::deque<ReviewIntent> canceled = std::move(reviewIntents_);
+    reviewIntents_.clear();
+    if (!canceled.empty()) {
+        Q_EMIT stateChanged();
+    }
+    for (const ReviewIntent& intent : canceled) {
+        Q_EMIT intentEvent(
+            intent.id, CanceledStatus, intent.kind, NoIntentError, intent.sources.size());
+    }
 }
 
 bool ReviewShellController::beginPendingAction(const QVariantMap& action) {
@@ -249,40 +357,16 @@ void ReviewShellController::cancelPendingAction() {
 }
 
 bool ReviewShellController::enqueueStartupRequest(const int kind, const QVariantList& files) {
-    if (kind <= 0 || files.isEmpty() ||
-        startupRequests_.size() + static_cast<std::size_t>(startupRequestActive_) >=
-            kMaximumQueuedStartupRequests) {
+    if (kind <= 0 || files.isEmpty() || files.size() > 3) {
         return false;
     }
-    startupRequests_.push_back(StartupRequest{.kind = kind, .files = files});
-    Q_EMIT stateChanged();
-    Q_EMIT startupRequestAvailable();
-    return true;
-}
-
-QVariantMap ReviewShellController::takeNextStartupRequest() {
-    if (startupRequestActive_ || startupRequests_.empty()) {
-        return {};
-    }
-    StartupRequest request = std::move(startupRequests_.front());
-    startupRequests_.pop_front();
-    startupRequestActive_ = true;
-    Q_EMIT stateChanged();
-    return QVariantMap{
-        {QStringLiteral("kind"), request.kind},
-        {QStringLiteral("urls"), request.files},
-    };
-}
-
-void ReviewShellController::completeStartupRequest() {
-    if (!startupRequestActive_) {
-        return;
-    }
-    startupRequestActive_ = false;
-    Q_EMIT stateChanged();
-    if (!startupRequests_.empty()) {
-        Q_EMIT startupRequestAvailable();
-    }
+    return submitOrQueue(ReviewIntent{
+        .kind = OpenSourcesIntent,
+        .origin = StartupOrigin,
+        .sources = files,
+        .referenceIndex = 0,
+        .referenceIdentity = sourceIdentity(files.front()),
+    });
 }
 
 bool ReviewShellController::setRangeIn(const qint64 frame, const double mediaTime) {
@@ -369,7 +453,7 @@ void ReviewShellController::setRangeStartPending(const bool pending) {
     Q_EMIT stateChanged();
 }
 
-void ReviewShellController::synchronizeActiveSources() {
+void ReviewShellController::synchronizeActiveSources(const bool advanceGeneration) {
     // The review controller publishes loading snapshots while an open is in flight. Those
     // snapshots describe the candidate provider state, not a committed review. Keep the shell's
     // Active Sources stable until the command terminal arrives; a success then adopts the new
@@ -384,7 +468,9 @@ void ReviewShellController::synchronizeActiveSources() {
     }
     activeSources_ = nextSources;
     canonicalSourceIndex_ = nextCanonical;
-    ++activeGeneration_;
+    if (advanceGeneration) {
+        ++activeGeneration_;
+    }
     if (!review_.busy()) {
         stagedSources_ = activeSources_;
         stagedReferenceIndex_ = activeSources_.isEmpty() ? 0 : std::max(0, canonicalSourceIndex_);
@@ -393,81 +479,312 @@ void ReviewShellController::synchronizeActiveSources() {
 }
 
 bool ReviewShellController::submitOrQueue(ReviewIntent intent) {
-    if (review_.busy() || !reviewIntents_.empty()) {
-        enqueueIntent(std::move(intent));
-        return true;
+    intent.id = allocateIntentId();
+    if (intent.id == 0U) {
+        Q_EMIT intentEvent(
+            0U, RejectedStatus, intent.kind, InvalidIntentError, intent.sources.size());
+        return false;
     }
-    if (submitIntent(intent)) {
-        return true;
-    }
-    Q_EMIT intentRejected(
-        QStringLiteral("%1 could not be started.").arg(intentDescription(intent.kind)));
-    return false;
-}
+    intent.expectedGeneration = activeGeneration_;
+    intent.expectedSources = activeSourceIdentities();
 
-bool ReviewShellController::submitIntent(const ReviewIntent& intent) {
-    switch (intent.kind) {
-    case ReviewIntentKind::OpenSources:
-        return review_.openSources(intent.sources, intent.referenceIndex);
-    case ReviewIntentKind::ReplaceSources:
-        return review_.reopenSources(intent.sources, intent.referenceIndex);
-    case ReviewIntentKind::ChangeReference:
-        return review_.changeReference(intent.referenceIndex);
-    case ReviewIntentKind::CloseSources:
-        return review_.closeSources();
-    }
-    return false;
-}
-
-void ReviewShellController::enqueueIntent(ReviewIntent intent) {
-    if (intent.kind == ReviewIntentKind::OpenSources ||
-        intent.kind == ReviewIntentKind::ReplaceSources) {
-        const auto existing = std::find_if(
-            reviewIntents_.rbegin(), reviewIntents_.rend(), [](const ReviewIntent& queued) {
-                return queued.kind == ReviewIntentKind::OpenSources ||
-                       queued.kind == ReviewIntentKind::ReplaceSources;
-            });
-        if (existing != reviewIntents_.rend()) {
-            *existing = std::move(intent);
-            Q_EMIT stateChanged();
-            Q_EMIT intentQueued(QStringLiteral("The newer open request replaced the queued one."));
-            return;
+    if (intent.kind == CloseSourcesIntent) {
+        cancelAllQueuedIntents();
+        if (activeSources_.isEmpty() && !review_.busy() && !activeIntent_.has_value()) {
+            review_.clearCandidateSourceErrors();
+            Q_EMIT intentEvent(
+                intent.id, SucceededStatus, intent.kind, NoIntentError, intent.sources.size());
+            Q_EMIT intentFinished(intent.id,
+                                  intent.kind,
+                                  static_cast<int>(application::CommandOutcome::Succeeded),
+                                  QString{});
+            return true;
         }
     }
+
+    if (review_.busy() || activeIntent_.has_value() || !reviewIntents_.empty()) {
+        return enqueueIntent(std::move(intent));
+    }
+    if (!submitIntent(intent)) {
+        Q_EMIT intentEvent(
+            intent.id, RejectedStatus, intent.kind, SubmissionRejectedError, intent.sources.size());
+        return false;
+    }
+    return true;
+}
+
+bool ReviewShellController::submitIntent(ReviewIntent& intent) {
+    if (!rebaseIntent(intent)) {
+        Q_EMIT intentEvent(
+            intent.id, RejectedStatus, intent.kind, StaleTopologyError, intent.sources.size());
+        return false;
+    }
+
+    bool accepted = false;
+    switch (intent.kind) {
+    case OpenSourcesIntent:
+        accepted = review_.openSources(intent.sources, intent.referenceIndex);
+        break;
+    case ReplaceSourcesIntent:
+    case AddSourcesIntent:
+    case RemoveSourceIntent:
+        accepted = review_.reopenSources(intent.sources, intent.referenceIndex);
+        break;
+    case ChangeReferenceIntent:
+        accepted = review_.changeReference(intent.referenceIndex);
+        break;
+    case CloseSourcesIntent:
+        accepted = review_.closeSources();
+        break;
+    }
+    if (!accepted) {
+        return false;
+    }
+    intent.commandId = review_.lastSubmittedCommandId();
+    if (intent.commandId == 0U) {
+        return false;
+    }
+    activeIntent_ = intent;
+    Q_EMIT stateChanged();
+    Q_EMIT intentEvent(intent.id, RunningStatus, intent.kind, NoIntentError, intent.sources.size());
+    return true;
+}
+
+bool ReviewShellController::enqueueIntent(ReviewIntent intent) {
+    if (intent.kind == OpenSourcesIntent || intent.kind == ReplaceSourcesIntent) {
+        for (auto existing = reviewIntents_.begin(); existing != reviewIntents_.end();) {
+            if (existing->kind != OpenSourcesIntent && existing->kind != ReplaceSourcesIntent) {
+                ++existing;
+                continue;
+            }
+            const ReviewIntent replaced = *existing;
+            existing = reviewIntents_.erase(existing);
+            Q_EMIT intentEvent(
+                replaced.id, ReplacedStatus, replaced.kind, NoIntentError, replaced.sources.size());
+        }
+    } else if (intent.kind == ChangeReferenceIntent) {
+        const auto existing = std::find_if(
+            reviewIntents_.rbegin(), reviewIntents_.rend(), [](const ReviewIntent& queued) {
+                return queued.kind == ChangeReferenceIntent;
+            });
+        if (existing != reviewIntents_.rend()) {
+            const ReviewIntent replaced = *existing;
+            *existing = std::move(intent);
+            Q_EMIT stateChanged();
+            Q_EMIT intentEvent(
+                replaced.id, ReplacedStatus, replaced.kind, NoIntentError, replaced.sources.size());
+            Q_EMIT intentEvent(existing->id,
+                               QueuedStatus,
+                               existing->kind,
+                               NoIntentError,
+                               existing->sources.size());
+            return true;
+        }
+    }
+
+    if (reviewIntents_.size() >= kMaximumQueuedIntents) {
+        Q_EMIT intentEvent(
+            intent.id, RejectedStatus, intent.kind, QueueFullError, intent.sources.size());
+        return false;
+    }
+
     reviewIntents_.push_back(std::move(intent));
     Q_EMIT stateChanged();
-    Q_EMIT intentQueued(
-        QStringLiteral("%1 queued.").arg(intentDescription(reviewIntents_.back().kind)));
+    const ReviewIntent& queued = reviewIntents_.back();
+    Q_EMIT intentEvent(queued.id, QueuedStatus, queued.kind, NoIntentError, queued.sources.size());
+    return true;
 }
 
 void ReviewShellController::drainIntentQueue() {
-    if (review_.busy() || reviewIntents_.empty()) {
+    if (review_.busy() || activeIntent_.has_value() || reviewIntents_.empty()) {
         return;
     }
     ReviewIntent intent = std::move(reviewIntents_.front());
     reviewIntents_.pop_front();
     Q_EMIT stateChanged();
     if (!submitIntent(intent)) {
-        Q_EMIT intentRejected(
-            QStringLiteral("%1 could not be started.").arg(intentDescription(intent.kind)));
         if (!review_.busy() && !reviewIntents_.empty()) {
             QMetaObject::invokeMethod(this, [this] { drainIntentQueue(); }, Qt::QueuedConnection);
         }
     }
 }
 
-QString ReviewShellController::intentDescription(const ReviewIntentKind kind) {
-    switch (kind) {
-    case ReviewIntentKind::OpenSources:
-        return QStringLiteral("Open videos");
-    case ReviewIntentKind::ReplaceSources:
-        return QStringLiteral("Update videos");
-    case ReviewIntentKind::ChangeReference:
-        return QStringLiteral("Change reference");
-    case ReviewIntentKind::CloseSources:
-        return QStringLiteral("Close videos");
+void ReviewShellController::finishIntent(const int outcome, const QString& errorKey) {
+    if (!activeIntent_.has_value()) {
+        return;
     }
-    return QStringLiteral("Request");
+    const ReviewIntent completed = *activeIntent_;
+    activeIntent_.reset();
+    const bool succeeded = outcome == static_cast<int>(application::CommandOutcome::Succeeded);
+    if (succeeded) {
+        synchronizeActiveSources(true);
+    } else {
+        synchronizeActiveSources();
+    }
+    Q_EMIT stateChanged();
+    Q_EMIT intentEvent(completed.id,
+                       succeeded ? SucceededStatus : FailedStatus,
+                       completed.kind,
+                       succeeded ? NoIntentError : CommandFailedError,
+                       completed.sources.size());
+    Q_EMIT intentFinished(completed.id, completed.kind, outcome, errorKey);
+    if (!reviewIntents_.empty()) {
+        QMetaObject::invokeMethod(this, [this] { drainIntentQueue(); }, Qt::QueuedConnection);
+    }
+}
+
+bool ReviewShellController::rebaseIntent(ReviewIntent& intent) const {
+    if (intent.expectedGeneration == activeGeneration_) {
+        return true;
+    }
+
+    const QStringList activeIdentities = activeSourceIdentities();
+    switch (intent.kind) {
+    case OpenSourcesIntent:
+    case CloseSourcesIntent:
+        return true;
+    case ReplaceSourcesIntent:
+        return false;
+    case AddSourcesIntent: {
+        QVariantList rebased = activeSources_;
+        QStringList rebasedIdentities = activeIdentities;
+        for (const QVariant& source : intent.sources) {
+            const QString identity = sourceIdentity(source);
+            if (intent.expectedSources.contains(identity) || rebasedIdentities.contains(identity)) {
+                continue;
+            }
+            if (rebased.size() >= 3) {
+                return false;
+            }
+            rebased.push_back(source);
+            rebasedIdentities.push_back(identity);
+        }
+        if (rebased.size() == activeSources_.size()) {
+            return false;
+        }
+        intent.sources = std::move(rebased);
+        intent.referenceIndex = rebasedIdentities.indexOf(intent.referenceIdentity);
+        if (intent.referenceIndex < 0) {
+            intent.referenceIndex =
+                std::clamp(canonicalSourceIndex_, 0, static_cast<int>(intent.sources.size()) - 1);
+        }
+        return true;
+    }
+    case RemoveSourceIntent: {
+        const int targetIndex = activeIdentities.indexOf(intent.targetIdentity);
+        if (targetIndex < 0 || activeSources_.size() <= 1) {
+            return false;
+        }
+        intent.sources = activeSources_;
+        intent.sources.removeAt(targetIndex);
+        QStringList remaining = activeIdentities;
+        remaining.removeAt(targetIndex);
+        intent.referenceIndex = remaining.indexOf(intent.referenceIdentity);
+        if (intent.referenceIndex < 0) {
+            intent.referenceIndex = 0;
+        }
+        return true;
+    }
+    case ChangeReferenceIntent:
+        intent.referenceIndex = activeIdentities.indexOf(intent.referenceIdentity);
+        return intent.referenceIndex >= 0;
+    }
+    return false;
+}
+
+QVariantMap ReviewShellController::intentMap(const ReviewIntent& intent,
+                                             const ReviewIntentStatus status) const {
+    return QVariantMap{
+        {QStringLiteral("id"), QVariant::fromValue<qulonglong>(intent.id)},
+        {QStringLiteral("status"), status},
+        {QStringLiteral("kind"), intent.kind},
+        {QStringLiteral("origin"), intent.origin},
+        {QStringLiteral("sourceCount"), intent.sources.size()},
+        {QStringLiteral("referenceIndex"), intent.referenceIndex},
+        {QStringLiteral("generation"), QVariant::fromValue<qulonglong>(intent.expectedGeneration)},
+    };
+}
+
+QStringList ReviewShellController::activeSourceIdentities() const {
+    QStringList identities;
+    identities.reserve(activeSources_.size());
+    for (const QVariant& source : activeSources_) {
+        identities.push_back(sourceIdentity(source));
+    }
+    return identities;
+}
+
+QString ReviewShellController::sourceIdentity(const QVariant& source) {
+    const QUrl url = source.toUrl();
+    if (!url.isLocalFile()) {
+        return url.toString(QUrl::FullyEncoded).toCaseFolded();
+    }
+    const QFileInfo file(url.toLocalFile());
+    QString path = file.canonicalFilePath();
+    if (path.isEmpty()) {
+        path = file.absoluteFilePath();
+    }
+    return QStringLiteral("%1|%2|%3")
+        .arg(QDir::cleanPath(path).toCaseFolded())
+        .arg(file.exists() ? file.size() : -1)
+        .arg(file.exists() ? file.lastModified().toMSecsSinceEpoch() : -1);
+}
+
+std::uint64_t ReviewShellController::allocateIntentId() noexcept {
+    if (intentIdsExhausted_) {
+        return 0U;
+    }
+    const std::uint64_t result = nextIntentId_;
+    if (nextIntentId_ == std::numeric_limits<std::uint64_t>::max()) {
+        intentIdsExhausted_ = true;
+    } else {
+        ++nextIntentId_;
+    }
+    return result;
+}
+
+ReviewShellController::EffectiveComparisonState
+ReviewShellController::effectiveComparisonState() const noexcept {
+    constexpr int kSideBySide = 0;
+    constexpr int kDifference = 3;
+    constexpr int kWipe = 5;
+    constexpr int kSingle = 6;
+    constexpr int kEdge0And1 = 0;
+
+    // The shell deliberately keeps Active Sources unchanged while a transaction is loading.
+    // Outside that window, the controller's validated projection is authoritative even if the
+    // shell was constructed before its first stateChanged signal.
+    const int sourceCount =
+        review_.busy() ? static_cast<int>(activeSources_.size()) : review_.sourceCount();
+    if (sourceCount <= 1) {
+        return EffectiveComparisonState{
+            .viewMode = kSingle,
+            .differenceEdge = kEdge0And1,
+            .edgeAvailable = false,
+        };
+    }
+
+    const int requestedView =
+        preferences_ != nullptr ? static_cast<int>(preferences_->viewMode()) : kSideBySide;
+    const int requestedEdge =
+        preferences_ != nullptr ? static_cast<int>(preferences_->differenceEdge()) : kEdge0And1;
+    if (sourceCount == 2) {
+        const bool supported =
+            requestedView == kSideBySide || requestedView == kDifference || requestedView == kWipe;
+        return EffectiveComparisonState{
+            .viewMode = supported ? requestedView : kSideBySide,
+            .differenceEdge = kEdge0And1,
+            .edgeAvailable = true,
+        };
+    }
+
+    const bool validView = requestedView >= kSideBySide && requestedView <= kWipe;
+    const bool validEdge = requestedEdge >= kEdge0And1 && requestedEdge <= 2;
+    return EffectiveComparisonState{
+        .viewMode = validView ? requestedView : kSideBySide,
+        .differenceEdge = validEdge ? requestedEdge : kEdge0And1,
+        .edgeAvailable = true,
+    };
 }
 
 } // namespace dvs::ui

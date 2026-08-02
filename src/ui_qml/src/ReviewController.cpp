@@ -21,6 +21,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 namespace dvs::ui {
 namespace {
@@ -90,8 +91,13 @@ constexpr qsizetype kMaximumAlignmentTimelineMarkers = 256;
 }
 
 [[nodiscard]] QString colorMatrixName(const domain::ColorMatrix matrix) {
-    return matrix == domain::ColorMatrix::kBt709 ? QStringLiteral("BT.709")
-                                                 : QStringLiteral("BT.601");
+    switch (matrix) {
+    case domain::ColorMatrix::kBt601:
+        return QStringLiteral("BT.601");
+    case domain::ColorMatrix::kBt709:
+        return QStringLiteral("BT.709");
+    }
+    return QStringLiteral("Unknown");
 }
 
 [[nodiscard]] QString colorRangeName(const domain::ColorRange range) {
@@ -192,6 +198,7 @@ struct ReviewView final {
     QString alignmentAnalysisStatus;
     QString manualAnchorStatus;
     QVariantList alignmentTimelineMarkers;
+    qulonglong alignmentTimelineMarkerOverflowCount = 0U;
     bool manualAnchorActive = false;
     bool autoAlignmentActive = false;
     bool alignmentRequired = false;
@@ -226,11 +233,13 @@ struct ReviewView final {
 }
 
 void appendTimelineMarker(QVariantList& markers,
+                          qulonglong& overflowCount,
                           const domain::FrameId frameId,
                           const QString& kind,
                           const QString& source,
                           const int confidence = 100) {
     if (markers.size() >= kMaximumAlignmentTimelineMarkers) {
+        ++overflowCount;
         return;
     }
     markers.push_back(QVariantMap{
@@ -270,6 +279,10 @@ public:
 
     [[nodiscard]] QAbstractItemModel* sources() noexcept {
         return &sourceModel_;
+    }
+
+    [[nodiscard]] std::uint64_t lastSubmittedCommandId() const noexcept {
+        return lastSubmittedCommandId_;
     }
 
     [[nodiscard]] QString timecodeForFrame(const qint64 frame, const bool dropFrame) const {
@@ -444,6 +457,7 @@ public:
             return false;
         }
         if (view_.sourceCount == 0) {
+            clearCandidateSourceErrors();
             return true;
         }
         const std::optional<application::CommandContext> context = allocateCommandContext();
@@ -685,6 +699,20 @@ public:
         refresh();
     }
 
+    void clearCandidateSourceErrors() noexcept {
+        if (!onOwnerThread() || stopped_) {
+            return;
+        }
+        if (candidateSourceAErrorKey_.isEmpty() && candidateSourceBErrorKey_.isEmpty() &&
+            candidateSourceCErrorKey_.isEmpty()) {
+            return;
+        }
+        candidateSourceAErrorKey_.clear();
+        candidateSourceBErrorKey_.clear();
+        candidateSourceCErrorKey_.clear();
+        publishProjection();
+    }
+
     void stop() noexcept {
         if (stopped_) {
             return;
@@ -702,16 +730,32 @@ private:
         return owner_.thread() == QThread::currentThread();
     }
 
+    [[nodiscard]] std::vector<DecoderBackendState> decoderBackendStates() const noexcept {
+        if (!dependencies_.decoderBackendStates) {
+            return {};
+        }
+        try {
+            return dependencies_.decoderBackendStates();
+        } catch (...) {
+            return {};
+        }
+    }
+
     void refresh() noexcept {
         if (stopped_ || !onOwnerThread()) {
             return;
         }
 
         try {
+            std::optional<application::CommandTerminal> completedForeground;
+            bool clearCandidateErrors = false;
             for (const application::CommandTerminal& terminal :
                  dependencies_.takeCompletedCommands()) {
                 if (pendingCommand_.has_value() && terminal.context == *pendingCommand_) {
+                    completedForeground = terminal;
+                    clearCandidateErrors = pendingCommandClearsCandidateErrors_;
                     pendingCommand_.reset();
+                    pendingCommandClearsCandidateErrors_ = false;
                 }
                 if (pendingNavigationCommand_.has_value() &&
                     terminal.context == *pendingNavigationCommand_) {
@@ -729,7 +773,23 @@ private:
                 return;
             }
             snapshot_ = std::move(snapshot);
+            if (completedForeground.has_value() && clearCandidateErrors &&
+                completedForeground->outcome == application::CommandOutcome::Succeeded) {
+                candidateSourceAErrorKey_.clear();
+                candidateSourceBErrorKey_.clear();
+                candidateSourceCErrorKey_.clear();
+            }
             publishProjection();
+            if (completedForeground.has_value()) {
+                const QString errorKey =
+                    completedForeground->error.has_value()
+                        ? QString::fromStdString(completedForeground->error->userMessageKey)
+                        : QString{};
+                Q_EMIT owner_.foregroundCommandFinished(
+                    completedForeground->context.commandId.value(),
+                    static_cast<int>(completedForeground->outcome),
+                    errorKey);
+            }
         } catch (...) {
             failClosed();
         }
@@ -762,6 +822,7 @@ private:
                     qRound(snapshot_->validatedComparison->canonicalRate()->displayFps()), 1, 1000);
             }
             if (snapshot_->validatedComparison) {
+                const std::vector<DecoderBackendState> decoderBackends = decoderBackendStates();
                 next.canonicalSourceIndex =
                     static_cast<int>(snapshot_->validatedComparison->canonicalSourceId());
                 const domain::MediaDescriptor& canonical =
@@ -790,6 +851,20 @@ private:
                         next.sourceCFilename = filename;
                     }
                     const domain::MediaDescriptor& descriptor = source.descriptor;
+                    const auto backend = std::find_if(decoderBackends.begin(),
+                                                      decoderBackends.end(),
+                                                      [&source](const DecoderBackendState& state) {
+                                                          return state.sourceId == source.id;
+                                                      });
+                    const QString decodeBackend =
+                        backend == decoderBackends.end()
+                            ? QStringLiteral("Initializing")
+                            : (backend->d3d11Va ? QStringLiteral("D3D11VA")
+                                                : QStringLiteral("Software"));
+                    const QString decodeFallbackReason =
+                        backend != decoderBackends.end()
+                            ? QString::fromStdString(backend->fallbackReason)
+                            : QString{};
                     const QString rate = descriptor.frameRate.has_value()
                                              ? QStringLiteral("%1/%2 fps")
                                                    .arg(descriptor.frameRate->numerator())
@@ -800,6 +875,11 @@ private:
                         {QStringLiteral("filename"), filename},
                         {QStringLiteral("width"), descriptor.extent.width},
                         {QStringLiteral("height"), descriptor.extent.height},
+                        {QStringLiteral("rotationDegrees"), descriptor.rotationDegrees},
+                        {QStringLiteral("sampleAspectNumerator"),
+                         descriptor.sampleAspectRatio.numerator},
+                        {QStringLiteral("sampleAspectDenominator"),
+                         descriptor.sampleAspectRatio.denominator},
                         {QStringLiteral("frameRate"), rate},
                         {QStringLiteral("frameCount"), descriptor.frameCount.value},
                         {QStringLiteral("timingMode"), timingModeName(descriptor.timingConfidence)},
@@ -811,9 +891,8 @@ private:
                          colorMatrixName(descriptor.colorMetadata.matrix)},
                         {QStringLiteral("colorRange"),
                          colorRangeName(descriptor.colorMetadata.range)},
-                        {QStringLiteral("decodeBackend"),
-                         descriptor.decodeCapabilities.d3d11VaDecode ? QStringLiteral("D3D11VA")
-                                                                     : QStringLiteral("Software")},
+                        {QStringLiteral("decodeBackend"), decodeBackend},
+                        {QStringLiteral("decodeFallbackReason"), decodeFallbackReason},
                         {QStringLiteral("role"),
                          source.id == snapshot_->validatedComparison->canonicalSourceId()
                              ? QStringLiteral("Canonical")
@@ -932,6 +1011,7 @@ private:
             next.alignmentEstimateStatus = estimateParts.join(QStringLiteral("  |  "));
             QStringList sequenceParts;
             QVariantList lowConfidenceTimelineMarkers;
+            qulonglong lowConfidenceMarkerOverflowCount = 0U;
             for (const application::SequenceAlignmentSummary& result :
                  snapshot_->sequenceAlignments) {
                 const QString currentSourceName = sourceName(result.sourceId);
@@ -953,8 +1033,11 @@ private:
                         anomaly.canonicalFrameId.has_value() ? anomaly.canonicalFrameId
                                                              : anomaly.sourceFrameId;
                     if (position.has_value()) {
-                        appendTimelineMarker(
-                            next.alignmentTimelineMarkers, *position, kind, currentSourceName);
+                        appendTimelineMarker(next.alignmentTimelineMarkers,
+                                             next.alignmentTimelineMarkerOverflowCount,
+                                             *position,
+                                             kind,
+                                             currentSourceName);
                     }
                     anomalyParts.push_back(
                         position.has_value()
@@ -982,6 +1065,7 @@ private:
                         ++reviewSegments;
                     }
                     appendTimelineMarker(next.alignmentTimelineMarkers,
+                                         next.alignmentTimelineMarkerOverflowCount,
                                          segment.firstCanonicalFrame,
                                          rejected ? QStringLiteral("rejected-segment")
                                                   : QStringLiteral("review-segment"),
@@ -1006,6 +1090,7 @@ private:
                 for (const application::SequenceAlignmentLowConfidenceRun& run :
                      result.lowConfidenceRuns) {
                     appendTimelineMarker(lowConfidenceTimelineMarkers,
+                                         lowConfidenceMarkerOverflowCount,
                                          run.firstCanonicalFrame,
                                          QStringLiteral("low-confidence"),
                                          currentSourceName,
@@ -1013,6 +1098,7 @@ private:
                 }
             }
             next.sequenceAlignmentStatus = sequenceParts.join(QStringLiteral("  |  "));
+            next.alignmentTimelineMarkerOverflowCount += lowConfidenceMarkerOverflowCount;
             QStringList anchorParts;
             for (const application::SourceAlignmentAnchors& sourceAnchors :
                  snapshot_->manualAlignmentAnchors) {
@@ -1023,6 +1109,7 @@ private:
                                         .arg(anchor.canonicalFrameId.value() + 1)
                                         .arg(anchor.sourceFrameId.value() + 1));
                     appendTimelineMarker(next.alignmentTimelineMarkers,
+                                         next.alignmentTimelineMarkerOverflowCount,
                                          anchor.canonicalFrameId,
                                          QStringLiteral("anchor"),
                                          currentSourceName);
@@ -1034,7 +1121,8 @@ private:
             next.manualAnchorActive = !snapshot_->manualAlignmentAnchors.empty();
             for (const QVariant& marker : lowConfidenceTimelineMarkers) {
                 if (next.alignmentTimelineMarkers.size() >= kMaximumAlignmentTimelineMarkers) {
-                    break;
+                    ++next.alignmentTimelineMarkerOverflowCount;
+                    continue;
                 }
                 next.alignmentTimelineMarkers.push_back(marker);
             }
@@ -1216,6 +1304,9 @@ private:
 
     [[nodiscard]] bool dispatch(application::PlaybackCommand command) noexcept {
         const application::CommandContext context = application::commandContext(command);
+        const bool clearsCandidateErrors =
+            std::holds_alternative<application::OpenComparisonCommand>(command) ||
+            std::holds_alternative<application::CloseSessionCommand>(command);
         application::PortSubmitResult result = application::PortSubmitResult::Closed;
         try {
             result = dependencies_.submit(std::move(command));
@@ -1227,6 +1318,8 @@ private:
             return false;
         }
         pendingCommand_ = context;
+        pendingCommandClearsCandidateErrors_ = clearsCandidateErrors;
+        lastSubmittedCommandId_ = context.commandId.value();
         publishProjection();
         return true;
     }
@@ -1345,10 +1438,12 @@ private:
     QString candidateSourceBErrorKey_;
     QString candidateSourceCErrorKey_;
     std::optional<application::CommandContext> pendingCommand_;
+    bool pendingCommandClearsCandidateErrors_ = false;
     std::optional<application::CommandContext> pendingNavigationCommand_;
     std::optional<application::CommandContext> pendingTransportCommand_;
     std::uint64_t nextCommandId_ = 1U;
     bool commandIdsExhausted_ = false;
+    std::uint64_t lastSubmittedCommandId_ = 0U;
     bool stopped_ = false;
     ReviewView view_;
 };
@@ -1514,6 +1609,10 @@ QVariantList ReviewController::alignmentTimelineMarkers() const {
     return impl_->view().alignmentTimelineMarkers;
 }
 
+qulonglong ReviewController::alignmentTimelineMarkerOverflowCount() const noexcept {
+    return impl_->view().alignmentTimelineMarkerOverflowCount;
+}
+
 bool ReviewController::manualAnchorActive() const noexcept {
     return impl_->view().manualAnchorActive;
 }
@@ -1574,6 +1673,10 @@ bool ReviewController::canPause() const noexcept {
     return impl_->view().canPause;
 }
 
+qulonglong ReviewController::lastSubmittedCommandId() const noexcept {
+    return impl_->lastSubmittedCommandId();
+}
+
 bool ReviewController::openComparison(const QUrl& first, const QUrl& second) {
     return impl_->openComparison(first, second);
 }
@@ -1601,6 +1704,10 @@ bool ReviewController::openComparisonSet(const QUrl& first,
 
 bool ReviewController::closeSources() {
     return impl_->closeSources();
+}
+
+void ReviewController::clearCandidateSourceErrors() noexcept {
+    impl_->clearCandidateSourceErrors();
 }
 
 QVariantMap ReviewController::handleDroppedUrls(const QVariantList& urls) const {

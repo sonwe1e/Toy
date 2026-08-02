@@ -7,6 +7,7 @@ Item {
 
     required property var controller
     required property bool shortcutsEnabled
+    required property bool presentationShortcutsEnabled
     required property int oneSecondStepFrames
     required property bool wipeEnabled
     required property real wipePosition
@@ -163,11 +164,13 @@ Item {
     Shortcut {
         sequence: "Tab"
         context: Qt.ApplicationShortcut
+        enabled: control.presentationShortcutsEnabled
         onActivated: control.chromeToggleRequested()
     }
     Shortcut {
         sequence: "F11"
         context: Qt.ApplicationShortcut
+        enabled: control.presentationShortcutsEnabled
         onActivated: control.fullScreenToggleRequested()
     }
     Shortcut {
@@ -179,6 +182,7 @@ Item {
     Shortcut {
         sequence: "?"
         context: Qt.ApplicationShortcut
+        enabled: control.shortcutsEnabled
         onActivated: control.shortcutHelpRequested()
     }
     Shortcut {
@@ -202,18 +206,19 @@ Item {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
+        enabled: control.shortcutsEnabled
         onActivated: control.openVideosRequested()
     }
     Shortcut {
         sequence: "Ctrl+Shift+O"
         context: Qt.ApplicationShortcut
-        enabled: control.sourceCount > 0 && control.sourceCount < 3
+        enabled: control.shortcutsEnabled && control.sourceCount > 0 && control.sourceCount < 3
         onActivated: control.addVideoRequested()
     }
     Shortcut {
         sequence: "Ctrl+W"
         context: Qt.ApplicationShortcut
-        enabled: control.sourceCount > 0
+        enabled: control.shortcutsEnabled && control.sourceCount > 0
         onActivated: control.closeVideosRequested()
     }
 }

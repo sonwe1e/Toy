@@ -60,10 +60,10 @@ ApplicationWindow {
     property bool showFramePending: false
     property real wipePosition: 0.5
     property bool pendingComparisonPreservesPosition: false
+    property bool pendingNewReviewWantsThreeUp: false
     property string dropError: ""
     property string intentMessage: ""
     readonly property var pendingDestructiveAction: shell && shell.hasPendingAction ? shell.pendingAction : null
-    property bool dropRequestExternal: false
     readonly property int inFrame: shell ? Number(shell.inFrame) : -1
     readonly property int outFrame: shell ? Number(shell.outFrame) : -1
     readonly property real inMediaTime: shell ? Number(shell.inMediaTime) : -1
@@ -134,14 +134,7 @@ ApplicationWindow {
     readonly property bool canPauseAction: !busy && Boolean(controller && controller.canPause)
     // ComparisonSurface is a C++ type registered by the host.
     // qmllint disable unqualified
-    readonly property int effectiveViewMode: {
-        if (singleMode)
-            return ComparisonSurface.Single;
-        const requested = preferences ? Number(preferences.viewMode) : ComparisonSurface.SideBySide;
-        if (sourceCount === 2 && (requested === ComparisonSurface.ThreeUp || requested === ComparisonSurface.ReferenceFocus || requested === ComparisonSurface.AnalysisGrid))
-            return ComparisonSurface.SideBySide;
-        return requested === ComparisonSurface.Single ? ComparisonSurface.SideBySide : requested;
-    }
+    readonly property int effectiveViewMode: shell ? Number(shell.effectiveViewMode) : (singleMode ? ComparisonSurface.Single : ComparisonSurface.SideBySide)
     readonly property var availableViewModes: sourceCount <= 1 ? [
         {
             "label": qsTr("Single"),
@@ -191,8 +184,9 @@ ApplicationWindow {
     readonly property bool wipeMode: effectiveViewMode === ComparisonSurface.Wipe
     readonly property bool sideBySideMode: effectiveViewMode === ComparisonSurface.SideBySide
     readonly property bool threeUpMode: effectiveViewMode === ComparisonSurface.ThreeUp
+    readonly property int threeUpViewMode: ComparisonSurface.ThreeUp
     // qmllint enable unqualified
-    readonly property int differenceEdge: preferences ? Number(preferences.differenceEdge) : 0
+    readonly property int differenceEdge: shell ? Number(shell.effectiveDifferenceEdge) : 0
     property bool differenceThresholdEnabled: false
     property int differenceThresholdCode: 0
     property int differenceThresholdPolicy: 1
@@ -236,7 +230,9 @@ ApplicationWindow {
     readonly property real frameProgress: currentFrame >= 0 && totalFrames > 1 ? Math.max(0, Math.min(1, Number(currentFrame) / (Number(totalFrames) - 1))) : 0
     readonly property real timelineProgress: timelineDragging && timelinePreviewFrame >= 0 && totalFrames > 1 ? Number(timelinePreviewFrame) / (Number(totalFrames) - 1) : frameProgress
     readonly property bool timelineEnabled: graphicsReady && !busy && Boolean(controller && controller.canFirst) && totalFrames > 0
-    readonly property bool globalMediaShortcutsEnabled: !chromeVisible || !focusBlocksGlobalMediaShortcuts(root.activeFocusItem)
+    readonly property int inputContext: reviewInputDialogs.modalVisible || anchorDialog.visible || shortcutHelp.visible ? 3 : (focusIsPopup(root.activeFocusItem) ? 2 : (focusIsTextEditing(root.activeFocusItem) ? 1 : 0))
+    readonly property bool globalMediaShortcutsEnabled: inputContext === 0 && (!chromeVisible || !focusBlocksGlobalMediaShortcuts(root.activeFocusItem))
+    readonly property bool presentationShortcutsEnabled: inputContext === 0
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
     readonly property string overlayTitle: busy ? qsTr("Loading videos...") : (!graphicsReady ? qsTr("Graphics unavailable") : (hasErrors ? qsTr("Unable to open videos") : qsTr("Drop one to three videos here")))
     readonly property string overlayDetail: busy ? qsTr("Please wait while the requested media is prepared.") : (!graphicsReady ? qsTr("Navigation and opening are disabled until the graphics device is ready.") : (hasErrors ? errorDetails() : qsTr("Open one video for playback and frame review, or two to three videos for comparison.")))
@@ -262,19 +258,19 @@ ApplicationWindow {
         if (rangeStartPending && Number(currentFrame) === inFrame && !busy) {
             shell.setRangeStartPending(false);
             Qt.callLater(() => {
-                if (rangePlaybackActive && controller && !controller.playing)
-                    controller.play();
+                if (rangePlaybackActive && controller && !controller.playing && !controller.play())
+                    stopRangeLoop(qsTr("Loop playback stopped because playback could not start."));
             });
             return;
         }
         if (rangePlaybackActive && playing && outFrame >= inFrame && Number(currentFrame) >= outFrame) {
             shell.setRangeStartPending(true);
-            controller.seekFrame(inFrame);
+            if (!controller.seekFrame(inFrame))
+                stopRangeLoop(qsTr("Loop playback stopped because the In point could not be reached."));
         }
     }
 
     onSourceCountChanged: {
-        normalizeViewMode();
         Qt.callLater(remapReviewRange);
     }
 
@@ -332,11 +328,12 @@ ApplicationWindow {
             return false;
         if (seekRequired) {
             if (!controller.seekFrame(inFrame)) {
-                shell.setRangePlaybackState(false, false);
+                stopRangeLoop(qsTr("Loop playback stopped because the In point could not be reached."));
                 return false;
             }
-        } else {
-            controller.play();
+        } else if (!controller.play()) {
+            stopRangeLoop(qsTr("Loop playback stopped because playback could not start."));
+            return false;
         }
         return true;
     }
@@ -364,9 +361,24 @@ ApplicationWindow {
         const nextActive = !rangePlaybackActive;
         if (!shell.setRangePlaybackState(nextActive, false))
             return false;
-        if (!nextActive && controller && controller.playing)
-            controller.pause();
+        if (!nextActive && controller && controller.playing && !controller.pause()) {
+            showIntentMessage(qsTr("Loop playback was disabled, but playback could not be paused."));
+            return false;
+        }
         return true;
+    }
+
+    function stopRangeLoop(message) {
+        if (shell) {
+            shell.setRangePlaybackState(false, false);
+            shell.setRangeStartPending(false);
+        }
+        const paused = !controller || !controller.playing || controller.pause();
+        if (message.length > 0)
+            showIntentMessage(message);
+        else if (!paused)
+            showIntentMessage(qsTr("Loop playback was disabled, but playback could not be paused."));
+        return paused;
     }
 
     function resetViewport() {
@@ -387,17 +399,6 @@ ApplicationWindow {
     function openViewerContextMenu() {
         viewerContextMenu.popup();
     }
-
-    // ComparisonSurface is runtime-registered by the host.
-    // qmllint disable unqualified
-    function normalizeViewMode() {
-        if (!preferences || sourceCount <= 1)
-            return;
-        const requested = Number(preferences.viewMode);
-        if (sourceCount === 2 && requested !== ComparisonSurface.SideBySide && requested !== ComparisonSurface.Wipe && requested !== ComparisonSurface.Difference)
-            preferences.viewMode = ComparisonSurface.SideBySide;
-    }
-    // qmllint enable unqualified
 
     function setDroppedVideoOrder(urls) {
         return shell && shell.stageSources(urls.slice(0), 0);
@@ -425,9 +426,7 @@ ApplicationWindow {
         }
     }
 
-    function clearReviewUi() {
-        if (shell)
-            shell.clearStagedSources();
+    function resetReviewVisualState() {
         sourceOffsetValues = {};
         if (shell)
             shell.clearRange();
@@ -436,6 +435,12 @@ ApplicationWindow {
         differenceThresholdCode = 0;
         if (viewportFrame && viewportFrame.surface)
             viewportFrame.surface.resetViewport();
+    }
+
+    function clearReviewUi() {
+        if (shell)
+            shell.clearStagedSources();
+        resetReviewVisualState();
     }
 
     function requestDestructiveAction(action) {
@@ -454,13 +459,11 @@ ApplicationWindow {
         if (!action || !action.kind)
             return;
         if (action.kind === "openVideos") {
-            performVideoReview(action.urls, Boolean(action.external));
+            performVideoReview(action.urls);
             return;
         }
         if (action.kind === "closeReview") {
-            if (shell.closeSources())
-                clearReviewUi();
-            finishActiveStartupRequest();
+            shell.closeSources();
             return;
         }
         if (action.kind === "exit")
@@ -470,7 +473,6 @@ ApplicationWindow {
     function cancelPendingDestructiveAction() {
         if (shell)
             shell.cancelPendingAction();
-        finishActiveStartupRequest();
     }
 
     // After a menu action runs, hand keyboard control back to the viewer so transport shortcuts
@@ -491,43 +493,19 @@ ApplicationWindow {
         return shell && shell.enqueueStartupRequest(Number(kind), Array.from(urls));
     }
 
-    function drainStartupRequestQueue() {
-        if (!shell || shell.startupRequestActive || shell.queuedStartupRequestCount === 0 || busy || shell.hasPendingAction || reviewInputDialogs.comparisonVisible)
-            return;
-        const request = shell.takeNextStartupRequest();
-        if (!request || !request.kind)
-            return;
-        requestDestructiveAction({
-            "kind": "openVideos",
-            "urls": request.urls,
-            "external": true
-        });
-    }
-
-    function finishActiveStartupRequest() {
-        if (shell)
-            shell.completeStartupRequest();
-        Qt.callLater(drainStartupRequestQueue);
-    }
-
-    function performVideoReview(normalizedUrls, externalRequest) {
+    function performVideoReview(normalizedUrls) {
         if (normalizedUrls.length === 1) {
-            clearSelectedRange();
-            sourceOffsetValues = {};
             dropError = "";
             if (shell && shell.stageSources(normalizedUrls, 0))
                 shell.openStagedSources(false);
-            finishActiveStartupRequest();
             return;
         }
         dropError = "";
         if (!setDroppedVideoOrder(normalizedUrls)) {
             showIntentMessage(qsTr("The videos could not be staged."));
-            finishActiveStartupRequest();
             return;
         }
         pendingComparisonPreservesPosition = false;
-        dropRequestExternal = externalRequest;
         reviewInputDialogs.openComparison();
     }
 
@@ -552,7 +530,6 @@ ApplicationWindow {
                 dropError = "";
                 setDroppedVideoOrder(existing);
                 pendingComparisonPreservesPosition = true;
-                dropRequestExternal = false;
                 reviewInputDialogs.openComparison();
                 return;
             }
@@ -579,15 +556,45 @@ ApplicationWindow {
     }
 
     function openDroppedComparison(referenceIndex) {
-        if (!pendingComparisonPreservesPosition)
-            clearSelectedRange();
-        sourceOffsetValues = {};
         if (shell)
             shell.stagedReferenceIndex = referenceIndex;
-        if (preferences && shell && shell.stagedSources.length === 3)
-            preferences.viewMode = 1;
-        if (shell)
-            shell.openStagedSources(pendingComparisonPreservesPosition && sourceCount > 0);
+        pendingNewReviewWantsThreeUp = Boolean(shell && shell.stagedSources.length === 3);
+        if (shell && !shell.openStagedSources(pendingComparisonPreservesPosition && sourceCount > 0))
+            pendingNewReviewWantsThreeUp = false;
+    }
+
+    function intentKindText(kind, sourceCountValue) {
+        switch (Number(kind)) {
+        case 0:
+            return qsTr("Open %1 video(s)").arg(sourceCountValue);
+        case 1:
+            return qsTr("Replace videos");
+        case 2:
+            return qsTr("Add video");
+        case 3:
+            return qsTr("Remove video");
+        case 4:
+            return qsTr("Change reference");
+        case 5:
+            return qsTr("Close videos");
+        default:
+            return qsTr("Review request");
+        }
+    }
+
+    function intentErrorText(error) {
+        switch (Number(error)) {
+        case 2:
+            return qsTr("The review request queue is full.");
+        case 3:
+            return qsTr("The video list changed; please repeat the operation.");
+        case 4:
+            return qsTr("The review request could not be started.");
+        case 5:
+            return qsTr("The review request failed.");
+        default:
+            return qsTr("The review request was rejected.");
+        }
     }
 
     function activeSourceUrls() {
@@ -721,6 +728,26 @@ ApplicationWindow {
         let candidate = item;
         while (candidate) {
             if (candidate.blocksGlobalMediaShortcuts === true)
+                return true;
+            candidate = candidate.parent;
+        }
+        return false;
+    }
+
+    function focusIsTextEditing(item) {
+        let candidate = item;
+        while (candidate) {
+            if (candidate.textEditingInputContext === true)
+                return true;
+            candidate = candidate.parent;
+        }
+        return false;
+    }
+
+    function focusIsPopup(item) {
+        let candidate = item;
+        while (candidate) {
+            if (candidate.popupInputContext === true)
                 return true;
             candidate = candidate.parent;
         }
@@ -871,6 +898,8 @@ ApplicationWindow {
     component OffsetSpinBox: SpinBox {
         id: offsetControl
 
+        property bool blocksGlobalMediaShortcuts: true
+        property bool textEditingInputContext: true
         from: -16
         to: 16
         editable: true
@@ -904,6 +933,7 @@ ApplicationWindow {
         sourceCount: root.sourceCount
         busy: root.busy
         canonicalSourceIndex: root.canonicalSourceIndex
+        currentViewMode: root.effectiveViewMode
         inspectorOpen: root.inspectorOpen
         graphicsReady: root.graphicsReady
         currentFrame: root.currentFrame
@@ -927,6 +957,7 @@ ApplicationWindow {
 
         controller: root.controller
         shortcutsEnabled: root.globalMediaShortcutsEnabled
+        presentationShortcutsEnabled: root.presentationShortcutsEnabled
         oneSecondStepFrames: root.oneSecondStepFrames
         wipeEnabled: root.wipeMode
         wipePosition: root.wipePosition
@@ -987,26 +1018,29 @@ ApplicationWindow {
     }
 
     Connections {
-        target: root.preferences
-
-        function onPreferencesChanged() {
-            Qt.callLater(root.normalizeViewMode);
-        }
-    }
-
-    Connections {
         target: root.shell
 
-        function onStartupRequestAvailable() {
-            Qt.callLater(root.drainStartupRequestQueue);
+        function onIntentEvent(intentId, status, kind, error, sourceCountValue) {
+            if (Number(status) === 5)
+                root.showIntentMessage(root.intentErrorText(error));
+            else if (Number(status) === 6)
+                root.showIntentMessage(qsTr("A newer request replaced %1.").arg(root.intentKindText(kind, sourceCountValue)));
         }
 
-        function onIntentQueued(message) {
-            root.showIntentMessage(message);
-        }
-
-        function onIntentRejected(message) {
-            root.showIntentMessage(message);
+        function onIntentFinished(intentId, kind, outcome, errorKey) {
+            if (Number(outcome) !== 0) {
+                if (Number(kind) === 0)
+                    root.pendingNewReviewWantsThreeUp = false;
+                root.showIntentMessage(errorKey.length > 0 ? root.errorMessage(errorKey) : qsTr("The review request failed."));
+                return;
+            }
+            if (Number(kind) === 0) {
+                if (root.pendingNewReviewWantsThreeUp && root.sourceCount === 3 && root.preferences)
+                    root.preferences.viewMode = root.threeUpViewMode;
+                root.pendingNewReviewWantsThreeUp = false;
+                root.resetReviewVisualState();
+            } else if (Number(kind) === 5)
+                root.clearReviewUi();
         }
     }
 
@@ -1021,14 +1055,6 @@ ApplicationWindow {
         onMoveRequested: (fromIndex, toIndex) => root.swapDroppedVideos(fromIndex, toIndex)
         onComparisonAccepted: referenceIndex => {
             root.openDroppedComparison(referenceIndex);
-            if (root.dropRequestExternal)
-                root.finishActiveStartupRequest();
-            root.dropRequestExternal = false;
-        }
-        onComparisonRejected: {
-            if (root.dropRequestExternal)
-                root.finishActiveStartupRequest();
-            root.dropRequestExternal = false;
         }
     }
 
@@ -1088,6 +1114,8 @@ ApplicationWindow {
                 ComboBox {
                     id: anchorSource
 
+                    property bool blocksGlobalMediaShortcuts: true
+                    property bool popupInputContext: popup.visible
                     objectName: "anchorSourceCombo"
                     width: 90
                     model: anchorDialog.sourceChoices
@@ -1104,6 +1132,8 @@ ApplicationWindow {
                 SpinBox {
                     id: canonicalAnchorFrame
 
+                    property bool blocksGlobalMediaShortcuts: true
+                    property bool textEditingInputContext: true
                     objectName: "canonicalAnchorFrame"
                     from: 1
                     to: Math.max(1, Math.min(2147483647, root.totalFrames))
@@ -1123,6 +1153,8 @@ ApplicationWindow {
                 SpinBox {
                     id: sourceAnchorFrame
 
+                    property bool blocksGlobalMediaShortcuts: true
+                    property bool textEditingInputContext: true
                     objectName: "sourceAnchorFrame"
                     from: 1
                     to: Math.max(1, Math.min(2147483647, root.totalFrames + 16))
@@ -1167,6 +1199,7 @@ ApplicationWindow {
         singleMode: root.singleMode
         canonicalSourceIndex: root.canonicalSourceIndex
         busy: root.busy
+        pendingSourceIndexes: root.shell ? root.shell.pendingSourceIndexes : []
         z: 30
         borderColor: root.borderColor
         accentColor: root.accentColor
@@ -1284,7 +1317,9 @@ ApplicationWindow {
         combinedAlignmentStatus: root.combinedAlignmentStatus
         singleMode: root.singleMode
         differenceFirstSlot: root.differenceFirstSlot
+        effectiveDifferenceEdge: root.differenceEdge
         sourceNames: [root.sourceAName, root.sourceBName, root.sourceCName]
+        sourceMediaInfo: root.controller ? root.controller.sourceMediaInfo : []
         frameErrorBannerVisible: root.frameErrorBannerVisible
         errorDetail: root.errorDetails()
         overlayVisible: root.overlayVisible
@@ -1391,13 +1426,105 @@ ApplicationWindow {
     }
 
     Rectangle {
+        id: intentQueuePanel
+
+        readonly property var runningIntent: root.shell ? root.shell.activeIntent : ({})
+        readonly property var queued: root.shell ? root.shell.queuedIntents : []
+        visible: Number(runningIntent.id || 0) > 0 || queued.length > 0
+        z: 890
+        width: 286
+        height: queueColumn.implicitHeight + 20
+        radius: 7
+        color: "#f21d2635"
+        border.color: root.borderColor
+        anchors {
+            top: parent.top
+            right: parent.right
+            topMargin: root.chromeVisible ? 58 : 18
+            rightMargin: 18
+        }
+
+        Column {
+            id: queueColumn
+
+            spacing: 7
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: parent.top
+                margins: 10
+            }
+
+            Text {
+                visible: Number(intentQueuePanel.runningIntent.id || 0) > 0
+                text: qsTr("Working · %1").arg(root.intentKindText(intentQueuePanel.runningIntent.kind, intentQueuePanel.runningIntent.sourceCount))
+                color: root.primaryTextColor
+                font.pixelSize: 12
+                elide: Text.ElideRight
+                width: parent.width
+            }
+
+            Row {
+                visible: intentQueuePanel.queued.length > 0
+                width: parent.width
+
+                Text {
+                    text: qsTr("%1 request(s) queued").arg(intentQueuePanel.queued.length)
+                    color: root.mutedTextColor
+                    font.pixelSize: 12
+                    width: parent.width - cancelAllButton.width
+                    anchors.verticalCenter: parent.verticalCenter
+                }
+
+                ToolButton {
+                    id: cancelAllButton
+
+                    text: qsTr("Cancel all")
+                    implicitWidth: 74
+                    implicitHeight: 24
+                    onClicked: root.shell.cancelAllQueuedIntents()
+                }
+            }
+
+            Repeater {
+                model: intentQueuePanel.queued
+
+                delegate: Row {
+                    id: queuedIntentRow
+
+                    required property var modelData
+                    width: queueColumn.width
+
+                    Text {
+                        text: root.intentKindText(queuedIntentRow.modelData.kind, queuedIntentRow.modelData.sourceCount)
+                        color: root.primaryTextColor
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                        width: parent.width - cancelQueuedButton.width
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    ToolButton {
+                        id: cancelQueuedButton
+
+                        text: qsTr("Cancel")
+                        implicitWidth: 58
+                        implicitHeight: 22
+                        onClicked: root.shell.cancelQueuedIntent(queuedIntentRow.modelData.id)
+                    }
+                }
+            }
+        }
+    }
+
+    Rectangle {
         visible: root.intentMessage.length > 0
         z: 900
         radius: 6
         color: "#ed1d2635"
         border.color: root.borderColor
-        implicitWidth: Math.min(root.width - 48, intentToastText.implicitWidth + 32)
-        implicitHeight: intentToastText.implicitHeight + 20
+        width: Math.max(0, Math.min(root.width - 48, intentToastText.implicitWidth + 32))
+        height: intentToastText.paintedHeight + 20
         anchors {
             horizontalCenter: parent.horizontalCenter
             top: parent.top
@@ -1408,9 +1535,12 @@ ApplicationWindow {
             id: intentToastText
 
             anchors.centerIn: parent
+            width: Math.max(0, parent.width - 32)
             text: root.intentMessage
             color: root.primaryTextColor
             font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
         }
     }
     DropArea {

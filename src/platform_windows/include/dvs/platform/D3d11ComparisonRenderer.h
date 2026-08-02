@@ -173,6 +173,22 @@ struct SurfacePanelLayout final {
     std::optional<SurfaceRect> differenceRect;
 };
 
+struct SurfaceDisplayExtent final {
+    float width = 0.0F;
+    float height = 0.0F;
+
+    [[nodiscard]] constexpr bool isValid() const noexcept {
+        return width > 0.0F && height > 0.0F;
+    }
+};
+
+struct SurfacePresentationGeometry final {
+    SurfacePanelLayout panels;
+    std::array<SurfaceRect, 3U> sourceContentRects{};
+    std::optional<SurfaceRect> differenceContentRect;
+    std::optional<SurfaceRect> wipeContentRect;
+};
+
 struct Nv12ColorTransform final {
     // Row-major float3x4 mapping normalized {Y, U, V, 1} samples to RGB.
     std::array<float, 12U> yuvToRgb{};
@@ -197,6 +213,17 @@ struct Nv12ColorTransform final {
 [[nodiscard]] SurfaceRect aspectFitRect(const SurfaceRect& bounds,
                                         std::uint32_t sourceWidth,
                                         std::uint32_t sourceHeight) noexcept;
+
+[[nodiscard]] SurfacePresentationGeometry computeSurfacePresentationGeometry(
+    SurfaceViewMode viewMode,
+    float logicalWidth,
+    float logicalHeight,
+    std::uint32_t pixelWidth,
+    std::uint32_t pixelHeight,
+    std::uint8_t referenceSlot,
+    SurfaceDifferenceEdge differenceEdge,
+    float wipePosition,
+    const std::array<SurfaceDisplayExtent, 3U>& sourceDisplayExtents) noexcept;
 
 // Qt scene-graph scissor coordinates use the render target's bottom-left origin. D3D11 RECT uses
 // its top-left origin; conversion flips by target height, then intersects the active viewport.

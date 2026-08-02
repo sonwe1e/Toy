@@ -182,12 +182,12 @@ set_tests_properties(
         RESOURCE_LOCK vcstation-machine-install
 )
 
-if(DVS_PREVIOUS_RELEASE_MSI)
+function(dvs_add_msi_upgrade_test previous_version previous_msi)
     dvs_add_test(
-        NAME package.msi-upgrade-from-1.1.0
+        NAME package.msi-upgrade-from-${previous_version}
         LAYER packaged
         MODULE app
-        TIMEOUT 240
+        TIMEOUT 300
         COMMAND
             powershell.exe
             -NoLogo
@@ -199,14 +199,21 @@ if(DVS_PREVIOUS_RELEASE_MSI)
             -ExpectedShellBinaryName "${DVS_SHELL_BINARY_NAME}"
             -ProbeFixture
             "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
-            -PreviousMsiPath "${DVS_PREVIOUS_RELEASE_MSI}"
+            -PairProbeFixture
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
+            -PreviousMsiPath "${previous_msi}"
+            -PreviousExpectedVersion "${previous_version}"
     )
     set_tests_properties(
-        package.msi-upgrade-from-1.1.0
+        package.msi-upgrade-from-${previous_version}
         PROPERTIES
             RUN_SERIAL TRUE
             RESOURCE_LOCK vcstation-machine-install
     )
+endfunction()
+
+if(DVS_PREVIOUS_RELEASE_1_2_MSI)
+    dvs_add_msi_upgrade_test(1.2.0 "${DVS_PREVIOUS_RELEASE_1_2_MSI}")
 endif()
 
 dvs_add_test(

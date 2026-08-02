@@ -13,7 +13,13 @@ param(
     [ValidatePattern('^VCStationShell-[0-9]+\.[0-9]+\.dll$')]
     [string] $ExpectedShellBinaryName,
 
-    [string] $PreviousMsiPath
+    [string] $PreviousMsiPath,
+
+    [string] $PreviousExpectedVersion,
+
+    [switch] $ExpectLegacyProjectRegistration,
+
+    [string] $PairProbeFixture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,6 +116,15 @@ foreach ($path in @($MsiPath, $ProbeFixture)) {
 if ($PreviousMsiPath -and -not (Test-Path -LiteralPath $PreviousMsiPath -PathType Leaf)) {
     throw "Previous MSI is missing: $PreviousMsiPath"
 }
+if ($PreviousMsiPath -and -not $PreviousExpectedVersion) {
+    throw 'PreviousExpectedVersion is required when PreviousMsiPath is provided.'
+}
+if ($PairProbeFixture -and -not $PreviousMsiPath) {
+    throw 'PairProbeFixture is valid only for an upgrade test.'
+}
+if ($PairProbeFixture -and -not (Test-Path -LiteralPath $PairProbeFixture -PathType Leaf)) {
+    throw "Pair probe fixture is missing: $PairProbeFixture"
+}
 if (-not (Test-IsAdministrator)) {
     throw 'The per-machine MSI packaged smoke requires an elevated self-hosted runner.'
 }
@@ -147,14 +162,17 @@ try {
                 "Found $($previousProducts.Count)."
             )
         }
-        if ($previousProducts[0].DisplayVersion -cne '1.1.0') {
+        if ($previousProducts[0].DisplayVersion -cne $PreviousExpectedVersion) {
             throw (
-                "Expected previous version 1.1.0, found " +
+                "Expected previous version $PreviousExpectedVersion, found " +
                 "'$($previousProducts[0].DisplayVersion)'."
             )
         }
-        if (-not (Test-LegacyProjectRegistration)) {
-            throw 'The 1.1.0 MSI did not establish the expected legacy .dvsproj registration.'
+        if ($ExpectLegacyProjectRegistration -and -not (Test-LegacyProjectRegistration)) {
+            throw (
+                "The $PreviousExpectedVersion MSI did not establish the expected legacy " +
+                '.dvsproj registration.'
+            )
         }
         $previousGui = Join-Path $env:ProgramFiles 'VCStation\VCStation.exe'
         if (-not (Test-Path -LiteralPath $previousGui -PathType Leaf)) {
@@ -166,30 +184,66 @@ try {
             -PassThru `
             -Wait
         if ($previousLaunch.ExitCode -ne 0) {
-            throw "The VCStation 1.1.0 launch/close probe failed with $($previousLaunch.ExitCode)."
+            throw (
+                "The VCStation $PreviousExpectedVersion launch/close probe failed with " +
+                "$($previousLaunch.ExitCode)."
+            )
         }
         New-Item -ItemType Directory -Path (Split-Path -Parent $settingsPath) -Force | Out-Null
-        $settingsProbe = '{"schemaVersion":1,"values":{"upgradeProbe":"preserve-1.1.0"}}'
+        $settingsProbe = @{
+            schemaVersion = 1
+            values = @{
+                upgradeProbe = "preserve-$PreviousExpectedVersion"
+                'review.difference-edge' = '0-2'
+                'review.view-mode' = 'wipe'
+            }
+        } | ConvertTo-Json -Compress
         [IO.File]::WriteAllText($settingsPath, $settingsProbe, [Text.UTF8Encoding]::new($false))
         $settingsProbeHash = (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash
 
         Invoke-Msi `
             -Operation Install `
             -Package $MsiPath `
-            -Log (Join-Path $artifactRoot 'upgrade.log')
+            -Log (Join-Path $artifactRoot "upgrade-from-$PreviousExpectedVersion.log")
 
         $remainingPrevious = @(
             Get-InstalledProduct -DisplayName @('VCStation') |
-                Where-Object { $_.DisplayVersion -ceq '1.1.0' }
+                Where-Object { $_.DisplayVersion -ceq $PreviousExpectedVersion }
         )
         if ($remainingPrevious) {
-            throw 'The VCStation 1.1.0 ARP entry remained after the VCStation upgrade.'
+            throw "The VCStation $PreviousExpectedVersion ARP entry remained after the upgrade."
         }
         Assert-NoLegacyProjectRegistration
         if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf) -or
             (Get-FileHash -LiteralPath $settingsPath -Algorithm SHA256).Hash -cne
                 $settingsProbeHash) {
-            throw "The VCStation settings file changed during the 1.1.0 to $ExpectedVersion upgrade."
+            throw (
+                "The VCStation settings file changed during the $PreviousExpectedVersion to " +
+                "$ExpectedVersion upgrade."
+            )
+        }
+        if ($PairProbeFixture) {
+            $upgradedGui = Join-Path $env:ProgramFiles 'VCStation\VCStation.exe'
+            if (-not (Test-Path -LiteralPath $upgradedGui -PathType Leaf)) {
+                throw "The upgraded VCStation executable is missing: $upgradedGui"
+            }
+            $upgradeSettingsLaunch = Start-Process `
+                -FilePath $upgradedGui `
+                -ArgumentList @('--ui-upgrade-settings-smoke', $ProbeFixture, $PairProbeFixture) `
+                -PassThru `
+                -Wait
+            if ($upgradeSettingsLaunch.ExitCode -ne 0) {
+                throw (
+                    "The upgraded VCStation effective A/B pair probe failed with " +
+                    "$($upgradeSettingsLaunch.ExitCode)."
+                )
+            }
+            $persistedSettings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+            if ($persistedSettings.values.'review.view-mode' -cne 'wipe' -or
+                $persistedSettings.values.'review.difference-edge' -cne '0-2' -or
+                $persistedSettings.values.upgradeProbe -cne "preserve-$PreviousExpectedVersion") {
+                throw 'The upgrade settings probe was not preserved after the effective A/B check.'
+            }
         }
     }
 
@@ -277,7 +331,7 @@ finally {
     }
     $installedPrevious = @(
         Get-InstalledProduct -DisplayName @('VCStation') |
-            Where-Object { $_.DisplayVersion -ceq '1.1.0' }
+            Where-Object { $_.DisplayVersion -ceq $PreviousExpectedVersion }
     )
     if ($PreviousMsiPath -and $installedPrevious) {
         try {
