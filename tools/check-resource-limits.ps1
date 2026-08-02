@@ -18,6 +18,9 @@ $runnerRequirements = @(
     '\$maxConcurrency\s*=\s*4',
     'ProcessorAffinity\s*=',
     'ProcessPriorityClass\]::BelowNormal',
+    'ProcessPriorityClass\]::Normal',
+    '\$env:DVS_EXECUTION_RESOURCE_PROFILE',
+    'switch \(\$resourceProfile\)',
     '\$env:CMAKE_BUILD_PARALLEL_LEVEL\s*=',
     '\$env:CTEST_PARALLEL_LEVEL\s*=\s*''1''',
     '\$env:VCPKG_MAX_CONCURRENCY\s*='
@@ -76,6 +79,31 @@ $workflowPaths = Get-ChildItem -LiteralPath $WorkflowRoot -File |
     Where-Object Extension -In @('.yml', '.yaml')
 foreach ($workflowPath in $workflowPaths) {
     $content = Get-Content -LiteralPath $workflowPath.FullName -Raw
+    $interactiveCount = [regex]::Matches(
+        $content,
+        '(?im)^\s*DVS_EXECUTION_RESOURCE_PROFILE:\s+Interactive\s*$'
+    ).Count
+    if ($workflowPath.Name -cne 'hardware-performance.yml' -and $interactiveCount -ne 0) {
+        $errors.Add(
+            "Only hardware-performance.yml may use the Interactive resource profile; found it in '$($workflowPath.Name)'."
+        )
+    }
+    if ($workflowPath.Name -ceq 'hardware-performance.yml') {
+        if ($interactiveCount -ne 2) {
+            $errors.Add(
+                'hardware-performance.yml must use the Interactive resource profile for exactly two CTest invocations.'
+            )
+        }
+        foreach ($preset in @('hardware-d3d11', 'performance-d3d11')) {
+            $expectedInvocation =
+                "(?is)DVS_EXECUTION_RESOURCE_PROFILE:\s+Interactive.*?invoke-low-impact\.ps1\s+ctest\s+--preset\s+$preset\s+--output-on-failure"
+            if ($content -notmatch $expectedInvocation) {
+                $errors.Add(
+                    "hardware-performance.yml must run '$preset' through the Interactive resource profile."
+                )
+            }
+        }
+    }
     foreach ($match in [regex]::Matches($content, $runBlockPattern)) {
         $body = $match.Groups['body'].Value
         foreach ($line in $body -split '\r?\n') {

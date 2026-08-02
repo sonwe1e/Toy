@@ -117,12 +117,16 @@ jobs:
 
       - name: D3D11VA, zero-copy, and comparison pixel tests
         shell: pwsh
+        env:
+          DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset hardware-d3d11 --output-on-failure
 
       - name: Release-blocking performance gates
         shell: pwsh
+        env:
+          DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset performance-d3d11 --output-on-failure
@@ -137,7 +141,8 @@ jobs:
             Set-Content (Join-Path $artifactRoot 'tested-commit.txt') -Encoding ascii
           @(
             'Release-blocking profiles:',
-            '- resource profile: background-4-cpu (BelowNormal priority)',
+            '- configure/build profile: background-4-cpu (BelowNormal priority)',
+            '- hardware/performance profile: interactive-normal (full runner CPU affinity, CTest serial)',
             '- hardware.wipe-2source and hardware.diff-2source (visible pixel capture)',
             '- hardware.mode-switch-retained-frame (canonical frame retained through Side to Wipe)',
             '- hardware.rotated-padded-wipe (90-degree D3D11VA texture capture)',

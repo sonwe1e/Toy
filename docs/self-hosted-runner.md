@@ -118,6 +118,10 @@ status: online
 labels: self-hosted, Windows, X64, dvs-toolchain-4.4, dvs-gpu
 ```
 
-常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。阻断门槛包括
-1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。所有工作流日志
-作为 artifact 保留 14 天。
+常规 PR checks 全绿后，再手动运行 `Hardware and Performance`。配置和编译仍以 4 核
+BelowNormal 低影响配置运行；D3D11VA 硬件和性能 CTest 则以 Normal 优先级、runner 完整
+CPU affinity 运行，同时保持 CTest 串行。这样 500 ms cold-seek P95 和 100 ms UI 响应
+门槛衡量的是交互式用户环境，而不是后台构建限速造成的调度尖峰。
+
+阻断门槛包括 1080p60 运行 300 秒，以及 2 路和 3 路 1080p120 各运行 60 秒。所有工作流
+日志作为 artifact 保留 14 天。

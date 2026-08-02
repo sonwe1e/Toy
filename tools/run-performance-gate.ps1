@@ -92,12 +92,29 @@ try {
         throw
     }
 }
+$gatePriority = $gateProcess.PriorityClass
+$gateAffinityMask = [Int64]$gateProcess.ProcessorAffinity.ToInt64()
+$gateProcessorIds = [System.Collections.Generic.List[int]]::new()
+$maximumProcessorCount = [Math]::Min([Environment]::ProcessorCount, 63)
+for ($processorId = 0; $processorId -lt $maximumProcessorCount; ++$processorId) {
+    if (($gateAffinityMask -band ([Int64]1 -shl $processorId)) -ne 0) {
+        $gateProcessorIds.Add($processorId)
+    }
+}
 $process.WaitForExit()
 
 if ($env:DVS_GATE_RESOURCE_PROFILE) {
     Add-Content `
         -LiteralPath $stdoutPath `
         -Value "DVS_GATE_RESOURCE_PROFILE $env:DVS_GATE_RESOURCE_PROFILE" `
+        -Encoding ascii
+    Add-Content `
+        -LiteralPath $stdoutPath `
+        -Value (
+            'DVS_GATE_LAUNCH_PROFILE priority={0} processors={1}' -f
+            $gatePriority,
+            ($gateProcessorIds -join ',')
+        ) `
         -Encoding ascii
 }
 
