@@ -38,9 +38,13 @@ constexpr auto kPlaybackPresentationLead = 14ms;
 constexpr auto kMinimumPlaybackPreparationDelay = 1ms;
 constexpr auto kPlaybackProjectionInterval = 33ms;
 // Preserve every canonical frame through short decoder/driver stalls. The renderer can drain the
-// prepared successors faster than source cadence on a high-refresh display; only a stall beyond
-// half a second skips complete FrameSets to recover the wall-clock anchor.
-constexpr auto kPlaybackCatchUpTolerance = 500ms;
+// prepared successors faster than source cadence on a high-refresh display. The tolerance must
+// cover the occasional sub-second render-to-ack stalls observed when the process is throttled to a
+// few BelowNormal cores (the hardware performance gate runs this way): at 60 fps a 600 ms stall is
+// only ~36 frames, and skipping them to recover the wall-clock anchor discards exactly the material
+// a review tool exists to inspect. Only a stall beyond this tolerance skips complete FrameSets to
+// recover the wall-clock anchor; a sustained shortfall still accumulates past it and is caught.
+constexpr auto kPlaybackCatchUpTolerance = 2000ms;
 constexpr float kLowAlignmentConfidence = 0.30F;
 constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
 

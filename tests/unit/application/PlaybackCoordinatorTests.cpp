@@ -2027,7 +2027,7 @@ TEST(PlaybackCoordinatorTests, SlowDecodeDropsCompleteFrameSetsWithOnePreparedSu
     ASSERT_TRUE(preparedFrame.has_value());
     EXPECT_EQ(preparedFrame->frameId, domain::FrameId{2});
 
-    clock->advance(600ms);
+    clock->advance(2500ms);
     ASSERT_TRUE(
         provider->postFrameReady(*firstPlaybackFrame, makeFrameSet(firstPlaybackFrame->frameId)));
     ASSERT_TRUE(render->waitForPublishedCount(2U));
@@ -2105,7 +2105,7 @@ TEST(PlaybackCoordinatorTests, FinalFrameAutoPausesAndPlayFromEndRestartsAtZero)
     ASSERT_TRUE(scheduler->waitForScheduleCount(2U));
     const auto cadence = scheduler->request(1U);
     ASSERT_TRUE(cadence.has_value());
-    clock->set(cadence->due + 1s);
+    clock->set(cadence->due + 2500ms);
     ASSERT_TRUE(scheduler->fire(1U));
     ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
     const auto finalFrame = provider->frameRequest(1U);
@@ -4067,7 +4067,7 @@ TEST(PlaybackCoordinatorTests,
     const std::optional<DeadlineRequest> firstCadence = scheduler->request(1U);
     ASSERT_TRUE(firstCadence.has_value());
 
-    clock->set(firstCadence->due + 600ms);
+    clock->set(firstCadence->due + 2500ms);
     ASSERT_TRUE(scheduler->fire(1U));
     ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
     const std::optional<FrameRequest> catchUp = provider->frameRequest(1U);
