@@ -67,7 +67,7 @@ option(DVS_ENABLE_ASAN "Enable MSVC AddressSanitizer for project targets" OFF)
 option(DVS_ENABLE_COVERAGE "Enable native MSVC coverage instrumentation" OFF)
 set(
     DVS_PREVIOUS_RELEASE_1_2_MSI
-    ""
+    "$ENV{DVS_PREVIOUS_RELEASE_1_2_MSI}"
     CACHE FILEPATH
     "Optional VCStation 1.2.0 MSI used by the real packaged upgrade test"
 )

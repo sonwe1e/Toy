@@ -206,7 +206,7 @@ jobs:
       - name: Build and test Release
         shell: pwsh
         run: |
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset release --fresh "-DDVS_PREVIOUS_RELEASE_1_2_MSI=$env:DVS_PREVIOUS_RELEASE_1_2_MSI"
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset release --fresh
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset release
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset release --output-on-failure
           $metadata = Get-Content '.\out\build\release\release-metadata.json' -Raw |
