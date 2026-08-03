@@ -213,7 +213,7 @@
                         Directory="VCStationProgramMenuFolder"
                         On="uninstall"/>
                     <RegistryValue
-                        Root="HKLM"
+                        Root="HKCU"
                         Key="Software\VCStation\Installer"
                         Name="StartMenuShortcut"
                         Value="1"
