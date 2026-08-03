@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 180
     env:
       DVS_VCPKG_ROOT: ${{ vars.DVS_VCPKG_ROOT }}
+      DVS_EXECUTION_RESOURCE_PROFILE: Interactive
 
     steps:
       - name: Check out repository
