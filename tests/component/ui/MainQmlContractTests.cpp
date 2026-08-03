@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QObject>
@@ -27,6 +28,7 @@
 #include <QVariant>
 #include <QtQml/qqml.h>
 
+#include <array>
 #include <gtest/gtest.h>
 #include <memory>
 #include <utility>
@@ -77,6 +79,57 @@ public:
 
     void cancel(const application::RequestContext&) noexcept override {}
 };
+
+TEST(MainQmlContractTests, MapsEveryCurrentMediaErrorAndExcludesDeletedUiDomains) {
+    QFile mainQml{QStringLiteral(":/qml/Main.qml")};
+    ASSERT_TRUE(mainQml.open(QIODevice::ReadOnly));
+    const QString source = QString::fromUtf8(mainQml.readAll());
+    constexpr std::array<std::string_view, 28U> kMediaErrorKeys{
+        "invalid-argument",
+        "invalid-rate",
+        "invalid-frame-id",
+        "invalid-frame-count",
+        "invalid-dimensions",
+        "invalid-duration",
+        "invalid-media-descriptor",
+        "arithmetic-overflow",
+        "source-frame-rate-mismatch",
+        "source-frame-count-mismatch",
+        "source-duration-mismatch",
+        "source-resolution-mismatch",
+        "source-color-metadata-mismatch",
+        "frame-out-of-range",
+        "source-missing",
+        "source-fingerprint-mismatch",
+        "file-io",
+        "media-open-failed",
+        "media-probe-failed",
+        "invalid-cfr-timing",
+        "unsupported-codec",
+        "unsupported-pixel-format",
+        "media-decode-failed",
+        "frame-timeline-invalid",
+        "frame-budget-exceeded",
+        "graphics-unavailable",
+        "graphics-device-lost",
+        "frame-presentation-timed-out",
+    };
+    for (const std::string_view key : kMediaErrorKeys) {
+        EXPECT_TRUE(
+            source.contains(QStringLiteral("case \"") +
+                            QString::fromLatin1(key.data(), static_cast<qsizetype>(key.size())) +
+                            QStringLiteral("\":")))
+            << key;
+    }
+    for (const QString& removed : {QStringLiteral("clip-out-of-range"),
+                                   QStringLiteral("clip-not-found"),
+                                   QStringLiteral("export-record-not-found"),
+                                   QStringLiteral("duplicate-clip-selection"),
+                                   QStringLiteral("invalid-export-mode"),
+                                   QStringLiteral("invalid-export-geometry")}) {
+        EXPECT_FALSE(source.contains(removed)) << removed.toStdString();
+    }
+}
 
 TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     auto snapshot = std::make_shared<application::SessionSnapshot>();
@@ -351,6 +404,23 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_LE(transportTopLeft.x() + transportBar->width(), window->width())
         << "left=" << transportTopLeft.x() << " barWidth=" << transportBar->width()
         << " contentWidth=" << window->contentItem()->width();
+
+    ASSERT_TRUE(QMetaObject::invokeMethod(compareMenu, "open"));
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        QCoreApplication::processEvents();
+    }
+    EXPECT_TRUE(compareMenu->property("opened").toBool());
+    EXPECT_TRUE(root->property("anyMenuOpen").toBool());
+    EXPECT_FALSE(root->property("globalMediaShortcutsEnabled").toBool());
+    const std::size_t submittedBeforeMenuShortcut = submitted.size();
+    sendKey(*window, Qt::Key_Right);
+    EXPECT_EQ(submitted.size(), submittedBeforeMenuShortcut);
+    ASSERT_TRUE(QMetaObject::invokeMethod(compareMenu, "close"));
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        QCoreApplication::processEvents();
+    }
+    EXPECT_FALSE(root->property("anyMenuOpen").toBool());
+    EXPECT_TRUE(root->property("globalMediaShortcutsEnabled").toBool());
 
     sideModeButton->forceActiveFocus();
     ASSERT_TRUE(sideModeButton->hasActiveFocus());

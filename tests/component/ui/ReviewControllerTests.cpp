@@ -2,6 +2,7 @@
 #include "dvs/domain/FrameTimeline.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewShellController.h"
+#include "dvs/ui/SourceIdentity.h"
 #include "dvs/ui/SourceListModel.h"
 
 #include <QCoreApplication>
@@ -791,6 +792,46 @@ TEST_F(ReviewControllerTests, ShellBoundsExposesAndCancelsQueuedIntents) {
     EXPECT_EQ(shell.queuedIntentCount(), 7);
     shell.cancelAllQueuedIntents();
     EXPECT_EQ(shell.queuedIntentCount(), 0);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, ShellUsesSourceIdentityForOperationsAndRollsBackFailedRemoval) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceA = createFile(directory, QStringLiteral("identity_a.mp4"));
+    const QString sourceB = createFile(directory, QStringLiteral("identity_b.mp4"));
+    ASSERT_FALSE(sourceA.isEmpty());
+    ASSERT_FALSE(sourceB.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceA.toStdWString()},
+                                  std::filesystem::path{sourceB.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+    const QString sourceBIdentity = canonicalSourceIdentity(QUrl::fromLocalFile(sourceB));
+
+    ASSERT_EQ(shell.activeSourceIdentities().size(), 2);
+    EXPECT_EQ(shell.activeSourceIdentities().at(1), sourceBIdentity);
+    ASSERT_TRUE(shell.removeActiveSourceByIdentity(sourceBIdentity));
+    ASSERT_EQ(backend->submitted.size(), 1U);
+    EXPECT_EQ(shell.pendingSourceIdentities(), QStringList{sourceBIdentity});
+
+    // A repeated click is accepted as the existing operation, rather than queueing another
+    // topology mutation against the same source revision.
+    EXPECT_TRUE(shell.removeActiveSourceByIdentity(sourceBIdentity));
+    EXPECT_EQ(backend->submitted.size(), 1U);
+
+    completeLastCommand(backend, application::CommandOutcome::Failed);
+    controller.refreshProjection();
+    EXPECT_TRUE(shell.pendingSourceIdentities().isEmpty());
+    EXPECT_EQ(shell.stagedSources(), shell.activeSources());
+
+    ASSERT_TRUE(shell.changeReferenceByIdentity(sourceBIdentity));
+    ASSERT_EQ(backend->submitted.size(), 2U);
+    EXPECT_EQ(shell.pendingSourceIdentities(), QStringList{sourceBIdentity});
+    EXPECT_TRUE(shell.changeReferenceByIdentity(sourceBIdentity));
+    EXPECT_EQ(backend->submitted.size(), 2U);
     controller.stop();
 }
 

@@ -11,6 +11,7 @@ namespace dvs::ui {
 
 struct SourceListRow final {
     std::uint32_t sourceId = 0U;
+    QString sourceIdentity;
     int role = 0;
     QString filename;
     QString errorKey;
@@ -30,6 +31,7 @@ class SourceListModel final : public QAbstractListModel {
 public:
     enum Role {
         SourceIdRole = Qt::UserRole + 1,
+        SourceIdentityRole,
         RoleRole,
         FilenameRole,
         ErrorRole,

@@ -9,6 +9,11 @@ import QtQuick.Controls
 Menu {
     id: control
 
+    property bool popupInputContext: true
+    // Menu inherits Popup.visible, so submenu availability must not bind that state. The
+    // delegate reads these properties when it renders this Menu as a parent-menu row.
+    property bool menuItemVisible: true
+    property bool menuItemEnabled: true
     property color menuBackgroundColor: "#171e2a"
     property color menuBorderColor: "#40516a"
     property real menuRadius: 8
@@ -18,6 +23,10 @@ Menu {
     bottomMargin: 6
     padding: 4
     width: control.menuWidth
+    popupType: Popup.Window
+    cascade: true
+    focus: true
+    delegate: VcsMenuItem {}
 
     background: Rectangle {
         radius: control.menuRadius

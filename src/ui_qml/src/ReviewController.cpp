@@ -1,6 +1,7 @@
 #include "dvs/ui/ReviewController.h"
 
 #include "dvs/application/ComparisonExactness.h"
+#include "dvs/ui/SourceIdentity.h"
 #include "dvs/ui/SourceListModel.h"
 
 #include <QFileInfo>
@@ -1190,6 +1191,19 @@ private:
                     .filename = QString::fromStdString(source.displayName),
                     .errorKey = std::move(errorKey),
                 };
+                if (snapshot_->validatedComparison) {
+                    const auto sourceDescriptor =
+                        std::find_if(snapshot_->validatedComparison->sources().begin(),
+                                     snapshot_->validatedComparison->sources().end(),
+                                     [&source](const domain::ComparisonSource& value) {
+                                         return value.id == source.sourceId;
+                                     });
+                    if (sourceDescriptor != snapshot_->validatedComparison->sources().end()) {
+                        const QString path = QString::fromStdWString(
+                            sourceDescriptor->descriptor.normalizedPath.wstring());
+                        row.sourceIdentity = canonicalSourceIdentity(QUrl::fromLocalFile(path));
+                    }
+                }
                 if (presented != snapshot_->presentedSources.end()) {
                     row.currentSourceFrame =
                         presented->sourceFrameId.has_value()

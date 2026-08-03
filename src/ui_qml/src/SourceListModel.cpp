@@ -25,6 +25,8 @@ QVariant SourceListModel::data(const QModelIndex& index, const int role) const {
     switch (role) {
     case SourceIdRole:
         return QVariant::fromValue<qulonglong>(row.sourceId);
+    case SourceIdentityRole:
+        return row.sourceIdentity;
     case RoleRole:
         return row.role;
     case FilenameRole:
@@ -51,6 +53,7 @@ QVariant SourceListModel::data(const QModelIndex& index, const int role) const {
 QHash<int, QByteArray> SourceListModel::roleNames() const {
     return {
         {SourceIdRole, QByteArrayLiteral("sourceId")},
+        {SourceIdentityRole, QByteArrayLiteral("sourceIdentity")},
         {RoleRole, QByteArrayLiteral("role")},
         {FilenameRole, QByteArrayLiteral("filename")},
         {ErrorRole, QByteArrayLiteral("errorKey")},
@@ -90,6 +93,9 @@ void SourceListModel::setRows(std::vector<SourceListRow> rows) {
     for (std::size_t row = 0U; row < rows_.size(); ++row) {
         const SourceListRow& before = rows_[row];
         const SourceListRow& after = rows[row];
+        if (before.sourceIdentity != after.sourceIdentity) {
+            addRole(SourceIdentityRole);
+        }
         if (before.role != after.role) {
             addRole(RoleRole);
         }

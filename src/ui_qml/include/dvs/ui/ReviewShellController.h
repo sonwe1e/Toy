@@ -32,6 +32,9 @@ class ReviewShellController final : public QObject {
     Q_PROPERTY(int queuedIntentCount READ queuedIntentCount NOTIFY stateChanged)
     Q_PROPERTY(QVariantList queuedIntents READ queuedIntents NOTIFY stateChanged)
     Q_PROPERTY(QVariantMap activeIntent READ activeIntent NOTIFY stateChanged)
+    Q_PROPERTY(QStringList activeSourceIdentities READ activeSourceIdentities NOTIFY stateChanged)
+    Q_PROPERTY(QString canonicalSourceIdentity READ canonicalSourceIdentity NOTIFY stateChanged)
+    Q_PROPERTY(QStringList pendingSourceIdentities READ pendingSourceIdentities NOTIFY stateChanged)
     Q_PROPERTY(QVariantList pendingSourceIndexes READ pendingSourceIndexes NOTIFY stateChanged)
     Q_PROPERTY(bool chromeVisible READ chromeVisible WRITE setChromeVisible NOTIFY stateChanged)
     Q_PROPERTY(
@@ -108,6 +111,9 @@ public:
     [[nodiscard]] int queuedIntentCount() const noexcept;
     [[nodiscard]] QVariantList queuedIntents() const;
     [[nodiscard]] QVariantMap activeIntent() const;
+    [[nodiscard]] QStringList activeSourceIdentities() const;
+    [[nodiscard]] QString canonicalSourceIdentity() const;
+    [[nodiscard]] QStringList pendingSourceIdentities() const;
     [[nodiscard]] QVariantList pendingSourceIndexes() const;
     [[nodiscard]] bool chromeVisible() const noexcept;
     [[nodiscard]] bool inspectorVisible() const noexcept;
@@ -130,7 +136,9 @@ public:
     Q_INVOKABLE bool moveStagedSource(int fromIndex, int toIndex);
     Q_INVOKABLE bool openStagedSources(bool preserveDisplayedTime);
     Q_INVOKABLE bool removeActiveSource(int sourceIndex);
+    Q_INVOKABLE bool removeActiveSourceByIdentity(const QString& sourceIdentity);
     Q_INVOKABLE bool changeReference(int sourceIndex);
+    Q_INVOKABLE bool changeReferenceByIdentity(const QString& sourceIdentity);
     Q_INVOKABLE bool closeSources();
     Q_INVOKABLE bool cancelQueuedIntent(qulonglong intentId);
     Q_INVOKABLE void cancelAllQueuedIntents();
@@ -179,8 +187,10 @@ private:
     [[nodiscard]] bool rebaseIntent(ReviewIntent& intent) const;
     [[nodiscard]] QVariantMap intentMap(const ReviewIntent& intent,
                                         ReviewIntentStatus status) const;
-    [[nodiscard]] QStringList activeSourceIdentities() const;
-    [[nodiscard]] static QString sourceIdentity(const QVariant& source);
+    [[nodiscard]] bool
+    queueRemoveActiveSource(const QString& sourceIdentity, int sourceIndex, bool mergePending);
+    [[nodiscard]] bool hasPendingSourceIntent(ReviewIntentKind kind,
+                                              const QString& sourceIdentity) const;
     [[nodiscard]] std::uint64_t allocateIntentId() noexcept;
     [[nodiscard]] EffectiveComparisonState effectiveComparisonState() const noexcept;
 

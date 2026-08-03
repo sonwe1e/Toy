@@ -6,6 +6,7 @@ add_library(
         include/dvs/ui/ReviewPreferencesController.h
         include/dvs/ui/ReviewSessionFacade.h
         include/dvs/ui/ReviewShellController.h
+        include/dvs/ui/SourceIdentity.h
         include/dvs/ui/SourceListModel.h
         src/DesktopApplication.cpp
         src/DirectCompare.cpp
@@ -16,6 +17,7 @@ add_library(
         src/ReviewController.cpp
         src/ReviewPreferencesController.cpp
         src/ReviewShellController.cpp
+        src/SourceIdentity.cpp
         src/SourceListModel.cpp
 )
 add_library(dvs::ui_qml ALIAS dvs_ui_qml)

@@ -101,8 +101,8 @@ ctest --preset hardware-d3d11 --output-on-failure
 ctest --preset performance-d3d11 --output-on-failure
 ```
 
-`v1.4.3` 标签触发的 Release workflow 生成明确标注为未签名的 ZIP、MSI、EXE、CLI 和
-`VCStationShell-1.4.dll`，再执行真实安装、1.2.0→1.4.3 升级、有效 A/B Pair 设置回归
+`v1.4.4` 标签触发的 Release workflow 生成明确标注为未签名的 ZIP、MSI、EXE、CLI 和
+`VCStationShell-1.4.dll`，再执行真实安装、1.2.0→1.4.4 升级、有效 A/B Pair 设置回归
 与 shutdown soak 门禁。
 MSI 为五种受支持的视频扩展名注册 VCStation 命令；Shell DLL 接受 1～3 个本地视频，
 分别显示“Open in VCStation”“Compare with VCStation”或“Compare 3 videos with VCStation”，

@@ -2,10 +2,7 @@
 
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
-
-#include <QDir>
-#include <QFileInfo>
-#include <QUrl>
+#include "dvs/ui/SourceIdentity.h"
 
 #include <algorithm>
 #include <iterator>
@@ -106,18 +103,33 @@ QVariantMap ReviewShellController::activeIntent() const {
     return activeIntent_.has_value() ? intentMap(*activeIntent_, RunningStatus) : QVariantMap{};
 }
 
-QVariantList ReviewShellController::pendingSourceIndexes() const {
-    QVariantList result;
+QString ReviewShellController::canonicalSourceIdentity() const {
     const QStringList identities = activeSourceIdentities();
-    const auto appendIntent = [&result, &identities](const ReviewIntent& intent) {
-        for (qsizetype index = 0; index < identities.size(); ++index) {
-            if ((!intent.targetIdentity.isEmpty() && identities[index] == intent.targetIdentity) ||
-                (!intent.referenceIdentity.isEmpty() &&
-                 identities[index] == intent.referenceIdentity)) {
-                if (!result.contains(index)) {
-                    result.push_back(index);
-                }
-            }
+    if (canonicalSourceIndex_ < 0 || canonicalSourceIndex_ >= identities.size()) {
+        return {};
+    }
+    return identities[canonicalSourceIndex_];
+}
+
+QStringList ReviewShellController::pendingSourceIdentities() const {
+    QStringList result;
+    const auto appendIntent = [&result](const ReviewIntent& intent) {
+        QString identity;
+        switch (intent.kind) {
+        case RemoveSourceIntent:
+            identity = intent.targetIdentity;
+            break;
+        case ChangeReferenceIntent:
+            identity = intent.referenceIdentity;
+            break;
+        case OpenSourcesIntent:
+        case ReplaceSourcesIntent:
+        case AddSourcesIntent:
+        case CloseSourcesIntent:
+            return;
+        }
+        if (!identity.isEmpty() && !result.contains(identity)) {
+            result.push_back(identity);
         }
     };
     if (activeIntent_.has_value()) {
@@ -125,6 +137,22 @@ QVariantList ReviewShellController::pendingSourceIndexes() const {
     }
     for (const ReviewIntent& intent : reviewIntents_) {
         appendIntent(intent);
+    }
+    return result;
+}
+
+QVariantList ReviewShellController::pendingSourceIndexes() const {
+    QVariantList result;
+    const QStringList identities = activeSourceIdentities();
+    const QStringList pending = pendingSourceIdentities();
+    for (const QString& pendingIdentity : pending) {
+        for (qsizetype index = 0; index < identities.size(); ++index) {
+            if (identities[index] == pendingIdentity) {
+                if (!result.contains(index)) {
+                    result.push_back(index);
+                }
+            }
+        }
     }
     return result;
 }
@@ -253,13 +281,34 @@ bool ReviewShellController::openStagedSources(const bool preserveDisplayedTime) 
         .kind = kind,
         .sources = stagedSources_,
         .referenceIndex = stagedReferenceIndex_,
-        .referenceIdentity = sourceIdentity(stagedSources_[stagedReferenceIndex_]),
+        .referenceIdentity =
+            dvs::ui::canonicalSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
     });
 }
 
 bool ReviewShellController::removeActiveSource(const int sourceIndex) {
     if (sourceIndex < 0 || sourceIndex >= activeSources_.size() || activeSources_.size() <= 1) {
         return false;
+    }
+    // Preserve the legacy index API's queueing contract. The user-facing QML path uses the
+    // identity API below and merges repeat clicks before rebuilding a source topology.
+    return queueRemoveActiveSource(activeSourceIdentities()[sourceIndex], sourceIndex, false);
+}
+
+bool ReviewShellController::removeActiveSourceByIdentity(const QString& sourceIdentity) {
+    const QStringList identities = activeSourceIdentities();
+    const int sourceIndex = identities.indexOf(sourceIdentity);
+    if (sourceIdentity.isEmpty() || sourceIndex < 0 || activeSources_.size() <= 1) {
+        return false;
+    }
+    return queueRemoveActiveSource(sourceIdentity, sourceIndex, true);
+}
+
+bool ReviewShellController::queueRemoveActiveSource(const QString& sourceIdentity,
+                                                    const int sourceIndex,
+                                                    const bool mergePending) {
+    if (mergePending && hasPendingSourceIntent(RemoveSourceIntent, sourceIdentity)) {
+        return true;
     }
     QVariantList replacement = activeSources_;
     replacement.removeAt(sourceIndex);
@@ -278,8 +327,9 @@ bool ReviewShellController::removeActiveSource(const int sourceIndex) {
         .kind = RemoveSourceIntent,
         .sources = std::move(replacement),
         .referenceIndex = stagedReferenceIndex_,
-        .referenceIdentity = sourceIdentity(stagedSources_[stagedReferenceIndex_]),
-        .targetIdentity = sourceIdentity(activeSources_[sourceIndex]),
+        .referenceIdentity =
+            dvs::ui::canonicalSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
+        .targetIdentity = sourceIdentity,
     });
 }
 
@@ -288,12 +338,24 @@ bool ReviewShellController::changeReference(const int sourceIndex) {
         sourceIndex == canonicalSourceIndex_) {
         return false;
     }
+    return changeReferenceByIdentity(activeSourceIdentities()[sourceIndex]);
+}
+
+bool ReviewShellController::changeReferenceByIdentity(const QString& sourceIdentity) {
+    const QStringList identities = activeSourceIdentities();
+    const int sourceIndex = identities.indexOf(sourceIdentity);
+    if (sourceIdentity.isEmpty() || sourceIndex < 0 || sourceIndex == canonicalSourceIndex_) {
+        return false;
+    }
+    if (hasPendingSourceIntent(ChangeReferenceIntent, sourceIdentity)) {
+        return true;
+    }
     openIntent_ = ChangeReference;
     Q_EMIT stateChanged();
     return submitOrQueue(ReviewIntent{
         .kind = ChangeReferenceIntent,
         .referenceIndex = sourceIndex,
-        .referenceIdentity = sourceIdentity(activeSources_[sourceIndex]),
+        .referenceIdentity = sourceIdentity,
     });
 }
 
@@ -365,7 +427,7 @@ bool ReviewShellController::enqueueStartupRequest(const int kind, const QVariant
         .origin = StartupOrigin,
         .sources = files,
         .referenceIndex = 0,
-        .referenceIdentity = sourceIdentity(files.front()),
+        .referenceIdentity = dvs::ui::canonicalSourceIdentity(files.front().toUrl()),
     });
 }
 
@@ -620,6 +682,12 @@ void ReviewShellController::finishIntent(const int outcome, const QString& error
         synchronizeActiveSources(true);
     } else {
         synchronizeActiveSources();
+        if (completed.kind == RemoveSourceIntent || completed.kind == ChangeReferenceIntent) {
+            stagedSources_ = activeSources_;
+            stagedReferenceIndex_ =
+                activeSources_.isEmpty() ? 0 : std::max(0, canonicalSourceIndex_);
+            openIntent_ = NewReview;
+        }
     }
     Q_EMIT stateChanged();
     Q_EMIT intentEvent(completed.id,
@@ -649,7 +717,7 @@ bool ReviewShellController::rebaseIntent(ReviewIntent& intent) const {
         QVariantList rebased = activeSources_;
         QStringList rebasedIdentities = activeIdentities;
         for (const QVariant& source : intent.sources) {
-            const QString identity = sourceIdentity(source);
+            const QString identity = dvs::ui::canonicalSourceIdentity(source.toUrl());
             if (intent.expectedSources.contains(identity) || rebasedIdentities.contains(identity)) {
                 continue;
             }
@@ -709,25 +777,25 @@ QStringList ReviewShellController::activeSourceIdentities() const {
     QStringList identities;
     identities.reserve(activeSources_.size());
     for (const QVariant& source : activeSources_) {
-        identities.push_back(sourceIdentity(source));
+        identities.push_back(dvs::ui::canonicalSourceIdentity(source.toUrl()));
     }
     return identities;
 }
 
-QString ReviewShellController::sourceIdentity(const QVariant& source) {
-    const QUrl url = source.toUrl();
-    if (!url.isLocalFile()) {
-        return url.toString(QUrl::FullyEncoded).toCaseFolded();
+bool ReviewShellController::hasPendingSourceIntent(const ReviewIntentKind kind,
+                                                   const QString& sourceIdentity) const {
+    if (sourceIdentity.isEmpty()) {
+        return false;
     }
-    const QFileInfo file(url.toLocalFile());
-    QString path = file.canonicalFilePath();
-    if (path.isEmpty()) {
-        path = file.absoluteFilePath();
-    }
-    return QStringLiteral("%1|%2|%3")
-        .arg(QDir::cleanPath(path).toCaseFolded())
-        .arg(file.exists() ? file.size() : -1)
-        .arg(file.exists() ? file.lastModified().toMSecsSinceEpoch() : -1);
+    const auto matches = [kind, &sourceIdentity](const ReviewIntent& intent) {
+        if (intent.kind != kind) {
+            return false;
+        }
+        return kind == RemoveSourceIntent ? intent.targetIdentity == sourceIdentity
+                                          : intent.referenceIdentity == sourceIdentity;
+    };
+    return (activeIntent_.has_value() && matches(*activeIntent_)) ||
+           std::any_of(reviewIntents_.begin(), reviewIntents_.end(), matches);
 }
 
 std::uint64_t ReviewShellController::allocateIntentId() noexcept {

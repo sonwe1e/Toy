@@ -10,8 +10,9 @@ Rectangle {
     required property int sourceCount
     required property bool singleMode
     required property int canonicalSourceIndex
-    required property bool busy
-    required property var pendingSourceIndexes
+    required property string canonicalSourceIdentity
+    required property var pendingSourceIdentities
+    required property var sourceIdentities
     property color panelColor: "#111823"
     property color borderColor: "#303d51"
     property color accentColor: "#4b8df8"
@@ -19,8 +20,12 @@ Rectangle {
     property color mutedTextColor: "#93a2ba"
 
     signal addRequested
-    signal removeRequested(int sourceIndex)
-    signal referenceRequested(int sourceIndex)
+    signal removeRequested(string sourceIdentity)
+    signal referenceRequested(string sourceIdentity)
+    signal viewerFocusRequested
+
+    property int openMenuCount: 0
+    readonly property bool anyMenuOpen: openMenuCount > 0
 
     objectName: "activeSourceStrip"
     height: sourceCount > 0 ? (singleMode ? 38 : 42) : 0
@@ -59,14 +64,40 @@ Rectangle {
                 id: chip
 
                 required property int sourceId
+                required property string sourceIdentity
                 required property string filename
 
                 height: chips.height
-                width: Math.min(280, Math.max(128, chipText.implicitWidth + (control.singleMode ? 24 : 62)))
+                width: Math.min(280, Math.max(128, chipText.implicitWidth + (control.singleMode ? 24 : 84)))
                 radius: 15
-                color: chip.sourceId === control.canonicalSourceIndex ? "#243f68" : "#1d2635"
-                border.color: chip.sourceId === control.canonicalSourceIndex ? control.accentColor : control.borderColor
-                readonly property bool pending: control.pendingSourceIndexes.indexOf(chip.sourceId) >= 0
+                readonly property string resolvedSourceIdentity: chip.sourceIdentity.length > 0 ? chip.sourceIdentity : (chip.sourceId >= 0 && chip.sourceId < control.sourceIdentities.length ? String(control.sourceIdentities[chip.sourceId]) : "")
+                readonly property bool isCanonical: chip.resolvedSourceIdentity.length > 0 ? chip.resolvedSourceIdentity === control.canonicalSourceIdentity : chip.sourceId === control.canonicalSourceIndex
+                readonly property bool pending: control.pendingSourceIdentities.indexOf(chip.resolvedSourceIdentity) >= 0 || requestQueued
+                property bool requestQueued: false
+                color: chip.isCanonical ? "#243f68" : "#1d2635"
+                border.color: chip.isCanonical ? control.accentColor : control.borderColor
+
+                function requestReference() {
+                    if (chip.pending || chip.isCanonical || chip.resolvedSourceIdentity.length === 0)
+                        return;
+                    chip.requestQueued = true;
+                    sourceMenu.close();
+                    Qt.callLater(() => {
+                        control.referenceRequested(chip.resolvedSourceIdentity);
+                        chip.requestQueued = false;
+                    });
+                }
+
+                function requestRemoval() {
+                    if (chip.pending || chip.resolvedSourceIdentity.length === 0)
+                        return;
+                    chip.requestQueued = true;
+                    sourceMenu.close();
+                    Qt.callLater(() => {
+                        control.removeRequested(chip.resolvedSourceIdentity);
+                        chip.requestQueued = false;
+                    });
+                }
 
                 Text {
                     id: chipText
@@ -78,122 +109,114 @@ Rectangle {
                     anchors {
                         left: parent.left
                         leftMargin: 12
-                        right: control.singleMode ? parent.right : pendingIndicator.left
+                        right: control.singleMode ? parent.right : chipControls.left
                         rightMargin: control.singleMode ? 12 : 6
                         verticalCenter: parent.verticalCenter
                     }
                 }
 
-                BusyIndicator {
-                    id: pendingIndicator
-
-                    visible: chip.pending
-                    running: visible
-                    width: 22
-                    height: 22
-                    anchors {
-                        right: roleButton.visible ? roleButton.left : parent.right
-                        rightMargin: roleButton.visible ? 2 : 7
-                        verticalCenter: parent.verticalCenter
-                    }
-                }
-
-                ToolButton {
-                    id: roleButton
+                Row {
+                    id: chipControls
 
                     visible: !control.singleMode
-                    width: 30
-                    height: 30
-                    text: chip.sourceId === control.canonicalSourceIndex ? "R" : "⋯"
-                    enabled: !chip.pending
-                    padding: 0
-                    ToolTip.visible: hovered
-                    ToolTip.text: chip.sourceId === control.canonicalSourceIndex ? qsTr("Canonical reference") : qsTr("Make Source %1 the reference").arg(String.fromCharCode(65 + chip.sourceId))
-                    onClicked: {
-                        sourceMenu.open();
-                    }
+                    spacing: 3
                     anchors {
                         right: parent.right
                         verticalCenter: parent.verticalCenter
                     }
 
-                    contentItem: Text {
-                        text: roleButton.text
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        color: roleButton.enabled ? "#f3f6fb" : "#637086"
-                        font.pixelSize: 11
-                        font.weight: Font.DemiBold
+                    BusyIndicator {
+                        id: pendingIndicator
+
+                        visible: chip.pending
+                        running: visible
+                        width: 22
+                        height: 22
                     }
 
-                    background: Rectangle {
+                    Rectangle {
+                        id: referenceBadge
+
+                        objectName: "sourceReferenceBadge-" + chip.sourceId
+                        visible: chip.isCanonical
+                        width: 24
+                        height: 24
                         radius: 6
-                        color: !roleButton.enabled ? "#202938" : (roleButton.down ? "#285da9" : (roleButton.hovered ? "#2d69bf" : "#253247"))
-                        border.width: roleButton.activeFocus ? 2 : 1
-                        border.color: roleButton.activeFocus ? "#4b8df8" : "#3b4d67"
+                        color: "#253247"
+                        border.width: 1
+                        border.color: "#3b4d67"
+                        Accessible.name: qsTr("Canonical reference")
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "R"
+                            color: control.textColor
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                        }
                     }
 
-                    Menu {
-                        id: sourceMenu
+                    ToolButton {
+                        id: overflowButton
 
-                        topMargin: 6
-                        bottomMargin: 6
-                        padding: 4
+                        objectName: "sourceOverflowButton-" + chip.sourceId
+                        readonly property var sourceMenuControl: sourceMenu
+                        readonly property var makeReferenceAction: useAsReferenceItem
+                        readonly property var removeSourceAction: removeSourceItem
+                        width: 30
+                        height: 30
+                        text: "⋯"
+                        enabled: !chip.pending && chip.resolvedSourceIdentity.length > 0
+                        padding: 0
+                        Accessible.name: qsTr("Source actions for %1").arg(chip.filename)
+                        ToolTip.visible: hovered
+                        ToolTip.text: chip.pending ? qsTr("Updating video…") : qsTr("Source actions")
+                        onClicked: sourceMenu.popup(overflowButton, Qt.point(0, overflowButton.height))
+
+                        contentItem: Text {
+                            text: overflowButton.text
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            color: overflowButton.enabled ? "#f3f6fb" : "#637086"
+                            font.pixelSize: 16
+                            font.weight: Font.DemiBold
+                        }
 
                         background: Rectangle {
-                            radius: 5
-                            color: "#1d2635"
-                            border.color: "#303d51"
-                            border.width: 1
+                            radius: 6
+                            color: !overflowButton.enabled ? "#202938" : (overflowButton.down ? "#285da9" : (overflowButton.hovered ? "#2d69bf" : "#253247"))
+                            border.width: overflowButton.activeFocus ? 2 : 1
+                            border.color: overflowButton.activeFocus ? "#4b8df8" : "#3b4d67"
+                        }
+                    }
+
+                    VcsMenu {
+                        id: sourceMenu
+
+                        objectName: "sourceMenu-" + chip.sourceId
+                        onOpened: control.openMenuCount += 1
+                        onClosed: {
+                            control.openMenuCount = Math.max(0, control.openMenuCount - 1);
+                            control.viewerFocusRequested();
                         }
 
-                        MenuItem {
+                        VcsMenuItem {
                             id: useAsReferenceItem
 
-                            text: qsTr("Use as reference")
-                            enabled: chip.sourceId !== control.canonicalSourceIndex
-                            onTriggered: control.referenceRequested(chip.sourceId)
-                            leftPadding: 12
-                            rightPadding: 12
-                            topPadding: 6
-                            bottomPadding: 6
-
-                            contentItem: Text {
-                                text: useAsReferenceItem.text
-                                color: useAsReferenceItem.enabled ? "#f3f6fb" : "#637086"
-                                font.pixelSize: 12
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
-                            }
-
-                            background: Rectangle {
-                                radius: 3
-                                color: useAsReferenceItem.hovered || useAsReferenceItem.highlighted ? "#285da9" : "transparent"
-                            }
+                            objectName: "makeReferenceAction-" + chip.sourceId
+                            visible: !chip.isCanonical
+                            text: qsTr("Make reference")
+                            enabled: !chip.pending
+                            onTriggered: chip.requestReference()
                         }
-                        MenuItem {
+
+                        VcsMenuItem {
                             id: removeSourceItem
 
-                            text: qsTr("Remove source")
+                            objectName: "removeSourceAction-" + chip.sourceId
+                            text: qsTr("Remove video")
                             enabled: control.sourceCount > 1
-                            onTriggered: control.removeRequested(chip.sourceId)
-                            leftPadding: 12
-                            rightPadding: 12
-                            topPadding: 6
-                            bottomPadding: 6
-
-                            contentItem: Text {
-                                text: removeSourceItem.text
-                                color: removeSourceItem.enabled ? "#f3f6fb" : "#637086"
-                                font.pixelSize: 12
-                                verticalAlignment: Text.AlignVCenter
-                                elide: Text.ElideRight
-                            }
-
-                            background: Rectangle {
-                                radius: 3
-                                color: removeSourceItem.hovered || removeSourceItem.highlighted ? "#285da9" : "transparent"
-                            }
+                            onTriggered: chip.requestRemoval()
                         }
                     }
                 }

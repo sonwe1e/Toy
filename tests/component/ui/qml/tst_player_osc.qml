@@ -11,15 +11,24 @@ Item {
     QtObject {
         id: actions
 
-        function firstFrame() {}
-        function stepBackwardSecond() {}
-        function stepBackwardFive() {}
-        function previousFrame() {}
-        function togglePlayback() {}
-        function nextFrame() {}
-        function stepForwardFive() {}
-        function stepForwardSecond() {}
-        function lastFrame() {}
+        function firstFrame() {
+        }
+        function stepBackwardSecond() {
+        }
+        function stepBackwardFive() {
+        }
+        function previousFrame() {
+        }
+        function togglePlayback() {
+        }
+        function nextFrame() {
+        }
+        function stepForwardFive() {
+        }
+        function stepForwardSecond() {
+        }
+        function lastFrame() {
+        }
     }
 
     Item {
@@ -69,9 +78,8 @@ Item {
             verify(osc.controlsEnabled);
             verify(panel.enabled);
             mouseMove(root, 10, 10);
-            wait(1350);
-            verify(!osc.controlsEnabled);
-            verify(!panel.enabled);
+            tryCompare(osc, "controlsEnabled", false, 2000);
+            tryCompare(panel, "enabled", false, 400);
             tryCompare(panel, "opacity", 0, 400);
         }
 

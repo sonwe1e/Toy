@@ -11,6 +11,7 @@ VcsMenu {
     required property bool fullScreen
     required property var differenceEdges
     required property int currentEdgeIndex
+    required property var sourceIdentities
     readonly property bool emptyStateOnly: sourceCount === 0
     readonly property int availableActionCount: {
         if (emptyStateOnly || sourceCount === 1)
@@ -22,12 +23,22 @@ VcsMenu {
     signal wipeRequested
     signal diffRequested
     signal edgeRequested(int preferenceValue)
-    signal referenceRequested(int sourceIndex)
+    signal referenceRequested(string sourceIdentity)
     signal openRequested
     signal inspectorRequested
     signal fullScreenRequested
+    signal viewerFocusRequested
 
     objectName: "reviewContextMenu"
+    readonly property bool anyMenuOpen: control.opened
+
+    function changeReferenceByIndex(sourceIndex) {
+        if (sourceIndex < 0 || sourceIndex >= control.sourceIdentities.length)
+            return false;
+        return control.referenceRequested(String(control.sourceIdentities[sourceIndex]));
+    }
+
+    onClosed: control.viewerFocusRequested()
 
     VcsMenuItem {
         objectName: "contextOpenAction"
@@ -96,21 +107,21 @@ VcsMenu {
             text: qsTr("Source A")
             checkable: true
             checked: control.canonicalSourceIndex === 0
-            onTriggered: control.referenceRequested(0)
+            onTriggered: control.changeReferenceByIndex(0)
         }
         VcsMenuItem {
             text: qsTr("Source B")
             visible: control.sourceCount > 1
             checkable: true
             checked: control.canonicalSourceIndex === 1
-            onTriggered: control.referenceRequested(1)
+            onTriggered: control.changeReferenceByIndex(1)
         }
         VcsMenuItem {
             text: qsTr("Source C")
             visible: control.sourceCount > 2
             checkable: true
             checked: control.canonicalSourceIndex === 2
-            onTriggered: control.referenceRequested(2)
+            onTriggered: control.changeReferenceByIndex(2)
         }
     }
     VcsMenuSeparator {

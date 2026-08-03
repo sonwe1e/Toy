@@ -230,7 +230,8 @@ ApplicationWindow {
     readonly property real frameProgress: currentFrame >= 0 && totalFrames > 1 ? Math.max(0, Math.min(1, Number(currentFrame) / (Number(totalFrames) - 1))) : 0
     readonly property real timelineProgress: timelineDragging && timelinePreviewFrame >= 0 && totalFrames > 1 ? Number(timelinePreviewFrame) / (Number(totalFrames) - 1) : frameProgress
     readonly property bool timelineEnabled: graphicsReady && !busy && Boolean(controller && controller.canFirst) && totalFrames > 0
-    readonly property int inputContext: reviewInputDialogs.modalVisible || anchorDialog.visible || shortcutHelp.visible ? 3 : (focusIsPopup(root.activeFocusItem) ? 2 : (focusIsTextEditing(root.activeFocusItem) ? 1 : 0))
+    readonly property bool anyMenuOpen: Boolean(applicationMenuBar && applicationMenuBar.anyMenuOpen) || Boolean(sourceBar && sourceBar.anyMenuOpen) || Boolean(viewerContextMenu && viewerContextMenu.anyMenuOpen)
+    readonly property int inputContext: reviewInputDialogs.modalVisible || anchorDialog.visible || shortcutHelp.visible ? 3 : (anyMenuOpen || focusIsPopup(root.activeFocusItem) ? 2 : (focusIsTextEditing(root.activeFocusItem) ? 1 : 0))
     readonly property bool globalMediaShortcutsEnabled: inputContext === 0 && (!chromeVisible || !focusBlocksGlobalMediaShortcuts(root.activeFocusItem))
     readonly property bool presentationShortcutsEnabled: inputContext === 0
     readonly property bool frameErrorBannerVisible: hasErrors && currentFrame >= 0 && !busy && graphicsReady && Boolean(controller && controller.canFirst)
@@ -601,8 +602,18 @@ ApplicationWindow {
         return shell ? Array.from(shell.activeSources) : [];
     }
 
-    function removeSelectedSource(index) {
-        return shell ? shell.removeActiveSource(index) : false;
+    function removeSelectedSource(identity) {
+        return shell ? shell.removeActiveSourceByIdentity(identity) : false;
+    }
+
+    function changeReference(identity) {
+        return shell ? shell.changeReferenceByIdentity(identity) : false;
+    }
+
+    function changeReferenceAtIndex(index) {
+        if (!shell || index < 0 || index >= shell.activeSourceIdentities.length)
+            return false;
+        return changeReference(String(shell.activeSourceIdentities[index]));
     }
 
     function showImmersiveHud(message) {
@@ -774,7 +785,7 @@ ApplicationWindow {
         case "invalid-rate":
             return qsTr("The media frame rate is invalid.");
         case "invalid-frame-id":
-        case "invalid-frame-range":
+        case "frame-out-of-range":
             return qsTr("The requested frame is outside the available range.");
         case "invalid-frame-count":
             return qsTr("The media frame count is invalid.");
@@ -796,22 +807,6 @@ ApplicationWindow {
             return qsTr("Source resolutions differ; visual comparison is resampled.");
         case "source-color-metadata-mismatch":
             return qsTr("Source color metadata differs; comparison applies color conversion.");
-        case "marks-incomplete":
-            return qsTr("Both range marks are required.");
-        case "marks-reversed":
-            return qsTr("The range end must follow its start.");
-        case "clip-out-of-range":
-            return qsTr("The clip is outside the source range.");
-        case "clip-not-found":
-            return qsTr("The requested clip could not be found.");
-        case "export-record-not-found":
-            return qsTr("The requested export could not be found.");
-        case "duplicate-clip-selection":
-            return qsTr("The same clip cannot be selected more than once.");
-        case "invalid-export-mode":
-            return qsTr("The selected export mode is invalid.");
-        case "invalid-export-geometry":
-            return qsTr("The selected export dimensions are invalid.");
         case "source-missing":
             return qsTr("The selected source file is missing or cannot be read.");
         case "source-fingerprint-mismatch":
@@ -926,6 +921,8 @@ ApplicationWindow {
     }
 
     menuBar: ApplicationMenuBar {
+        id: applicationMenuBar
+
         visible: root.chromeVisible
         controller: root.controller
         preferences: root.preferences
@@ -941,6 +938,7 @@ ApplicationWindow {
         chromeVisible: root.chromeVisible
         fullScreen: root.fullScreen
         shortcutPreset: root.shortcutPreset
+        sourceIdentities: root.shell ? root.shell.activeSourceIdentities : []
         onOpenVideosRequested: reviewInputDialogs.openVideos()
         onAddVideoRequested: reviewInputDialogs.openAddVideo()
         onDestructiveActionRequested: kind => root.requestDestructiveAction({
@@ -1039,8 +1037,13 @@ ApplicationWindow {
                     root.preferences.viewMode = root.threeUpViewMode;
                 root.pendingNewReviewWantsThreeUp = false;
                 root.resetReviewVisualState();
-            } else if (Number(kind) === 5)
+            } else if (Number(kind) === 3) {
+                root.showIntentMessage(qsTr("Video removed."));
+            } else if (Number(kind) === 4) {
+                root.showIntentMessage(qsTr("Reference changed."));
+            } else if (Number(kind) === 5) {
                 root.clearReviewUi();
+            }
         }
     }
 
@@ -1198,8 +1201,9 @@ ApplicationWindow {
         sourceCount: root.sourceCount
         singleMode: root.singleMode
         canonicalSourceIndex: root.canonicalSourceIndex
-        busy: root.busy
-        pendingSourceIndexes: root.shell ? root.shell.pendingSourceIndexes : []
+        canonicalSourceIdentity: root.shell ? root.shell.canonicalSourceIdentity : ""
+        pendingSourceIdentities: root.shell ? root.shell.pendingSourceIdentities : []
+        sourceIdentities: root.shell ? root.shell.activeSourceIdentities : []
         z: 30
         borderColor: root.borderColor
         accentColor: root.accentColor
@@ -1212,8 +1216,9 @@ ApplicationWindow {
             leftMargin: root.singleMode ? 8 : 0
         }
         onAddRequested: reviewInputDialogs.openAddVideo()
-        onRemoveRequested: sourceIndex => root.removeSelectedSource(sourceIndex)
-        onReferenceRequested: sourceIndex => root.shell ? root.shell.changeReference(sourceIndex) : root.controller.changeReference(sourceIndex)
+        onRemoveRequested: sourceIdentity => root.removeSelectedSource(sourceIdentity)
+        onReferenceRequested: sourceIdentity => root.changeReference(sourceIdentity)
+        onViewerFocusRequested: root.returnFocusToViewer()
     }
     CompareModeBar {
         id: comparisonBar
@@ -1252,6 +1257,7 @@ ApplicationWindow {
         differenceMode: root.differenceMode
         analysisGridMode: root.analysisGridMode
         differenceEdges: root.differenceEdges
+        sourceIdentities: root.shell ? root.shell.activeSourceIdentities : []
         differenceEdge: root.differenceEdge
         referenceSourceIndex: root.referenceSourceIndex
         differenceThresholdEnabled: root.differenceThresholdEnabled
@@ -1275,7 +1281,7 @@ ApplicationWindow {
             bottomMargin: 0
         }
         onDifferenceEdgeRequested: edge => root.preferences.differenceEdge = edge
-        onReferenceRequested: sourceIndex => root.shell.changeReference(sourceIndex)
+        onReferenceRequested: sourceIdentity => root.changeReference(sourceIdentity)
         onDifferenceThresholdEnabledRequested: enabled => root.differenceThresholdEnabled = enabled
         onDifferenceThresholdCodeRequested: code => root.differenceThresholdCode = code
         onDifferenceThresholdPolicyRequested: policy => root.differenceThresholdPolicy = policy
@@ -1413,16 +1419,18 @@ ApplicationWindow {
         fullScreen: root.fullScreen
         differenceEdges: root.differenceEdges
         currentEdgeIndex: root.differenceEdgeIndex(root.differenceEdge)
+        sourceIdentities: root.shell ? root.shell.activeSourceIdentities : []
         // qmllint disable unqualified
         onSideRequested: root.preferences.viewMode = ComparisonSurface.SideBySide
         onWipeRequested: root.preferences.viewMode = ComparisonSurface.Wipe
         onDiffRequested: root.preferences.viewMode = ComparisonSurface.Difference
         // qmllint enable unqualified
         onEdgeRequested: edge => root.preferences.differenceEdge = edge
-        onReferenceRequested: sourceIndex => root.shell ? root.shell.changeReference(sourceIndex) : root.controller.changeReference(sourceIndex)
+        onReferenceRequested: sourceIdentity => root.changeReference(sourceIdentity)
         onOpenRequested: reviewInputDialogs.openVideos()
         onInspectorRequested: root.shell.inspectorVisible = true
         onFullScreenRequested: root.toggleFullScreen()
+        onViewerFocusRequested: root.returnFocusToViewer()
     }
 
     Rectangle {
@@ -1548,7 +1556,7 @@ ApplicationWindow {
 
         objectName: "workspaceDropArea"
         anchors.fill: parent
-        z: 1000
+        z: 0
         onEntered: drag => {
             if (drag.hasUrls)
                 drag.acceptProposedAction();
@@ -1557,31 +1565,35 @@ ApplicationWindow {
             drop.acceptProposedAction();
             root.reviewDroppedUrls(drop.urls);
         }
+    }
 
-        Rectangle {
-            anchors.fill: parent
-            visible: workspaceDropArea.containsDrag
-            color: "#df0b1421"
-            border.width: 3
-            border.color: root.accentColor
+    Rectangle {
+        id: workspaceDropOverlay
 
-            Column {
-                spacing: 10
-                anchors.centerIn: parent
+        anchors.fill: parent
+        z: 1000
+        enabled: false
+        visible: workspaceDropArea.containsDrag
+        color: "#df0b1421"
+        border.width: 3
+        border.color: root.accentColor
 
-                Text {
-                    text: qsTr("Drop to open in VCStation")
-                    color: root.primaryTextColor
-                    font.pixelSize: 24
-                    font.bold: true
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
-                Text {
-                    text: qsTr("1–3 videos")
-                    color: root.mutedTextColor
-                    font.pixelSize: 14
-                    anchors.horizontalCenter: parent.horizontalCenter
-                }
+        Column {
+            spacing: 10
+            anchors.centerIn: parent
+
+            Text {
+                text: qsTr("Drop to open in VCStation")
+                color: root.primaryTextColor
+                font.pixelSize: 24
+                font.bold: true
+                anchors.horizontalCenter: parent.horizontalCenter
+            }
+            Text {
+                text: qsTr("1–3 videos")
+                color: root.mutedTextColor
+                font.pixelSize: 14
+                anchors.horizontalCenter: parent.horizontalCenter
             }
         }
     }

@@ -8,6 +8,7 @@ import QtQuick.Controls
 MenuItem {
     id: control
 
+    property bool popupInputContext: true
     property string shortcutText: ""
     property color textColor: "#f3f6fb"
     property color disabledTextColor: "#637086"
@@ -16,6 +17,10 @@ MenuItem {
     property color checkColor: "#4b8df8"
     property color checkBackgroundColor: "#202938"
     property color checkBorderColor: "#40516a"
+    readonly property var nestedMenu: control.subMenu
+
+    visible: !control.nestedMenu || control.nestedMenu.menuItemVisible
+    enabled: !control.nestedMenu || control.nestedMenu.menuItemEnabled
 
     implicitHeight: 35
     leftPadding: control.checkable ? 30 : 12

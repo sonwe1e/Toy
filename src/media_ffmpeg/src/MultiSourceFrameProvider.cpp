@@ -196,12 +196,8 @@ void postSucceeded(const std::shared_ptr<ProviderOperation>& operation) noexcept
                  }});
 }
 
-void postFrameSetSucceeded(const std::shared_ptr<ProviderOperation>& operation,
-                           application::FrameSet set) noexcept {
-    if (!operation->claimTerminal()) {
-        postCanceled(operation);
-        return;
-    }
+void postFrameSetReady(const std::shared_ptr<ProviderOperation>& operation,
+                       application::FrameSet set) noexcept {
     const application::FrameRequestContext context =
         std::get<application::FrameRequest>(operation->request).context;
     postCritical(operation->events,
@@ -209,10 +205,25 @@ void postFrameSetSucceeded(const std::shared_ptr<ProviderOperation>& operation,
                      .context = context,
                      .set = std::move(set),
                  }});
+}
+
+void postClaimedSucceeded(const std::shared_ptr<ProviderOperation>& operation) noexcept {
+    const application::FrameRequestContext context =
+        std::get<application::FrameRequest>(operation->request).context;
     postCritical(operation->events,
                  application::ApplicationEvent{application::RequestSucceeded{
                      .context = application::EventContext{context},
                  }});
+}
+
+void postFrameSetSucceeded(const std::shared_ptr<ProviderOperation>& operation,
+                           application::FrameSet set) noexcept {
+    if (!operation->claimTerminal()) {
+        postCanceled(operation);
+        return;
+    }
+    postFrameSetReady(operation, std::move(set));
+    postClaimedSucceeded(operation);
 }
 
 [[nodiscard]] std::uint64_t frameDistance(const domain::FrameId left,
@@ -1197,25 +1208,25 @@ private:
         const std::shared_ptr<ProviderOperation> operation = assembly.operation;
         const auto& request = std::get<application::FrameRequest>(operation->request);
         if (operation->isCanceled()) {
-            postCanceled(operation);
             pendingFrameAssembly_.reset();
+            postCanceled(operation);
             return;
         }
         if (request.priority == application::FrameRequestPriority::Prefetch) {
             sequentialSetReady_ = false;
-            postSucceeded(operation);
             pendingFrameAssembly_.reset();
+            postSucceeded(operation);
             return;
         }
 
         std::optional<application::FrameSet> set = assembly.assembler.finish();
         if (!set) {
+            pendingFrameAssembly_.reset();
             postFailed(
                 operation,
                 providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                               std::nullopt,
                               "The decoded source frames could not form a valid frame set."));
-            pendingFrameAssembly_.reset();
             return;
         }
         const auto assemblyMicroseconds =
@@ -1232,16 +1243,25 @@ private:
                                                                    std::memory_order_acquire)) {
         }
         if (operation->isCanceled()) {
-            postCanceled(operation);
             pendingFrameAssembly_.reset();
+            set.reset();
+            postCanceled(operation);
             return;
         }
 
         sequentialSetFrame_ = request.frameId;
         sequentialSetReady_ = true;
+        if (!operation->claimTerminal()) {
+            pendingFrameAssembly_.reset();
+            set.reset();
+            postCanceled(operation);
+            return;
+        }
         cacheSet(request, *set);
-        postFrameSetSucceeded(operation, *set);
+        postFrameSetReady(operation, std::move(*set));
         pendingFrameAssembly_.reset();
+        set.reset();
+        postClaimedSucceeded(operation);
     }
 
     void processDecodeCompletion(DecodeCompletionEvent event) noexcept {
@@ -1251,15 +1271,15 @@ private:
         }
         const std::shared_ptr<ProviderOperation> operation = event.operation;
         if (operation->isCanceled()) {
-            postCanceled(operation);
             pendingFrameAssembly_.reset();
+            postCanceled(operation);
             return;
         }
         if (!event.completion.result) {
             // Missing is exclusively a mapping-layer result. Decoder failures leave the
             // previously presented FrameSet untouched.
-            postFailed(operation, event.completion.result.error());
             pendingFrameAssembly_.reset();
+            postFailed(operation, event.completion.result.error());
             return;
         }
         if (!pendingFrameAssembly_->assembler.complete(application::MappedSourceFrame{
@@ -1270,19 +1290,19 @@ private:
                 .matchKind = event.completion.matchKind,
                 .alignmentConfidence = event.completion.alignmentConfidence,
             })) {
+            pendingFrameAssembly_.reset();
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
                                      "A source worker reported an unknown or duplicate slot."));
-            pendingFrameAssembly_.reset();
             return;
         }
         if (pendingFrameAssembly_->pendingDecodeCount == 0U) {
+            pendingFrameAssembly_.reset();
             postFailed(operation,
                        providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                      std::nullopt,
                                      "A source worker reported too many completions."));
-            pendingFrameAssembly_.reset();
             return;
         }
         --pendingFrameAssembly_->pendingDecodeCount;
@@ -1355,12 +1375,12 @@ private:
             } else if (completionFailure != nullptr) {
                 if (pendingFrameAssembly_.has_value() &&
                     pendingFrameAssembly_->operation == completionFailure) {
+                    pendingFrameAssembly_.reset();
                     postFailed(completionFailure,
                                providerError(domain::MediaErrorCode::kMediaDecodeFailed,
                                              std::nullopt,
                                              "The provider could not retain a decode completion.",
                                              true));
-                    pendingFrameAssembly_.reset();
                 }
                 operation = std::move(completionFailure);
             } else if (operation != nullptr) {

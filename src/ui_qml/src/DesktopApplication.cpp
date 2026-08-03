@@ -52,12 +52,18 @@ void registerQmlTypes() {
     });
 }
 
+[[nodiscard]] bool disableNativeMenuWindows() {
+    QCoreApplication::setAttribute(Qt::AA_DontUseNativeMenuWindows);
+    return true;
+}
+
 } // namespace
 
 class DesktopApplication::Impl final {
 public:
     Impl(int& argc, char** argv, DesktopApplicationOptions options)
-        : options_(options), application_(argc, argv) {
+        : options_(options), nativeMenuWindowsDisabled_(disableNativeMenuWindows()),
+          application_(argc, argv) {
         initializeQmlResources();
         registerQmlTypes();
         application_.setApplicationDisplayName(QStringLiteral("VCStation - VideoCompareStation"));
@@ -395,6 +401,7 @@ private:
     }
 
     DesktopApplicationOptions options_;
+    bool nativeMenuWindowsDisabled_ = false;
     QGuiApplication application_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
     std::unique_ptr<ReviewSessionFacade> shellController_;

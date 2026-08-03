@@ -48,7 +48,7 @@ Rectangle {
                 currentIndex: Math.max(0, control.host.canonicalSourceIndex)
                 Accessible.name: qsTr("Canonical reference source")
                 onActivated: index => {
-                    if (!control.host.controller.changeReference(index))
+                    if (!control.host.changeReferenceAtIndex(index))
                         currentIndex = Math.max(0, control.host.canonicalSourceIndex);
                 }
             }

@@ -19,6 +19,7 @@ VcsMenuBar {
     required property bool chromeVisible
     required property bool fullScreen
     required property int shortcutPreset
+    required property var sourceIdentities
 
     signal openVideosRequested
     signal addVideoRequested
@@ -27,8 +28,20 @@ VcsMenuBar {
     signal fullScreenToggleRequested
     signal viewerFocusRequested
 
+    readonly property bool anyMenuOpen: fileMenu.opened || compareMenu.opened || analyzeMenu.opened || viewMenu.opened
+
+    function changeReferenceByIndex(sourceIndex) {
+        if (!control.session || sourceIndex < 0 || sourceIndex >= control.sourceIdentities.length)
+            return false;
+        return control.session.changeReferenceByIdentity(String(control.sourceIdentities[sourceIndex]));
+    }
+
     VcsMenu {
+        id: fileMenu
+
+        objectName: "fileMenu"
         title: qsTr("&File")
+        onClosed: control.viewerFocusRequested()
 
         VcsMenuItem {
             text: qsTr("Open videos…")
@@ -62,9 +75,11 @@ VcsMenuBar {
     }
 
     VcsMenu {
+        id: compareMenu
         objectName: "compareMenu"
         title: qsTr("&Compare")
         enabled: control.sourceCount > 1 && !control.busy
+        onClosed: control.viewerFocusRequested()
 
         VcsMenuItem {
             text: qsTr("Side by side")
@@ -93,14 +108,19 @@ VcsMenuBar {
                 control.viewerFocusRequested();
             }
         }
-        VcsMenuSeparator {}
+        VcsMenuSeparator {
+            visible: control.sourceCount === 3
+        }
         VcsMenu {
+            id: layoutMenu
+
+            objectName: "layoutMenu"
             title: qsTr("Layout")
+            menuItemVisible: control.sourceCount === 3
+            menuItemEnabled: control.sourceCount === 3
 
             VcsMenuItem {
                 text: qsTr("Three up")
-                enabled: control.sourceCount === 3
-                visible: control.sourceCount === 3
                 checkable: true
                 checked: control.currentViewMode === 1
                 onTriggered: {
@@ -110,8 +130,6 @@ VcsMenuBar {
             }
             VcsMenuItem {
                 text: qsTr("Reference focus")
-                enabled: control.sourceCount === 3
-                visible: control.sourceCount === 3
                 checkable: true
                 checked: control.currentViewMode === 2
                 onTriggered: {
@@ -122,19 +140,25 @@ VcsMenuBar {
             VcsMenuItem {
                 objectName: "analysisGridMenuItem"
                 text: qsTr("Analysis grid")
-                enabled: control.sourceCount === 3
                 checkable: true
                 checked: control.currentViewMode === 4
+                enabled: control.sourceCount === 3
                 onTriggered: {
                     control.preferences.viewMode = 4;
                     control.viewerFocusRequested();
                 }
             }
         }
-        VcsMenu {
-            title: qsTr("Pair")
-            enabled: control.sourceCount === 3
+        VcsMenuSeparator {
             visible: control.sourceCount === 3
+        }
+        VcsMenu {
+            id: pairMenu
+
+            objectName: "pairMenu"
+            title: qsTr("Pair")
+            menuItemVisible: control.sourceCount === 3
+            menuItemEnabled: control.sourceCount === 3
 
             VcsMenuItem {
                 text: qsTr("A / B")
@@ -165,6 +189,9 @@ VcsMenuBar {
             }
         }
         VcsMenu {
+            id: referenceMenu
+
+            objectName: "referenceMenu"
             title: qsTr("Reference")
             enabled: control.sourceCount > 1
 
@@ -173,7 +200,7 @@ VcsMenuBar {
                 checkable: true
                 checked: control.canonicalSourceIndex === 0
                 onTriggered: {
-                    control.session.changeReference(0);
+                    control.changeReferenceByIndex(0);
                     control.viewerFocusRequested();
                 }
             }
@@ -182,7 +209,7 @@ VcsMenuBar {
                 checkable: true
                 checked: control.canonicalSourceIndex === 1
                 onTriggered: {
-                    control.session.changeReference(1);
+                    control.changeReferenceByIndex(1);
                     control.viewerFocusRequested();
                 }
             }
@@ -192,7 +219,7 @@ VcsMenuBar {
                 checkable: true
                 checked: control.canonicalSourceIndex === 2
                 onTriggered: {
-                    control.session.changeReference(2);
+                    control.changeReferenceByIndex(2);
                     control.viewerFocusRequested();
                 }
             }
@@ -208,9 +235,11 @@ VcsMenuBar {
     }
 
     VcsMenu {
+        id: analyzeMenu
         objectName: "analyzeMenu"
         title: qsTr("&Analyze")
         enabled: control.sourceCount > 1 && control.graphicsReady && control.currentFrame >= 0 && !control.busy
+        onClosed: control.viewerFocusRequested()
 
         VcsMenuItem {
             text: qsTr("Estimate global frame offset")
@@ -231,7 +260,11 @@ VcsMenuBar {
     }
 
     VcsMenu {
+        id: viewMenu
+
+        objectName: "viewMenu"
         title: qsTr("&View")
+        onClosed: control.viewerFocusRequested()
 
         VcsMenuItem {
             text: control.chromeVisible ? qsTr("Hide interface chrome · Tab") : qsTr("Show interface chrome · Tab")
@@ -249,6 +282,9 @@ VcsMenuBar {
         }
         VcsMenuSeparator {}
         VcsMenu {
+            id: shortcutPresetMenu
+
+            objectName: "shortcutPresetMenu"
             title: qsTr("Shortcut preset")
 
             VcsMenuItem {

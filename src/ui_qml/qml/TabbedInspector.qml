@@ -24,6 +24,7 @@ Rectangle {
     required property bool differenceMode
     required property bool analysisGridMode
     required property var differenceEdges
+    required property var sourceIdentities
     required property int differenceEdge
     required property int referenceSourceIndex
     required property bool differenceThresholdEnabled
@@ -39,7 +40,7 @@ Rectangle {
     required property bool rangePlaybackActive
 
     signal differenceEdgeRequested(int edge)
-    signal referenceRequested(int sourceIndex)
+    signal referenceRequested(string sourceIdentity)
     signal differenceThresholdEnabledRequested(bool enabled)
     signal differenceThresholdCodeRequested(int code)
     signal differenceThresholdPolicyRequested(int policy)
@@ -230,7 +231,10 @@ Rectangle {
                     model: control.controller ? control.controller.sources : null
                     textRole: "filename"
                     currentIndex: Math.max(0, control.referenceSourceIndex)
-                    onActivated: index => control.referenceRequested(index)
+                    onActivated: index => {
+                        if (index >= 0 && index < control.sourceIdentities.length)
+                            control.referenceRequested(String(control.sourceIdentities[index]));
+                    }
                 }
 
                 Label {
