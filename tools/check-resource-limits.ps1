@@ -83,9 +83,10 @@ foreach ($workflowPath in $workflowPaths) {
         $content,
         '(?im)^\s*DVS_EXECUTION_RESOURCE_PROFILE:\s+Interactive\s*$'
     ).Count
-    if ($workflowPath.Name -cne 'hardware-performance.yml' -and $interactiveCount -ne 0) {
+    $interactiveAllowed = @('hardware-performance.yml', 'release.yml')
+    if ($workflowPath.Name -notin $interactiveAllowed -and $interactiveCount -ne 0) {
         $errors.Add(
-            "Only hardware-performance.yml may use the Interactive resource profile; found it in '$($workflowPath.Name)'."
+            "Only hardware-performance.yml and release.yml may use the Interactive resource profile; found it in '$($workflowPath.Name)'."
         )
     }
     if ($workflowPath.Name -ceq 'hardware-performance.yml') {
