@@ -39,7 +39,11 @@ foreach ($requirement in $runnerRequirements) {
 }
 
 $performanceGateContent = Get-Content -LiteralPath $performanceGatePath -Raw
-foreach ($requirement in @('ProcessorAffinity\s*=', 'PriorityClass\s*=')) {
+foreach ($requirement in @(
+        'ProcessorAffinity\s*=',
+        'PriorityClass\s*=',
+        '\$null\s+-ne\s+\$processExitCode'
+    )) {
     if ($performanceGateContent -notmatch $requirement) {
         $errors.Add("Performance gate is missing child-process policy token '$requirement'.")
     }

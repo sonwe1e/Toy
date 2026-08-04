@@ -102,6 +102,8 @@ for ($processorId = 0; $processorId -lt $maximumProcessorCount; ++$processorId) 
     }
 }
 $process.WaitForExit()
+$process.Refresh()
+$processExitCode = $process.ExitCode
 
 if ($env:DVS_GATE_RESOURCE_PROFILE) {
     Add-Content `
@@ -160,8 +162,8 @@ if (-not $json.screen_refresh_hz -or $json.screen_refresh_hz -lt 120) {
         'a physical screen at 120 Hz or higher is required.'
     )
 }
-if ($process.ExitCode -ne 0 -or -not $json.passed) {
-    throw "The $Profile performance gate failed with exit code $($process.ExitCode)."
+if (($null -ne $processExitCode -and $processExitCode -ne 0) -or -not $json.passed) {
+    throw "The $Profile performance gate failed with exit code $processExitCode."
 }
 
 $summaryTemplate =
