@@ -1174,8 +1174,10 @@ private:
         if (resumeTime.has_value()) {
             auto mapped = domain::canonicalFrameAtOrBefore(timeline, *resumeTime);
             if (mapped) {
-                const std::int64_t maximum = (std::max)(set.canonicalFrameCount() - 1, 0LL);
-                initialFrame = domain::FrameId{std::clamp(mapped.value().value(), 0LL, maximum)};
+                const std::int64_t maximum =
+                    (std::max)(set.canonicalFrameCount() - 1, std::int64_t{0});
+                initialFrame =
+                    domain::FrameId{std::clamp(mapped.value().value(), std::int64_t{0}, maximum)};
             }
         }
         if (sources_.has_value() || state_.displayedFrame.has_value()) {

@@ -22,6 +22,7 @@ else()
             -Wextra
             -Wpedantic
             -Werror
+            -Wno-missing-field-initializers
     )
 endif()
 
