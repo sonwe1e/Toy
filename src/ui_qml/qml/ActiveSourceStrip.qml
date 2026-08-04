@@ -25,6 +25,7 @@ Rectangle {
     signal viewerFocusRequested
 
     property int openMenuCount: 0
+    property bool returnViewerFocusAfterClose: false
     readonly property bool anyMenuOpen: openMenuCount > 0
 
     objectName: "activeSourceStrip"
@@ -66,6 +67,7 @@ Rectangle {
                 required property int sourceId
                 required property string sourceIdentity
                 required property string filename
+                required property bool changedOnDisk
 
                 height: chips.height
                 width: Math.min(280, Math.max(128, chipText.implicitWidth + (control.singleMode ? 24 : 84)))
@@ -81,6 +83,7 @@ Rectangle {
                     if (chip.pending || chip.isCanonical || chip.resolvedSourceIdentity.length === 0)
                         return;
                     chip.requestQueued = true;
+                    control.returnViewerFocusAfterClose = true;
                     sourceMenu.close();
                     Qt.callLater(() => {
                         control.referenceRequested(chip.resolvedSourceIdentity);
@@ -92,6 +95,7 @@ Rectangle {
                     if (chip.pending || chip.resolvedSourceIdentity.length === 0)
                         return;
                     chip.requestQueued = true;
+                    control.returnViewerFocusAfterClose = true;
                     sourceMenu.close();
                     Qt.callLater(() => {
                         control.removeRequested(chip.resolvedSourceIdentity);
@@ -156,6 +160,34 @@ Rectangle {
                         }
                     }
 
+                    Rectangle {
+                        id: changedOnDiskBadge
+
+                        objectName: "changedOnDiskBadge-" + chip.sourceId
+                        visible: chip.changedOnDisk
+                        width: 24
+                        height: 24
+                        radius: 6
+                        color: "#3d2e10"
+                        border.width: 1
+                        border.color: "#b08630"
+                        Accessible.name: qsTr("Video changed on disk")
+                        ToolTip.visible: changedOnDiskHover.hovered
+                        ToolTip.text: qsTr("Video changed on disk")
+
+                        HoverHandler {
+                            id: changedOnDiskHover
+                        }
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "!"
+                            color: "#e6a817"
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                        }
+                    }
+
                     ToolButton {
                         id: overflowButton
 
@@ -194,10 +226,30 @@ Rectangle {
                         id: sourceMenu
 
                         objectName: "sourceMenu-" + chip.sourceId
-                        onOpened: control.openMenuCount += 1
+                        property bool wasOpened: false
+                        onOpened: {
+                            wasOpened = true;
+                            control.openMenuCount += 1;
+                        }
                         onClosed: {
-                            control.openMenuCount = Math.max(0, control.openMenuCount - 1);
-                            control.viewerFocusRequested();
+                            if (wasOpened) {
+                                wasOpened = false;
+                                control.openMenuCount = Math.max(0, control.openMenuCount - 1);
+                            }
+                            if (control.returnViewerFocusAfterClose) {
+                                control.returnViewerFocusAfterClose = false;
+                                control.viewerFocusRequested();
+                            }
+                        }
+                        Component.onDestruction: {
+                            if (wasOpened) {
+                                wasOpened = false;
+                                control.openMenuCount = Math.max(0, control.openMenuCount - 1);
+                            }
+                            if (control.returnViewerFocusAfterClose) {
+                                control.returnViewerFocusAfterClose = false;
+                                control.viewerFocusRequested();
+                            }
                         }
 
                         VcsMenuItem {

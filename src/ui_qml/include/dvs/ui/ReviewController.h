@@ -220,6 +220,10 @@ public:
     Q_INVOKABLE bool pause();
     Q_INVOKABLE bool togglePlayback();
     Q_INVOKABLE void refreshProjection() noexcept;
+    // Returns the snapshot-frozen identity for a source URL. The value is rebuilt only when the
+    // validated comparison pointer changes, so callers see a stable string between commits.
+    // Falls back to the live filesystem identity when no cached entry exists.
+    Q_INVOKABLE QString frozenSourceIdentity(const QUrl& source) const;
 
     // Stops timer/backend access and makes every command fail closed. Calls from another thread
     // are queued to the controller's GUI thread; the runtime calls this before closing ingress.

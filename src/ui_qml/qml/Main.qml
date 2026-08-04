@@ -53,6 +53,7 @@ ApplicationWindow {
     readonly property int canonicalSourceIndex: controller ? Number(controller.canonicalSourceIndex) : -1
     readonly property bool inspectorOpen: shell ? Boolean(shell.inspectorVisible) : false
     readonly property bool chromeVisible: shell ? Boolean(shell.chromeVisible) : true
+    readonly property bool drawerMode: alignmentBar.visible && root.width < 1120
     property int visibilityBeforeFullScreen: Window.Windowed
     property string immersiveHudText: ""
     property bool immersiveHudVisible: false
@@ -73,6 +74,7 @@ ApplicationWindow {
     property bool shortcutHelpVisible: false
     readonly property int shortcutPreset: preferences ? Number(preferences.shortcutPreset) : 0
     readonly property bool dropFrameTimecode: Boolean(preferences && preferences.dropFrameTimecode)
+    property int changedOnDiskAnnouncedGeneration: -1
 
     readonly property bool busy: Boolean(controller && controller.busy)
     readonly property bool framePending: Boolean(controller && controller.framePending)
@@ -603,11 +605,17 @@ ApplicationWindow {
     }
 
     function removeSelectedSource(identity) {
-        return shell ? shell.removeActiveSourceByIdentity(identity) : false;
+        const ok = shell ? shell.removeActiveSourceByIdentity(identity) : false;
+        if (!ok)
+            showIntentMessage(qsTr("The selected video is no longer available."));
+        return ok;
     }
 
     function changeReference(identity) {
-        return shell ? shell.changeReferenceByIdentity(identity) : false;
+        const ok = shell ? shell.changeReferenceByIdentity(identity) : false;
+        if (!ok)
+            showIntentMessage(qsTr("The selected video is no longer available."));
+        return ok;
     }
 
     function changeReferenceAtIndex(index) {
@@ -991,6 +999,18 @@ ApplicationWindow {
         })
     }
 
+    Shortcut {
+        sequence: "Esc"
+        context: Qt.ApplicationShortcut
+        // In full screen the presentation Escape (ReviewShortcuts) owns the key and exits
+        // full screen first; the drawer can still be dismissed by clicking the scrim.
+        enabled: root.drawerMode && root.inputContext === 0 && !root.fullScreen
+        onActivated: {
+            if (root.shell)
+                root.shell.inspectorVisible = false;
+        }
+    }
+
     Timer {
         id: framePendingDelay
 
@@ -1043,6 +1063,29 @@ ApplicationWindow {
                 root.showIntentMessage(qsTr("Reference changed."));
             } else if (Number(kind) === 5) {
                 root.clearReviewUi();
+            }
+        }
+    }
+
+    Connections {
+        target: root.controller
+
+        function onStateChanged() {
+            if (!root.controller || !root.shell)
+                return;
+            const generation = root.shell.activeGeneration;
+            if (generation === root.changedOnDiskAnnouncedGeneration)
+                return;
+            const model = root.controller.sources;
+            if (!model)
+                return;
+            for (let i = 0; i < model.rowCount(); ++i) {
+                const idx = model.index(i, 0);
+                if (model.data(idx, 0x010C)) {
+                    root.changedOnDiskAnnouncedGeneration = generation;
+                    root.showIntentMessage(qsTr("A video file changed on disk. The session keeps its original identity."));
+                    return;
+                }
             }
         }
     }
@@ -1241,6 +1284,30 @@ ApplicationWindow {
         onEdgeRequested: edge => root.preferences.differenceEdge = edge
         onInspectorRequested: root.shell.inspectorVisible = !root.inspectorOpen
     }
+    Rectangle {
+        id: inspectorScrim
+
+        objectName: "inspectorScrim"
+        z: 19
+        visible: root.drawerMode
+        color: "#99060a10"
+        anchors {
+            left: parent.left
+            right: parent.right
+            bottom: parent.bottom
+            top: parent.top
+            topMargin: root.singleMode ? 0 : sourceBar.height + comparisonBar.height
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: {
+                if (root.shell)
+                    root.shell.inspectorVisible = false;
+            }
+        }
+    }
+
     TabbedInspector {
         id: alignmentBar
 
@@ -1393,7 +1460,7 @@ ApplicationWindow {
         previewThumbnailSource: thumbnailCache.urlForFrame(root.timelinePreviewFrame)
         anchors {
             left: viewportFrame.left
-            right: viewportFrame.right
+            right: root.drawerMode ? alignmentBar.left : viewportFrame.right
             bottom: viewportFrame.bottom
         }
         onSeekRequested: frame => {

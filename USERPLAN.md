@@ -1,712 +1,475 @@
-# 核心结论
+二、仍然存在的 P1 UI 和体验问题
+P1-1：关闭 Source 菜单会无条件抢回 Viewer 焦点
 
-我审核的当前 `dev` HEAD 是 `ff665843`，项目版本为 **1.4.3**。你提出的三个问题都成立，其中前两个 UI 问题实际上有共同根因：项目虽然自定义了菜单背景和部分菜单项，却没有锁定 Qt 的 Popup 渲染方式，也没有给嵌套菜单统一指定自定义 delegate；Source Strip 又单独使用了一套原生 `Menu/MenuItem`。这会导致二级菜单透明、悬停样式丢失、弹窗位置异常，以及 `R`、`…` 点击后像是没有反应。
+当前 Source Menu：
 
-关于“倍数”，下面按**播放倍速**设计。当前项目并不存在隐藏的倍速能力：Application 层只有 Play/Pause，没有播放速率命令和 Session 状态，因此不能只增加一个 `1×/2×` 下拉框，否则 UI 会变化，实际播放调度仍是 1×。
-
-版本上建议拆分：
-
-* **1.4.4：纯 Bugfix**，修复菜单、Source 操作、快捷键冲突、资源释放竞态和发布门禁。
-* **1.5.0：只增加播放倍速**，不同时加入其他功能。
-
-必须合并为一个版本时，该版本从语义上应叫 **1.5.0**，因为倍速会改变 PlaybackCoordinator 的调度协议，而不只是 UI 修改。
-
----
-
-# 一、Compare/View 二级菜单为什么会透明
-
-## 1. 当前只自定义了菜单背景，没有自定义嵌套菜单 delegate
-
-`VcsMenu.qml` 当前只设置了：
-
-```qml
-background: Rectangle { ... }
-width: 280
-padding: 4
-```
-
-但没有设置：
-
-```qml
-delegate
-popupType
-```
-
-ApplicationMenuBar 中的 `Layout`、`Pair`、`Reference` 和 `Shortcut preset` 都是嵌套的 `VcsMenu`。叶子节点显式使用了 `VcsMenuItem`，但“Layout”这类代表子菜单的父菜单项是 Qt 隐式创建的，因此会退回当前 Controls Style 的默认 MenuItem。它不会使用 `VcsMenuItem` 的蓝色 Hover 背景、文字颜色和箭头布局。
-
-## 2. 菜单渲染方式由 Qt Style 决定
-
-Qt 6.8 之后，Menu 可以使用 `Popup.Item`、`Popup.Window` 或 `Popup.Native`。默认方式由 Style 和平台决定；使用 Native Menu 时，自定义 QML background 和 delegate 不参与最终绘制。Qt 官方明确建议：对菜单进行自定义后，应显式选择 `Popup.Window` 或 `Popup.Item`。子菜单还会继承根菜单的 Popup 类型。([Qt Documentation][1])
-
-这正好解释了为什么一级菜单大致正常，而鼠标进入二级菜单区域后出现透明或样式突变。
-
-## 修复方案
-
-统一修改 `VcsMenu.qml`：
-
-```qml
-Menu {
-    id: control
-
-    popupType: Popup.Window
-    cascade: true
-    focus: true
-
-    delegate: VcsMenuItem {
-        popupInputContext: true
-    }
-
-    background: Rectangle {
-        radius: control.menuRadius
-        color: control.menuBackgroundColor
-        border.width: 1
-        border.color: control.menuBorderColor
-        opacity: 1.0
-    }
-}
-```
-
-并在应用初始化阶段增加防御：
-
-```cpp
-QCoreApplication::setAttribute(Qt::AA_DontUseNativeMenuWindows);
-```
-
-两者不必都依赖，但显式 `popupType` 必须保留，不能继续让 Style 决定。
-
-## 额外菜单缺陷
-
-两路视频时，Compare → Layout 仍然存在。`Three up` 和 `Reference focus` 被隐藏，但 `Analysis grid` 只是 Disabled，没有隐藏，结果是一个几乎空的二级菜单。
-
-应将整个 Layout Menu 限制为：
-
-```qml
-visible: control.sourceCount === 3
-enabled: visible
-```
-
-而不是逐项制造空菜单。
-
----
-
-# 二、`R` 和 `…` 点击无效的原因
-
-你看到的 `R` 和 `…` 不属于 Viewer 中的 A/B 标签，而是 `ActiveSourceStrip` 中的视频管理按钮。
-
-当前实现是：
-
-```qml
-text:
-    sourceId === canonicalSourceIndex ? "R" : "⋯"
-
-onClicked:
-    sourceMenu.open()
-```
-
-这里有三个问题。
-
-## 1. `R` 同时承担状态和按钮两种语义
-
-`R` 表示当前 Reference，但它又是一个 ToolButton。用户自然会认为点击它会执行某项 Reference 操作。
-
-打开菜单后，“Use as reference”因为当前已经是 Reference 而处于 Disabled 状态，只剩下 Remove Source。即使菜单正常显示，这也是一个语义不清的交互。
-
-## 2. Source 菜单没有使用统一的 VcsMenu
-
-Source Strip 使用的是原生：
-
-```qml
-Menu
-MenuItem
-```
-
-而不是：
-
-```qml
-VcsMenu
-VcsMenuItem
-```
-
-因此它会重复 Compare/View 二级菜单的 Popup 和透明问题。
-
-## 3. `open()` 没有明确指定弹出位置
-
-菜单属于 Repeater delegate 内部，仅调用 `sourceMenu.open()`，没有明确以 `…` 按钮为锚点设置弹出位置。在不同 Popup 类型和 DPI 下，它可能出现在错误位置、被遮挡，或者让用户感觉点击没有生效。
-
-## 推荐的新结构
-
-每个 Source Chip 改成：
-
-```text
-[A · video_a.mp4]  [R]  […]
-[B · video_b.mp4]       […]
-```
-
-其中：
-
-* `R` 是不可点击的状态 Badge；
-* `…` 是所有多视频 Source 都拥有的唯一菜单按钮；
-* Reference Source 的菜单只有 `Remove video`；
-* 非 Reference Source 的菜单包含 `Make reference` 和 `Remove video`；
-* 全部使用 `VcsMenu/VcsMenuItem`；
-* Popup 明确定位在 `…` 按钮下方；
-* Source 正在执行 Reference/Remove 时显示 Spinner，并禁用重复操作。
-
-结构示例：
-
-```qml
-Rectangle {
-    id: referenceBadge
-    visible: chip.sourceId === control.canonicalSourceIndex
-    // 纯状态，不接收点击
+onClosed: {
+    openMenuCount = Math.max(0, openMenuCount - 1)
+    viewerFocusRequested()
 }
 
-ToolButton {
-    id: overflowButton
-    text: "⋯"
-    enabled: !chip.pending
+这对“用户执行 Make Reference 或 Remove 后返回 Viewer”是合理的，但对普通关闭不合理。
 
-    onClicked: sourceMenu.popup(
-        overflowButton,
-        Qt.point(0, overflowButton.height)
-    )
+可能出现：
+
+打开 Source […]
+→ 点击 Inspector 中的输入框
+→ Source 菜单因为点击外部而关闭
+→ onClosed 把焦点重新抢回 Viewer
+→ 输入框没有真正获得焦点
+
+或者：
+
+打开 Source […]
+→ 点击 File 菜单
+→ Source 菜单关闭
+→ Viewer 抢焦点
+→ File 菜单第一次点击无效
+修复方案
+
+不要在所有 onClosed 中恢复 Viewer 焦点。应区分：
+
+ActionCommitted
+EscapeClosed
+OutsideClickClosed
+WindowDeactivated
+OwnerDestroyed
+
+推荐：
+
+property bool returnViewerFocusAfterClose: false
+
+function requestReference() {
+    returnViewerFocusAfterClose = true
+    sourceMenu.close()
+    ...
 }
 
-VcsMenu {
-    id: sourceMenu
-    popupType: Popup.Window
-
-    VcsMenuItem {
-        visible: chip.sourceId !== control.canonicalSourceIndex
-        text: qsTr("Make reference")
-        onTriggered: control.referenceRequested(chip.sourceId)
-    }
-
-    VcsMenuItem {
-        text: qsTr("Remove video")
-        onTriggered: control.removeRequested(chip.sourceId)
-    }
+onClosed: {
+    openMenuCount = Math.max(0, openMenuCount - 1)
+    if (returnViewerFocusAfterClose)
+        viewerFocusRequested()
+    returnViewerFocusAfterClose = false
 }
-```
 
-`busy` 已经传入 ActiveSourceStrip，却没有真正参与按钮状态计算；这也应同步清理。
+点击外部关闭时，不应主动改变用户刚刚选择的焦点目标。
 
----
+这是目前最明确的剩余体验 Bug。
 
-# 三、菜单打开时仍可能触发底层播放快捷键
+P1-2：Source 请求被同步拒绝时，用户可能得不到反馈
 
-当前 Main.qml 通过 activeFocusItem 向上查找：
+ActiveSourceStrip 当前执行：
 
-```qml
-popupInputContext === true
-textEditingInputContext === true
-```
+设置 requestQueued=true
+→ 关闭菜单
+→ Qt.callLater
+→ 发出 referenceRequested/removeRequested
+→ requestQueued=false
 
-来决定是否关闭全局播放快捷键。
+Main 中的函数虽然返回：
 
-但是：
+shell.changeReferenceByIdentity(...)
+shell.removeActiveSourceByIdentity(...)
 
-* `VcsMenu` 没有 `popupInputContext`；
-* `VcsMenuItem` 没有 `popupInputContext`；
-* ActiveSourceStrip 的原生 MenuItem 也没有；
-* 使用 `Popup.Window` 后，菜单焦点可能存在于独立 Popup Window 中，Main Window 的 `activeFocusItem` 无法可靠反映这一状态。
+但 Source Strip 的 Signal Handler 没有检查返回值并显示错误。
 
-因此在菜单打开时，按 Space、A/D、Tab 等按键，仍可能触发视频播放、逐帧或隐藏 Chrome。
+以下竞态仍可能静默失败：
 
-## 修复方案
+用户打开 Source B 菜单
+→ 外部启动请求替换了当前视频
+→ 用户点击 Make Reference
+→ Qt.callLater 执行时 Source B Identity 已失效
+→ Shell 返回 false
+→ 菜单已关闭，Spinner 消失
+→ 没有 Toast
+修复方案
 
-ApplicationMenuBar 暴露统一状态：
+Main 的 Handler 应明确处理返回值：
 
-```qml
-readonly property bool anyMenuOpen:
-    fileMenu.opened
-    || compareMenu.opened
-    || analyzeMenu.opened
-    || viewMenu.opened
-```
+onReferenceRequested: identity => {
+    if (!root.changeReference(identity))
+        root.showIntentMessage(
+            qsTr("The selected video is no longer available.")
+        )
+}
 
-ActiveSourceStrip 和 ReviewContextMenu 也分别暴露：
+onRemoveRequested: identity => {
+    if (!root.removeSelectedSource(identity))
+        root.showIntentMessage(
+            qsTr("The selected video could not be removed.")
+        )
+}
 
-```qml
-readonly property bool anySourceMenuOpen
-readonly property bool contextMenuOpen
-```
+本地 requestQueued 也不应在调用后立即清除；应该等：
 
-Main 使用显式状态，而不是只看 activeFocusItem：
+Intent Running
+Intent Succeeded
+Intent Failed
+Intent Rejected
 
-```qml
-readonly property bool anyPopupOpen:
-    menuBar.anyMenuOpen
-    || sourceBar.anySourceMenuOpen
-    || viewerContextMenu.opened
+事件到来后再更新。
 
-readonly property int inputContext:
-    modalDialogOpen ? ModalDialog
-    : anyPopupOpen ? Popup
-    : focusIsTextEditing(activeFocusItem) ? TextEditing
-    : Viewer
-```
+P1-3：窄窗口下 Inspector 仍然覆盖 Viewer 和 OSC
 
-只有 `Viewer` 状态允许媒体快捷键。
+当前响应式策略仍是：
 
----
+窗口宽度 ≥ 1120：
+    Viewport 右边锚定 Inspector 左边
+    两者并排
 
-# 四、播放倍速的完整技术路线
+窗口宽度 < 1120：
+    Viewport 占满整个宽度
+    Inspector 仍显示在右侧上层
 
-## 1. 建议支持的速率
+因此 960×640 下，约 300 px 的 Inspector 会覆盖 Viewer 右侧，同时覆盖：
 
-第一版控制在：
+时间轴后段；
+OSC 右侧区域；
+右侧 Source Badge；
+Diff/ROI 状态；
+Viewer 右键操作区域。
 
-```text
-0.25×
-0.5×
-1.0×
-1.5×
-2.0×
-```
+这更像临时叠层，而不是完整的响应式 Drawer。当前 1.4.4 修改没有重新设计这一布局。
 
-使用有理数，而不是浮点数：
+修复方案
 
-```cpp
-struct PlaybackRate {
-    std::uint32_t numerator;
-    std::uint32_t denominator;
-};
-```
+在窄窗口中将 Inspector 明确定义为 Drawer：
 
-对应：
+宽度 < 1120：
+    Inspector 作为 Overlay Drawer
+    增加半透明 Scrim
+    点击 Viewer 空白处关闭
+    Esc 关闭
+    OSC 右边界收缩到 Drawer 左边
 
-```text
-1/4
-1/2
-1/1
-3/2
-2/1
-```
+或者直接：
 
-这样 CFR 和 VFR 长时间播放不会因为浮点累积产生 Timeline 漂移。
+窗口宽度 < 1120：
+    Inspector 打开时隐藏 Source Strip/Compare Bar
+    Viewer 与 Inspector 采用 60/40 分栏
 
-## 2. Application 层
+至少需要一个 960×640 的截图测试验证 Timeline、Transport 和 Inspector 没有关键控件互相遮挡。
 
-新增：
+三、存在风险但尚不能判定为已复现 Bug 的问题
+1. Source Menu 生命周期计数可能残留
 
-```cpp
-struct SetPlaybackRateCommand {
-    CommandContext context;
-    PlaybackRate rate;
-};
-```
+ActiveSourceStrip.anyMenuOpen 通过整数 openMenuCount 管理：
 
-加入 `PlaybackCommand` variant。当前只有 Play/Pause，没有 Rate Command。
+onOpened → +1
+onClosed → -1
 
-SessionSnapshot 增加：
+如果 Source delegate 在菜单打开期间被外部 Session 替换而销毁，Qt 是否必然在对象析构前发送 onClosed，需要真实测试证明。如果没有，openMenuCount 可能永久保持大于 0，造成：
 
-```cpp
-PlaybackRate playbackRate = {1, 1};
-```
+anyMenuOpen = true
+globalMediaShortcutsEnabled = false
 
-ReviewController 增加：
+直到重新打开窗口。
 
-```cpp
-Q_PROPERTY(double playbackRate READ playbackRate NOTIFY stateChanged)
+建议
 
-Q_INVOKABLE bool setPlaybackRate(double rate);
-```
+增加测试：
 
-## 3. PlaybackCoordinator 调度
+打开 Source B 菜单
+→ 从外部替换整个 Source Model
+→ Source delegate 被销毁
+→ anyMenuOpen 必须恢复 false
+→ 媒体快捷键恢复
 
-播放 deadline 不能继续直接使用 MediaTime 差值，而应使用：
+更稳妥的方案是使用统一 Popup Tracker，根据实际 Popup Object 生命周期维护状态，而不是让 Repeater delegate 手动维护计数。
 
-```text
-wall_delta = media_delta / playback_rate
-```
+2. Source Identity 依赖实时文件修改时间
 
-即：
+Identity 包含：
 
-```cpp
-wallDeadline =
-    wallAnchor
-    + scaleDuration(
-        mediaTime(frame) - mediaAnchor,
-        rate.denominator,
-        rate.numerator
-      );
-```
+canonical path
+file size
+lastModified milliseconds
 
-当前 Coordinator 已经使用 wall-clock deadline、presentation lead 和 catch-up tolerance，因此倍速必须进入该层。
+如果录制程序、同步软件或其他进程修改了当前打开的视频文件，Source Identity 会发生变化。排队中的 Reference/Remove 操作可能被视为 Stale Topology，即使用户认为仍是同一个文件。
 
-播放中切换倍速时应：
+理想方案是：
 
-1. 保留当前已呈现 Frame；
-2. 取消旧 cadence deadline；
-3. 增加 playback generation；
-4. 以当前 Frame 的 MediaTime 和当前 Clock 重新建立 Anchor；
-5. 按新速率调度下一帧；
-6. 不跳回首帧，不重复 ACK 当前帧。
+Source Identity 在 Open/Probe 成功时由 SessionSnapshot 固化，不在每次 UI Projection 时重新读取文件系统状态。
 
-## 4. 1.5×/2× 的帧完整性规则
+文件内容改变应成为独立的 “Source changed on disk” 状态，而不是让 UI Identity 悄然变化。
 
-60 FPS 视频在 2× 下相当于 120 帧/秒，120 Hz 显示器尚有机会逐帧呈现。
+3. Popup.Window 的真实鼠标穿越仍未完全证明
 
-120 FPS 视频在 2× 下相当于 240 帧/秒，普通 120 Hz 屏幕不可能显示所有帧。因此必须明确：
+当前新测试主要证明：
 
-* `≤1×`：保证所有 canonical FrameSet 依次呈现；
-* `>1×`：允许跳过完整 FrameSet，但绝不允许 A/B/C Source 分裂；
-* Wipe/Diff 必须始终使用同一个 canonical FrameSet；
-* UI 在 1.5×/2× 时显示 `Fast review` 提示。
+Popup 能打开；
+popupType 正确；
+Open 状态正确；
+Action 可以触发；
+Style 和 DPI 配置可实例化。
 
-不能偷偷降低 Source 同步正确性来换取倍速。
+但原始问题发生在：
 
-## 5. UI 位置
+鼠标从父菜单项
+→ 穿过父子 Popup 之间的空隙
+→ 进入二级菜单
 
-PlayerOsc 当前包含 Timecode、Frame、Timeline 和 TransportBar，适合在右上角加入一个紧凑的 Speed Selector。
+当前测试中部分 Action 是直接调用 triggered()，不是实际在独立 Popup Window 中用鼠标点击菜单行。
 
-建议：
+需要补充真实鼠标测试：
 
-```text
-00:01:23:14  Frame 2514/7000                 [1×]
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    播放控制
-```
+打开 Compare
+→ hover Layout
+→ 等待子菜单展开
+→ mouseMove 到子菜单第一项
+→ 父菜单和子菜单都保持 opened
+→ 背景像素保持不透明
+→ mouseClick 执行 Three-up
+四、其他 UI/体验筛查结果
+1. 空状态
 
-同时在 View Menu 中增加：
+空状态目前没有 Project、Save 或退出提示，主要入口只有 Open Videos 和拖放；这符合现有产品定位。没有发现新的结构性问题。
 
-```text
-View
-└── Playback speed
-    ├── 0.25×
-    ├── 0.5×
-    ├── 1×
-    ├── 1.5×
-    └── 2×
-```
+仍建议验证：
 
-两处必须绑定同一个 Snapshot State，不能各自维护局部值。
+空状态打开 File 菜单；
+拖放 Overlay 与 Popup.Window 同时存在；
+Graphics unavailable 时 Open Videos 是否正确禁用或给出反馈；
+150% DPI 下两行说明文本是否越界。
+2. 单视频
 
-关于另一个可能含义——画面缩放：现有滚轮已经支持图像 Zoom，应额外在 Inspector 显示 `100% / 200% / 400%` 和 `Reset 100%`，但不要与播放倍速共用同一控件。
+单视频继续使用播放器式布局和自动隐藏 OSC，Source Strip 降低透明度。当前没有发现会阻断使用的明显问题。
 
----
+体验上仍可以优化，但不属于 1.4.4 Bug：
 
-# 五、全盘筛查发现的其他问题
+单视频 Source Chip 仍占一定顶部空间；
+没有音频，但界面已经明确说明；
+没有播放倍速，按既定版本规划属于 1.5.0，而非 1.4.4 缺陷。
+3. Side-by-side / Wipe / Diff
 
-## P0：需要阻断发布
+1.4.2 已补充真实 Wipe/Diff 像素门禁，1.4.4 没有重新修改 Renderer 核心链路，因此目前没有发现新的黑屏回归路径。
 
-### 1. MultiSourceFrameProvider 的完成语义存在竞态
+需要在最终 SHA 重跑：
 
-1.4.3 的 Release Quality Test 曾在低资源环境下复现 `7/40` 失败。当前处理方式是将 Release Quality 改为 Interactive/Normal Priority，而不是消除竞态。Commit 描述明确指出：Terminal Event 已到达，但异步 Frame Budget 释放可能尚未完成。
+2×1080p60 Side
+2×1080p60 Wipe
+2×1080p60 Diff
+Side → Wipe → Diff → Side
+三路 A/C → 两路 A/B
+Remove C → Wipe/Diff
+4. 三路模式
 
-对应测试在收到 RequestSucceeded 后立即要求：
+Layout 和 Pair 菜单只在三路时出现，是正确修改。
 
-```cpp
-EXPECT_EQ(budget.reservedBytes(), 0U);
-```
+仍需验证：
 
-这说明目前存在两种可能：
+三路切换到两路时，已打开的 Pair 子菜单是否立即安全关闭；
+删除当前 Reference 后 Badge 与 Inspector Reference 同步；
+Source C 菜单打开时移除 Source A；
+Three-up 和 Reference Focus 下 Source Badge 不与 Inspector 重叠。
+5. Inspector
 
-* Terminal 的语义错误：它并不代表所有资源已经退休；
-* Provider 的顺序错误：它在释放 worker-owned FrameSet 前先发送了 Terminal。
+功能完成度已经较高，但窄窗口 Overlay 是当前主要剩余体验问题。
 
-单纯提高进程优先级只会降低复现概率，不会修复行为。
+还应检查：
 
-#### 修复
+Compare Tab 的长文本；
+Alignment Inspector 的 ScrollView；
+150% DPI；
+非常长的文件名；
+三路 Media Info Card；
+打开软键盘或输入法时 SpinBox 焦点。
+6. 时间轴与 OSC
 
-推荐保证：
+没有发现 1.4.4 新引入的明显功能回归。
 
-```text
-释放 worker 局部 FrameSet
-→ 释放 FrameBudget Reservation
-→ 发布 RequestSucceeded Terminal
-```
+仍需重点手工验证：
 
-如果架构上允许 Terminal 后异步释放，则必须新增明确的 `ResourcesRetired` 事件，并修改所有调用者和测试，不能让一个“成功完成”事件具备模糊语义。
+Inspector Overlay 时 Timeline 最右端；
+Source Menu 打开时 OSC 自动隐藏是否暂停；
+Popup 关闭后 Space 是否只触发一次；
+拖动 Timeline 时打开菜单；
+Loop Range 到 Out 后 Seek/Play 失败反馈；
+Thumbnail Popup 与右侧 Inspector 是否重叠。
+7. 全屏与多显示器
 
-完成后恢复 4 CPU BelowNormal Stress Test，至少连续运行 100 次。
+Popup.Window 解决了透明问题，但会引入独立窗口边界，需要真实 Windows 验证：
 
----
+F11 全屏中打开菜单；
+双屏不同 DPI；
+主窗口位于副屏右边缘；
+子菜单自动向左展开；
+Alt+Tab 后 Popup 是否残留；
+主窗口最小化时 Popup 是否同步隐藏；
+Windows 任务栏自动隐藏；
+远程桌面环境。
 
-### 2. 二级菜单没有任何专项测试
+这些不是静态 QML 测试能完全覆盖的。
 
-当前 UI Tests 包含 ToolbarCombo、Drop Confirmation、WipeHandle、ReviewActions、Empty View、PlayerOsc 和 Timeline，但没有：
+五、测试体系评价
+已经明显改善
 
-```text
+新增菜单测试矩阵覆盖：
+
 VcsMenu
 ApplicationMenuBar
-ActiveSourceStrip Menu
-Nested submenu
-```
+ActiveSourceStrip
 
-这解释了为什么 Layout/Reference/Shortcut preset 的透明问题能够通过现有 CI。
+Basic Style
+Windows Style
 
-必须新增：
+100%
+125%
+150%
 
-```text
-tst_vcs_menu.qml
-tst_application_menu_bar.qml
-tst_active_source_strip.qml
-```
+Provider 竞态也增加了 Release 阶段 100 次重复测试。
 
----
+这说明 1.4.4 已从“修代码”提升到“增加对应回归门禁”。
 
-### 3. 当前最终 HEAD 的完整发布证据仍需重跑
+仍缺少的 UI 测试
 
-1.4.3 Release Prep 之后，又连续修复了：
+建议补齐以下五组：
 
-* Release Quality 资源配置；
-* Resource policy allowlist；
-* Previous MSI 路径经过 PowerShell 时被错误拆分；
-* WiX ICE38/ICE43/ICE57。
+A. Nested Popup Pointer Test
 
-因此 `c99eedcb` 的 1.4.3 Release Prep 不能视为最终验证版本。最终 Tag 必须指向或晚于 `ff665843`，并重新运行全部 Release Gates。本次连接器也没有返回该 HEAD 的 Combined Status，所以我不能证明精确 HEAD 已经全绿。
+实际鼠标从父菜单移动到子菜单，不使用直接 triggered()。
 
----
+B. Popup Lifetime Test
+Source menu open
+→ Source model reset
+→ Popup destroyed
+→ anyMenuOpen false
+C. Focus Ownership Test
+Source menu open
+→ 点击 Inspector SpinBox
+→ Source menu close
+→ SpinBox 保持焦点
+D. Responsive Layout Screenshot Test
+960×640
+1100×700
+1120×700
+1440×900
 
-## P1：高优先级行为缺陷
+Inspector open/closed
+Single/Side/Wipe/Diff/Three-up
+E. Packaged Windows Pixel Test
 
-### 4. 两秒 Catch-up Tolerance 可能掩盖真实卡顿
+在真实安装后的 EXE 中抓取：
 
-1.4.3 将播放追赶阈值从 500 ms 提高到 2000 ms，以避免低优先级测试环境中的 600～800 ms Stall 被计算成丢帧。
+一级菜单；
+二级菜单；
+Source Menu；
+Full Screen Menu；
+125%/150% DPI。
 
-这对保留每一帧有合理性，但会让播放在极端情况下落后真实时间接近两秒，而 UI 仍处于 Playing。
+必须检查 Popup 背景 Alpha，而不只是 opacity QML 属性。
 
-建议区分：
+六、1.4.5 解决状态
 
-```text
-Exact review mode
-    不跳帧
-    延迟过大时进入 Buffering
+本节记录本轮修复的落地情况。上方第二至五节为用户审计原稿，保持不动。
 
-Real-time mode
-    超过阈值后跳过完整 FrameSet
-```
+P1-1：关闭 Source 菜单抢焦点 — 已解决
 
-播放倍速引入后，不能继续使用一个固定 2000 ms 阈值处理所有 Rate。
+采用 returnViewerFocusAfterClose 标志方案。仅当菜单内 Action 被 triggered（Make Reference / Remove / 菜单项操作）时才在 onClosed 中发射 viewerFocusRequested；Escape 关闭、外部点击关闭、菜单切换关闭均不再抢焦点。覆盖三处菜单：
 
-### 5. 菜单打开时快捷键可能穿透
+- ActiveSourceStrip.qml：chip 的 sourceMenu onClosed 条件化；requestReference / requestRemoval 在 close 前置标志。
+- ApplicationMenuBar.qml：所有 item onTriggered 设标志；四个顶层菜单 onClosed 条件化；Open videos / Add video 不设标志（对话框接管焦点）。
+- ReviewContextMenu.qml：同模式；contextOpenAction 除外。
 
-前面已经确认，Input Context 只识别带 `popupInputContext` 的 activeFocusItem，而当前 VcsMenu/VcsMenuItem 没有该属性。
+对应自动化测试：
+- test_triggered_action_emits_viewer_focus_requested（tst_active_source_strip.qml）— triggered 路径 viewerFocusSpy.count == 1。
+- test_escape_close_does_not_emit_viewer_focus_requested（tst_active_source_strip.qml）— Escape 关闭 viewerFocusSpy.count == 0。
 
-这应作为菜单修复的强制验收项。
+P1-2：同步拒绝无反馈 — 已解决
 
-### 6. Source Strip 状态和操作仍混在一起
+Main.qml 新增包装函数 removeSelectedSource / changeReference：调用 shell 对应方法，返回 false 时调 showIntentMessage 显示 toast。四个调用方（strip referenceRequested / removeRequested、TabbedInspector changeReference、ReviewContextMenu changeReference）统一走包装函数，一处覆盖全部路径。requestQueued 保持现状（shell 接受时 pending 在 intent 生命周期内持续；拒绝时身份不进列表，spinner 自然熄灭并出现 toast）。
 
-`R` 是状态却做成按钮；`…` 是操作；两者占用同一位置。这是当前用户感受到“按钮点击无效”的根本交互问题之一。
+对应自动化测试：
+- ShowsIntentMessageOnSynchronousRejection（MainQmlContractTests.cpp）— 构造无 validatedComparison 的 snapshot 使身份匹配必定失败，断言 changeReference 和 removeSelectedSource 返回 false 且 intentMessage 非空。
 
-### 7. 高层 DropArea 的层级过于激进
+P1-3：窄窗口 Inspector 覆盖 — 已解决
 
-整个窗口存在一个 `z: 1000` 的全屏 DropArea。
+采用 Overlay Drawer + Scrim 方案：
 
-虽然 DropArea 主要处理拖放事件，但当菜单改为 `Popup.Item` 或未来新增 Overlay 时，这种层级容易制造命中和遮挡问题。
+- Main.qml 新增只读属性 drawerMode: alignmentBar.visible && root.width < 1120。
+- 新 Scrim Rectangle（objectName: "inspectorScrim"），z:19，颜色 #99060a10，topMargin 与 inspector 一致，点击关闭 Inspector。
+- Transport anchors.right 在 drawerMode 下收缩到 alignmentBar.left（PlayerOsc 同时包含 timeline 与 OSC，一处收缩覆盖两项）。
+- 新增独立 Shortcut "Esc"（enabled: drawerMode && inputContext === 0），关闭 Drawer。
+- 大于等于 1120 的并排模式全部不变。
 
-建议：
+对应自动化测试：
+- DrawerScrimTransportShrinkAndEscClose（MainQmlContractTests.cpp）— 几何矩阵 {960x640, 1100x700, 1120x700, 1440x900} x inspector 开/关：drawer 下 scrim visible、transport 右边界 <= inspector 左边界、viewport 全宽不变、inspector 完整位于窗内；并排下 scrim 隐藏、viewport 右边界 <= inspector 左边界；Esc 关闭 drawer。含 960x640 截图像素门禁（inspector 区域不透明、transport 区域在 inspector 左侧可见）。
 
-* 菜单使用 `Popup.Window`；
-* DropArea 自身放在正常内容层；
-* 只有 `containsDrag` 时显示高层拖放 Overlay；
-* 菜单打开期间拖入行为保持可预测。
+风险 1：openMenuCount 残留 — 已解决
 
-### 8. Error Mapping 仍残留已删除领域
+ActiveSourceStrip.qml VcsMenu 新增 wasOpened 守卫：onOpened 置 true 并 +1；onClosed 仅当 wasOpened 时 -1 并复位；Component.onDestruction 同样守卫（Qt 未发 closed 就析构时兜底）。
 
-Main.qml 仍处理：
+对应自动化测试：
+- test_model_reset_clears_open_menu_count（tst_active_source_strip.qml）— mouseClick 打开第二个 overflow 菜单，断言 anyMenuOpen == true，sources.clear() 后断言 anyMenuOpen == false && openMenuCount == 0，随后恢复双源模型供 cleanup 使用。
 
-```text
-clip-out-of-range
-clip-not-found
-export-record-not-found
-duplicate-clip-selection
-invalid-export-mode
-invalid-export-geometry
-source-fingerprint-mismatch
-```
+风险 2：Source Identity 实时重算 — 已解决
 
-但 Clip、Export Record、Project Fingerprint 已从当前产品范围移除。
+完整修复，身份固化 + 独立的 "文件已变更" 状态：
 
-这些死分支不一定直接导致崩溃，但会让错误合同与当前领域模型脱节。
+- SourceIdentity.h/cpp 新增 composeSourceIdentity(path, byteSize, modifiedMs) 组合函数；canonicalSourceIdentity 改为内部调用它。
+- ReviewController 新增 frozenIdentitiesByPath_ 缓存，在 validatedComparison 指针变化时重建；publishProjection 改读缓存。
+- ReviewController 新增 changedOnDisk 行字段：实时 QFileInfo 与 descriptor 值比较，仅用于变更检测。
+- SourceListModel 新增 bool changedOnDisk 字段与 ChangedOnDiskRole。
+- ReviewShellController 新增 frozenActiveIdentities_ 缓存，在 synchronizeActiveSources 时重建；activeSourceIdentities 返回缓存值。
+- ActiveSourceStrip.qml chip delegate 新增 changedOnDisk 属性，琥珀色标记 + ToolTip。
+- Main.qml Connections 监听投影，首次检测到 changedOnDisk 时 showIntentMessage 提示。
 
-应新增自动测试：
+对应自动化测试：
+- ComposeMatchesLiveCanonicalIdentity（SourceIdentityTests.cpp）— 组合函数与实时 canonical 结果一致。
+- ChangedOnDiskRolePublishesStateThroughModel（SourceIdentityTests.cpp）— 模型 role 发布与 dataChanged 信号。
+- FrozenIdentityStaysStableWhenFileChangesOnDisk（ReviewControllerTests.cpp）— 真实临时文件构造 snapshot，记录冻结身份，追加字节改动文件，refreshProjection 后断言 activeSourceIdentities 与行 sourceIdentity 不变、changedOnDisk 变 true。
 
-```text
-所有 MediaError stable ID
-→ 必须存在一个用户文案
-→ 不允许映射不存在的旧 ID
-```
+测试组 A：Nested Popup Pointer Test — 已实现（降级路径）
 
----
+- NestedPopupMouseTraversal（MainQmlContractTests.cpp）— 3 源 snapshot，打开 compareMenu，尝试 hover cascade 到 layoutMenu，真实鼠标点击 "Three up" 项，断言两菜单关闭、viewMode 变 ThreeUp，grab popup 窗图像断言背景 alpha == 255。
+- 降级说明：合成 QHoverEvent/QMouseEvent 在 headless 环境下无法可靠触发 Qt Quick Controls Menu 跨 Popup.Window 级联。测试采用 fallback level 2：两菜单均程序化打开（等价于级联结果），然后真实鼠标点击子菜单项。hover 穿越段（父菜单 -> 间隙 -> 子菜单）需在真实 Windows 硬件上手工验证。新增辅助函数 sendMousePress / sendMouseRelease / sendMouseMove / findPopupWindow / menuPopupWindow。新增 objectName: "threeUpMenuItem"（ApplicationMenuBar.qml）。
 
-## P2：体验一致性问题
+测试组 B：Popup Lifetime Test — 已实现
 
-### 9. Source 菜单和主菜单使用两套组件
+- test_model_reset_clears_open_menu_count（tst_active_source_strip.qml）— 见上方风险 1。
 
-主菜单使用 VcsMenu，Source 使用原生 Menu，导致：
+测试组 C：Focus Ownership Test — 已实现（廉价层）
 
-* Hover 风格不同；
-* 字体和 Padding 不同；
-* Popup 类型不同；
-* 键盘行为不同；
-* DPI 表现不同。
+- test_triggered_action_emits_viewer_focus_requested / test_escape_close_does_not_emit_viewer_focus_requested（tst_active_source_strip.qml）— SignalSpy 计数验证焦点信号发射条件。
+- 契约层（Inspector SpinBox 焦点保持）由 MainQmlContractTests 现有 mock-snapshot 基建覆盖；P1-1 修复后程序化关闭不再发 viewerFocusRequested，Escape 关闭同理。
 
-必须完全统一。
+测试组 D：Responsive Layout Screenshot Test — 已实现
 
-### 10. Source 操作缺少明确完成反馈
+- DrawerScrimTransportShrinkAndEscClose（MainQmlContractTests.cpp）— 见上方 P1-3。几何矩阵覆盖 960x640 / 1100x700 / 1120x700 / 1440x900 x inspector 开/关 + 960x640 截图像素门禁。
 
-虽然当前 Session Facade 已经支持 bounded queue、generation 和 Source Identity，也暴露 Pending Source Index，但按钮只是显示 Spinner。
+测试组 E：Packaged Windows Pixel Test — 已实现
 
-建议在操作期间显示：
+- package.popup-pixels-scale-100 / package.popup-pixels-scale-125 / package.popup-pixels-scale-150（tests/smoke/CMakeLists.txt）— packaged 层，通过 VerifyPopupPixels.ps1 启动安装后 EXE，以 --ui-popup-pixels 模式运行，解析 stderr JSON 结果。QT_SCALE_FACTOR 覆盖 100% / 125% / 150% DPI 变体。
+- src/app/Main.cpp 新增 --ui-popup-pixels 模式与 PopupProbeTarget / PopupProbeResult 结构体。
+- src/ui_qml/DesktopApplication 新增 4 个自动化 API（openMenuForAutomation / closeMenuForAutomation / menuIsOpenForAutomation / capturePopupWindowForAutomation）；runPopupPixelProbe() 本体是 src/app/Main.cpp 的自由函数（与 runPerformance 同模式）。
+- 真实多显示器 DPI（双屏不同 DPI、副屏边缘、子菜单自动向左展开）需在真实 Windows 硬件上手工验证，QT_SCALE_FACTOR 变体覆盖 alpha 关注点。
 
-```text
-Changing reference…
-Removing video…
-```
+全量测试结果
 
-失败时恢复按钮并显示具体 Toast，不能只有通用 `Review request failed`。
+ctest -j8 -E "hardware|performance|package"：423 个测试全部通过（0 失败）。基线 417 + 本轮新增 6 个 C++ 测试 + 3 个 QML 测试 = 426 中实际注册 423（部分 QML 测试通过 qmltestrunner 聚合注册）。packaged 层 3 个 popup-pixels 测试需 packaged-smoke preset 运行，不在默认 ctest 范围内。
 
-### 11. Compare/View 菜单宽度和 DPI 缺少回归矩阵
+剩余手工验证清单
 
-固定 280 px 菜单在中文翻译、150% DPI、960×640 窗口和右侧子菜单展开时需要专门验证。当前没有相关测试。
+以下项目来自第四节（其他 UI/体验筛查结果）和第七节（全屏与多显示器），静态测试无法覆盖，需在真实 Windows 环境手工验证：
 
----
+第四节 — 其他 UI/体验筛查：
+1. 空状态打开 File 菜单；拖放 Overlay 与 Popup.Window 同时存在；Graphics unavailable 时 Open Videos 反馈；150% DPI 下说明文本越界。
+2. Side-by-side / Wipe / Diff 最终 SHA 重跑：2x1080p60 Side、Wipe、Diff；Side -> Wipe -> Diff -> Side；三路 A/C -> 两路 A/B；Remove C -> Wipe/Diff。
+3. 三路模式：三路切两路时已打开的 Pair 子菜单安全关闭；删除当前 Reference 后 Badge 与 Inspector Reference 同步；Source C 菜单打开时移除 Source A；Three-up 和 Reference Focus 下 Source Badge 不与 Inspector 重叠。
+4. Inspector：Compare Tab 长文本；Alignment Inspector ScrollView；150% DPI；非常长文件名；三路 Media Info Card；打开软键盘或输入法时 SpinBox 焦点。
+5. 时间轴与 OSC：Inspector Overlay 时 Timeline 最右端；Source Menu 打开时 OSC 自动隐藏是否暂停；Popup 关闭后 Space 是否只触发一次；拖动 Timeline 时打开菜单；Loop Range 到 Out 后 Seek/Play 失败反馈；Thumbnail Popup 与右侧 Inspector 重叠。
 
-# 六、建议执行计划
+第七节 — 全屏与多显示器：
+6. F11 全屏中打开菜单。
+7. 双屏不同 DPI。
+8. 主窗口位于副屏右边缘；子菜单自动向左展开。
+9. Alt+Tab 后 Popup 是否残留。
+10. 主窗口最小化时 Popup 是否同步隐藏。
+11. Windows 任务栏自动隐藏。
+12. 远程桌面环境。
 
-## 阶段 A：先建立失败测试
+Test A 降级遗留：
+13. 真实鼠标从父菜单项穿过父子 Popup 间隙进入二级菜单（compareMenu -> Layout -> Three-up），验证 hover 级联触发。自动化测试已覆盖"两菜单同时打开 + 真实鼠标点击子菜单项生效 + 背景 alpha"，但穿越段本身需手工。
 
-代码修改前先增加以下红灯测试：
-
-1. 打开 Compare → Layout，将鼠标从父项移动到子菜单，Popup 背景始终不透明。
-2. 打开 View → Shortcut preset，Hover 状态不透明。
-3. 打开 Reference/Pair 子菜单，文字、箭头和背景都使用 VcsMenuItem。
-4. 菜单打开时 Space、A/D、Tab 不执行媒体操作。
-5. 点击 Reference Source 的 `R` 当前行为被测试并确认不合理。
-6. 点击任意 Source 的 `…`，菜单必须可见且位置正确。
-7. Make Reference 和 Remove Video 真实提交对应 Intent。
-
----
-
-## 阶段 B：统一 Popup 系统
-
-修改：
-
-```text
-VcsMenu.qml
-VcsMenuItem.qml
-VcsMenuBar.qml
-ApplicationMenuBar.qml
-ReviewContextMenu.qml
-ActiveSourceStrip.qml
-```
-
-完成：
-
-* `popupType: Popup.Window`；
-* 统一 `delegate: VcsMenuItem`；
-* 统一 hover/focus/disabled/check 样式；
-* 统一 Popup Input Context；
-* Layout Menu 只在三路时存在；
-* 删除所有裸 `Menu/MenuItem`；
-* 键盘 Left/Right/Enter/Esc 正确；
-* 关闭菜单后焦点返回 Viewer。
-
----
-
-## 阶段 C：重构 Source Chip
-
-将：
-
-```text
-R 或 …
-```
-
-改成：
-
-```text
-R 状态 Badge + 独立 … 菜单
-```
-
-同时：
-
-* 所有操作使用 Source Identity，而不是把 SourceId 默认等同数组索引；
-* Pending 状态按 Intent ID 和 Identity 绑定；
-* 重复操作合并；
-* 失败后完整回滚；
-* Source Menu 关闭后才提交操作，避免 Popup 与 Session rebuild 同时销毁 delegate。
-
----
-
-## 阶段 D：完成其余 Bugfix，发布 1.4.4
-
-1. 修复 Provider Terminal/FrameBudget 释放竞态；
-2. 菜单打开期间屏蔽全局快捷键；
-3. 清除旧 Error Mapping；
-4. 清理 DropArea 层级；
-5. 补齐 Source 操作反馈；
-6. 对最终 HEAD 重跑全部 CI、D3D11VA、Wipe/Diff Pixel、MSI Upgrade 和 Shutdown；
-7. 不加入播放倍速。
-
----
-
-## 阶段 E：只增加播放倍速，发布 1.5.0
-
-涉及：
-
-```text
-Commands.h
-SessionSnapshot
-PlaybackCoordinator
-ReviewController
-ReviewPreferences/Session state
-PlayerOsc
-ApplicationMenuBar
-ShortcutHelpOverlay
-Performance tests
-```
-
-建议速率不持久化，打开新视频时恢复 1×，避免用户下次打开视频时意外以 2×播放。
-
----
-
-# 七、验收标准
-
-## 菜单
-
-1. Compare、View、Pair、Reference、Layout、Shortcut preset 的二级菜单都不透明。
-2. Basic 和 Windows Style 表现一致。
-3. 100%、125%、150% DPI 均正常。
-4. 二级菜单不会超出屏幕。
-5. 鼠标从父菜单移入子菜单时不会闪烁或关闭。
-6. 菜单打开时媒体快捷键不执行。
-
-## Source 操作
-
-7. `R` 只是状态，不再伪装成按钮。
-8. 每个多路 Source 都有有效的 `…`。
-9. Make Reference 能真实切换 Reference。
-10. Remove Video 能真实删除对应 Source。
-11. Pending、成功、失败都有可见反馈。
-12. Side、Wipe、Diff、Three-up 下行为一致。
-
-## 播放倍速
-
-13. 0.25×、0.5×、1×、1.5×、2×真实改变 wall-clock 调度。
-14. 播放中切换速率不跳帧位置。
-15. Seek、Pause、Loop Range 后保持当前速率。
-16. CFR 和 VFR 都按 MediaTime 调度。
-17. 多路视频始终呈现完整 FrameSet。
-18. 120 FPS × 2 的跳帧策略明确且可测试。
-
-## 稳定性
-
-19. Provider Terminal 到达后 FrameBudget 生命周期确定。
-20. 4 CPU BelowNormal Stress Test 连续 100 次通过。
-21. 最终 Release Tag 对应精确 HEAD。
-22. Debug、Release、Quality、D3D11VA、Pixel Gate、Performance、MSI Upgrade 和 Shutdown 全部通过。
-
----
-
-# 最终判断
-
-目前最先要处理的不是倍速，而是**菜单系统统一和 Source 操作语义**。两个 UI 问题共享同一技术根因，修复时不能分别打补丁：
-
-> **所有菜单必须使用同一个非 Native Popup、同一个 delegate、同一个 Input Context；所有 Source 必须将角色状态与操作按钮分离。**
-
-在此基础上，倍速再作为唯一的新能力进入 PlaybackCoordinator。否则只增加一个 `2×` 按钮，会把目前已有的菜单、调度延迟和资源生命周期问题进一步放大。
-
-[1]: https://doc.qt.io/qt-6/zh/qml-qtquick-controls-menu.html?utm_source=chatgpt.com "Menu QML Type | Qt Quick Controls | Qt 6.11.0"
+Test E 多显示器遗留：
+14. 真实多显示器不同 DPI 下 popup 背景 alpha（QT_SCALE_FACTOR 变体已覆盖单屏 100/125/150%，双屏异 DPI 需手工）。

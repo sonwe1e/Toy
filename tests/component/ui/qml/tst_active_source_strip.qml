@@ -18,11 +18,13 @@ Item {
             sourceId: 0
             sourceIdentity: "source-a"
             filename: "reference.mp4"
+            changedOnDisk: false
         }
         ListElement {
             sourceId: 1
             sourceIdentity: "source-b"
             filename: "prediction.mp4"
+            changedOnDisk: false
         }
     }
 
@@ -53,18 +55,34 @@ Item {
         signalName: "removeRequested"
     }
 
+    SignalSpy {
+        id: viewerFocusSpy
+
+        target: strip
+        signalName: "viewerFocusRequested"
+    }
+
     TestCase {
         name: "ActiveSourceStrip"
         when: windowShown
 
         function cleanup() {
+            // Restore two-source model in case a test mutated it (e.g. Test B).
+            sources.clear();
+            sources.append({sourceId: 0, sourceIdentity: "source-a", filename: "reference.mp4", changedOnDisk: false});
+            sources.append({sourceId: 1, sourceIdentity: "source-b", filename: "prediction.mp4", changedOnDisk: false});
+            strip.sourceCount = 2;
+            wait(0);
+
             const firstMenu = findChild(strip, "sourceOverflowButton-0").sourceMenuControl;
             const secondMenu = findChild(strip, "sourceOverflowButton-1").sourceMenuControl;
             firstMenu.close();
             secondMenu.close();
             referenceSpy.clear();
             removalSpy.clear();
+            viewerFocusSpy.clear();
             strip.pendingSourceIdentities = [];
+            strip.returnViewerFocusAfterClose = false;
             wait(0);
         }
 
@@ -114,6 +132,58 @@ Item {
             strip.pendingSourceIdentities = ["source-b"];
             tryCompare(firstOverflow, "enabled", true);
             tryCompare(secondOverflow, "enabled", false);
+        }
+
+        // Test B: model reset while menu is open must not leak openMenuCount.
+        function test_model_reset_clears_open_menu_count() {
+            const secondOverflow = findChild(strip, "sourceOverflowButton-1");
+            mouseClick(secondOverflow, secondOverflow.width / 2, secondOverflow.height / 2);
+            const menu = secondOverflow.sourceMenuControl;
+            tryCompare(menu, "opened", true);
+            compare(strip.anyMenuOpen, true);
+            compare(strip.openMenuCount, 1);
+
+            // Simulate external model teardown (e.g. shell closing all sources).
+            sources.clear();
+            sources.append({sourceId: 0, sourceIdentity: "source-x", filename: "new.mp4", changedOnDisk: false});
+            strip.sourceCount = 1;
+            wait(0);
+
+            tryCompare(strip, "anyMenuOpen", false);
+            compare(strip.openMenuCount, 0);
+
+            // Restore two-source model so cleanup() does not crash.
+            sources.clear();
+            sources.append({sourceId: 0, sourceIdentity: "source-a", filename: "reference.mp4", changedOnDisk: false});
+            sources.append({sourceId: 1, sourceIdentity: "source-b", filename: "prediction.mp4", changedOnDisk: false});
+            strip.sourceCount = 2;
+            wait(0);
+        }
+
+        // Triggered path (makeReference) must emit viewerFocusRequested exactly once.
+        function test_triggered_action_emits_viewer_focus_requested() {
+            viewerFocusSpy.clear();
+            const secondOverflow = findChild(strip, "sourceOverflowButton-1");
+            const menu = secondOverflow.sourceMenuControl;
+            const makeReference = secondOverflow.makeReferenceAction;
+            menu.popup(root, 300, 24);
+            tryCompare(menu, "opened", true);
+            makeReference.triggered();
+            tryCompare(menu, "opened", false);
+            compare(viewerFocusSpy.count, 1);
+        }
+
+        // Escape-close (no triggered action) must NOT emit viewerFocusRequested.
+        function test_escape_close_does_not_emit_viewer_focus_requested() {
+            viewerFocusSpy.clear();
+            const secondOverflow = findChild(strip, "sourceOverflowButton-1");
+            const menu = secondOverflow.sourceMenuControl;
+            menu.popup(root, 300, 24);
+            tryCompare(menu, "opened", true);
+            // Press Escape to close the popup without triggering any action.
+            keyClick(Qt.Key_Escape);
+            tryCompare(menu, "opened", false);
+            compare(viewerFocusSpy.count, 0);
         }
     }
 }

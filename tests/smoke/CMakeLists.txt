@@ -216,6 +216,38 @@ if(DVS_PREVIOUS_RELEASE_1_2_MSI)
     dvs_add_msi_upgrade_test(1.2.0 "${DVS_PREVIOUS_RELEASE_1_2_MSI}")
 endif()
 
+set(DVS_POPUP_PIXEL_SCALE_LABELS "100" "125" "150")
+set(DVS_POPUP_PIXEL_SCALE_VALUES "1" "1.25" "1.5")
+foreach(scale_label scale_value IN ZIP_LISTS
+    DVS_POPUP_PIXEL_SCALE_LABELS
+    DVS_POPUP_PIXEL_SCALE_VALUES
+)
+    dvs_add_test(
+        NAME package.popup-pixels-scale-${scale_label}
+        LAYER packaged
+        MODULE app
+        TIMEOUT 120
+        COMMAND
+            powershell.exe
+            -NoLogo
+            -NoProfile
+            -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/VerifyPopupPixels.ps1"
+            -Executable "$<TARGET_FILE:VCStation>"
+            -Sources
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_a_320x180_30fps_12.mp4"
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h264_b_160x90_30fps_12.mp4"
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/media/h265_a_320x180_30fps_12.mp4"
+    )
+    set_tests_properties(
+        package.popup-pixels-scale-${scale_label}
+        PROPERTIES
+            ENVIRONMENT "QT_SCALE_FACTOR=${scale_value}"
+            RUN_SERIAL TRUE
+            RESOURCE_LOCK vcstation-machine-install
+    )
+endforeach()
+
 dvs_add_test(
     NAME app.shutdown-soak
     LAYER soak

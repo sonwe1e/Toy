@@ -197,6 +197,7 @@ private:
     ReviewController& review_;
     ReviewPreferencesController* preferences_ = nullptr;
     QVariantList activeSources_;
+    QStringList frozenActiveIdentities_;
     QVariantList stagedSources_;
     int canonicalSourceIndex_ = -1;
     qulonglong activeGeneration_ = 0U;

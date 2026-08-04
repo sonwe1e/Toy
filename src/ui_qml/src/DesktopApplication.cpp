@@ -15,6 +15,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QObject>
+#include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -373,6 +374,100 @@ public:
         return windowImage.copy(bounded);
     }
 
+    [[nodiscard]] bool openMenuForAutomation(const std::string_view objectName) noexcept {
+        if (window_ == nullptr || objectName.empty()) {
+            return false;
+        }
+        QObject* const menu = window_->findChild<QObject*>(
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (menu == nullptr) {
+            return false;
+        }
+        return QMetaObject::invokeMethod(menu, "open");
+    }
+
+    [[nodiscard]] bool closeMenuForAutomation(const std::string_view objectName) noexcept {
+        if (window_ == nullptr || objectName.empty()) {
+            return false;
+        }
+        QObject* const menu = window_->findChild<QObject*>(
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (menu == nullptr) {
+            return false;
+        }
+        return QMetaObject::invokeMethod(menu, "close");
+    }
+
+    [[nodiscard]] bool menuIsOpenForAutomation(const std::string_view objectName) const noexcept {
+        if (window_ == nullptr || objectName.empty()) {
+            return false;
+        }
+        const QObject* const menu = window_->findChild<QObject*>(
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
+        if (menu == nullptr) {
+            return false;
+        }
+        return menu->property("opened").toBool();
+    }
+
+    [[nodiscard]] std::optional<QImage>
+    capturePopupWindowForAutomation(const std::string_view objectName) const {
+        if (window_ == nullptr || objectName.empty()) {
+            return std::nullopt;
+        }
+        const QString target =
+            QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size()));
+
+        // Primary strategy: resolve the popup window through the menu's own contentItem.
+        // QML Popup.Window menus host their visual tree in a contentItem that lives inside the
+        // separate top-level QQuickWindow created for the popup.
+        QObject* const menuObject = window_->findChild<QObject*>(target);
+        if (menuObject != nullptr) {
+            const QVariant contentItemVariant = menuObject->property("contentItem");
+            if (contentItemVariant.isValid()) {
+                auto* const contentItem = contentItemVariant.value<QQuickItem*>();
+                if (contentItem != nullptr) {
+                    QQuickWindow* const popupWindow = contentItem->window();
+                    if (popupWindow != nullptr && popupWindow != window_ &&
+                        popupWindow->width() > 0 && popupWindow->height() > 0) {
+                        const QImage grabbed = popupWindow->grabWindow();
+                        if (!grabbed.isNull()) {
+                            return grabbed;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: scan top-level windows for a child matching the target name.
+        const QList<QWindow*> topLevelWindows = QGuiApplication::topLevelWindows();
+        for (QWindow* topLevelWindow : topLevelWindows) {
+            if (topLevelWindow == window_) {
+                continue;
+            }
+            auto* quickWindow = qobject_cast<QQuickWindow*>(topLevelWindow);
+            if (quickWindow == nullptr) {
+                continue;
+            }
+            QObject* directChild = quickWindow->findChild<QObject*>(target);
+            if (directChild == nullptr && quickWindow->contentItem() != nullptr) {
+                directChild = quickWindow->contentItem()->findChild<QObject*>(target);
+            }
+            if (directChild == nullptr) {
+                continue;
+            }
+            if (quickWindow->width() <= 0 || quickWindow->height() <= 0) {
+                return std::nullopt;
+            }
+            const QImage grabbed = quickWindow->grabWindow();
+            if (grabbed.isNull()) {
+                return std::nullopt;
+            }
+            return grabbed;
+        }
+        return std::nullopt;
+    }
+
     void releaseSceneGraph() noexcept {
         if (!engine_) {
             return;
@@ -483,6 +578,23 @@ DesktopApplication::objectIntPropertyForAutomation(const std::string_view object
 std::optional<QImage>
 DesktopApplication::captureControlForAutomation(const std::string_view objectName) const {
     return impl_->captureControlForAutomation(objectName);
+}
+
+bool DesktopApplication::openMenuForAutomation(const std::string_view objectName) noexcept {
+    return impl_->openMenuForAutomation(objectName);
+}
+
+bool DesktopApplication::closeMenuForAutomation(const std::string_view objectName) noexcept {
+    return impl_->closeMenuForAutomation(objectName);
+}
+
+bool DesktopApplication::menuIsOpenForAutomation(const std::string_view objectName) const noexcept {
+    return impl_->menuIsOpenForAutomation(objectName);
+}
+
+std::optional<QImage>
+DesktopApplication::capturePopupWindowForAutomation(const std::string_view objectName) const {
+    return impl_->capturePopupWindowForAutomation(objectName);
 }
 
 void DesktopApplication::releaseSceneGraph() noexcept {

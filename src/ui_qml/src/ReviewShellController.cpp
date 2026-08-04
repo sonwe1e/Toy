@@ -2,7 +2,8 @@
 
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
-#include "dvs/ui/SourceIdentity.h"
+
+#include <QUrl>
 
 #include <algorithm>
 #include <iterator>
@@ -282,7 +283,7 @@ bool ReviewShellController::openStagedSources(const bool preserveDisplayedTime) 
         .sources = stagedSources_,
         .referenceIndex = stagedReferenceIndex_,
         .referenceIdentity =
-            dvs::ui::canonicalSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
+            review_.frozenSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
     });
 }
 
@@ -328,7 +329,7 @@ bool ReviewShellController::queueRemoveActiveSource(const QString& sourceIdentit
         .sources = std::move(replacement),
         .referenceIndex = stagedReferenceIndex_,
         .referenceIdentity =
-            dvs::ui::canonicalSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
+            review_.frozenSourceIdentity(stagedSources_[stagedReferenceIndex_].toUrl()),
         .targetIdentity = sourceIdentity,
     });
 }
@@ -427,7 +428,7 @@ bool ReviewShellController::enqueueStartupRequest(const int kind, const QVariant
         .origin = StartupOrigin,
         .sources = files,
         .referenceIndex = 0,
-        .referenceIdentity = dvs::ui::canonicalSourceIdentity(files.front().toUrl()),
+        .referenceIdentity = review_.frozenSourceIdentity(files.front().toUrl()),
     });
 }
 
@@ -533,6 +534,12 @@ void ReviewShellController::synchronizeActiveSources(const bool advanceGeneratio
     if (advanceGeneration) {
         ++activeGeneration_;
     }
+    QStringList nextIdentities;
+    nextIdentities.reserve(activeSources_.size());
+    for (const QVariant& source : activeSources_) {
+        nextIdentities.push_back(review_.frozenSourceIdentity(source.toUrl()));
+    }
+    frozenActiveIdentities_ = std::move(nextIdentities);
     if (!review_.busy()) {
         stagedSources_ = activeSources_;
         stagedReferenceIndex_ = activeSources_.isEmpty() ? 0 : std::max(0, canonicalSourceIndex_);
@@ -717,7 +724,7 @@ bool ReviewShellController::rebaseIntent(ReviewIntent& intent) const {
         QVariantList rebased = activeSources_;
         QStringList rebasedIdentities = activeIdentities;
         for (const QVariant& source : intent.sources) {
-            const QString identity = dvs::ui::canonicalSourceIdentity(source.toUrl());
+            const QString identity = review_.frozenSourceIdentity(source.toUrl());
             if (intent.expectedSources.contains(identity) || rebasedIdentities.contains(identity)) {
                 continue;
             }
@@ -774,10 +781,13 @@ QVariantMap ReviewShellController::intentMap(const ReviewIntent& intent,
 }
 
 QStringList ReviewShellController::activeSourceIdentities() const {
+    if (frozenActiveIdentities_.size() == activeSources_.size()) {
+        return frozenActiveIdentities_;
+    }
     QStringList identities;
     identities.reserve(activeSources_.size());
     for (const QVariant& source : activeSources_) {
-        identities.push_back(dvs::ui::canonicalSourceIdentity(source.toUrl()));
+        identities.push_back(review_.frozenSourceIdentity(source.toUrl()));
     }
     return identities;
 }

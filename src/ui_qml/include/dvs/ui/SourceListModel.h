@@ -21,6 +21,7 @@ struct SourceListRow final {
     bool missing = true;
     int missingReason = -1;
     qint64 manualOffset = 0;
+    bool changedOnDisk = false;
 
     [[nodiscard]] bool operator==(const SourceListRow&) const = default;
 };
@@ -41,6 +42,7 @@ public:
         MissingRole,
         MissingReasonRole,
         ManualOffsetRole,
+        ChangedOnDiskRole,
     };
     Q_ENUM(Role)
 

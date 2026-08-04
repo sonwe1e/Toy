@@ -28,6 +28,7 @@ VcsMenuBar {
     signal fullScreenToggleRequested
     signal viewerFocusRequested
 
+    property bool returnViewerFocusAfterClose: false
     readonly property bool anyMenuOpen: fileMenu.opened || compareMenu.opened || analyzeMenu.opened || viewMenu.opened
 
     function changeReferenceByIndex(sourceIndex) {
@@ -41,7 +42,12 @@ VcsMenuBar {
 
         objectName: "fileMenu"
         title: qsTr("&File")
-        onClosed: control.viewerFocusRequested()
+        onClosed: {
+            if (control.returnViewerFocusAfterClose) {
+                control.returnViewerFocusAfterClose = false;
+                control.viewerFocusRequested();
+            }
+        }
 
         VcsMenuItem {
             text: qsTr("Open videos…")
@@ -60,7 +66,7 @@ VcsMenuBar {
             enabled: control.sourceCount > 0
             onTriggered: {
                 control.destructiveActionRequested("closeReview");
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuSeparator {}
@@ -69,7 +75,7 @@ VcsMenuBar {
             shortcutText: "Alt+F4"
             onTriggered: {
                 control.destructiveActionRequested("exit");
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
     }
@@ -79,7 +85,12 @@ VcsMenuBar {
         objectName: "compareMenu"
         title: qsTr("&Compare")
         enabled: control.sourceCount > 1 && !control.busy
-        onClosed: control.viewerFocusRequested()
+        onClosed: {
+            if (control.returnViewerFocusAfterClose) {
+                control.returnViewerFocusAfterClose = false;
+                control.viewerFocusRequested();
+            }
+        }
 
         VcsMenuItem {
             text: qsTr("Side by side")
@@ -87,7 +98,7 @@ VcsMenuBar {
             checked: control.currentViewMode === 0
             onTriggered: {
                 control.preferences.viewMode = 0;
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuItem {
@@ -96,7 +107,7 @@ VcsMenuBar {
             checked: control.currentViewMode === 5
             onTriggered: {
                 control.preferences.viewMode = 5;
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuItem {
@@ -105,7 +116,7 @@ VcsMenuBar {
             checked: control.currentViewMode === 3
             onTriggered: {
                 control.preferences.viewMode = 3;
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuSeparator {
@@ -120,12 +131,13 @@ VcsMenuBar {
             menuItemEnabled: control.sourceCount === 3
 
             VcsMenuItem {
+                objectName: "threeUpMenuItem"
                 text: qsTr("Three up")
                 checkable: true
                 checked: control.currentViewMode === 1
                 onTriggered: {
                     control.preferences.viewMode = 1;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -134,7 +146,7 @@ VcsMenuBar {
                 checked: control.currentViewMode === 2
                 onTriggered: {
                     control.preferences.viewMode = 2;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -145,7 +157,7 @@ VcsMenuBar {
                 enabled: control.sourceCount === 3
                 onTriggered: {
                     control.preferences.viewMode = 4;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
         }
@@ -166,7 +178,7 @@ VcsMenuBar {
                 checked: Number(control.preferences.differenceEdge) === 0
                 onTriggered: {
                     control.preferences.differenceEdge = 0;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -175,7 +187,7 @@ VcsMenuBar {
                 checked: Number(control.preferences.differenceEdge) === 1
                 onTriggered: {
                     control.preferences.differenceEdge = 1;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -184,7 +196,7 @@ VcsMenuBar {
                 checked: Number(control.preferences.differenceEdge) === 2
                 onTriggered: {
                     control.preferences.differenceEdge = 2;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
         }
@@ -201,7 +213,7 @@ VcsMenuBar {
                 checked: control.canonicalSourceIndex === 0
                 onTriggered: {
                     control.changeReferenceByIndex(0);
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -210,7 +222,7 @@ VcsMenuBar {
                 checked: control.canonicalSourceIndex === 1
                 onTriggered: {
                     control.changeReferenceByIndex(1);
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -220,7 +232,7 @@ VcsMenuBar {
                 checked: control.canonicalSourceIndex === 2
                 onTriggered: {
                     control.changeReferenceByIndex(2);
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
         }
@@ -229,7 +241,7 @@ VcsMenuBar {
             text: control.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Show Inspector")
             onTriggered: {
                 control.session.inspectorVisible = !control.inspectorOpen;
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
     }
@@ -239,14 +251,19 @@ VcsMenuBar {
         objectName: "analyzeMenu"
         title: qsTr("&Analyze")
         enabled: control.sourceCount > 1 && control.graphicsReady && control.currentFrame >= 0 && !control.busy
-        onClosed: control.viewerFocusRequested()
+        onClosed: {
+            if (control.returnViewerFocusAfterClose) {
+                control.returnViewerFocusAfterClose = false;
+                control.viewerFocusRequested();
+            }
+        }
 
         VcsMenuItem {
             text: qsTr("Estimate global frame offset")
             enabled: control.graphicsReady && !control.busy && !control.alignmentAnalysisRunning && Boolean(control.controller && control.controller.canFirst)
             onTriggered: {
                 control.controller.estimateAlignment();
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuItem {
@@ -254,7 +271,7 @@ VcsMenuBar {
             enabled: control.graphicsReady && !control.busy && Boolean(control.controller && (control.alignmentAnalysisRunning || control.controller.canFirst))
             onTriggered: {
                 control.alignmentAnalysisRunning ? control.controller.cancelAlignmentAnalysis() : control.controller.analyzeSequenceAlignment();
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
     }
@@ -264,20 +281,25 @@ VcsMenuBar {
 
         objectName: "viewMenu"
         title: qsTr("&View")
-        onClosed: control.viewerFocusRequested()
+        onClosed: {
+            if (control.returnViewerFocusAfterClose) {
+                control.returnViewerFocusAfterClose = false;
+                control.viewerFocusRequested();
+            }
+        }
 
         VcsMenuItem {
             text: control.chromeVisible ? qsTr("Hide interface chrome · Tab") : qsTr("Show interface chrome · Tab")
             onTriggered: {
                 control.chromeToggleRequested();
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuItem {
             text: control.fullScreen ? qsTr("Exit full screen · F11") : qsTr("Enter full screen · F11")
             onTriggered: {
                 control.fullScreenToggleRequested();
-                control.viewerFocusRequested();
+                control.returnViewerFocusAfterClose = true;
             }
         }
         VcsMenuSeparator {}
@@ -293,7 +315,7 @@ VcsMenuBar {
                 checked: control.shortcutPreset === 0
                 onTriggered: {
                     control.preferences.shortcutPreset = 0;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
             VcsMenuItem {
@@ -302,7 +324,7 @@ VcsMenuBar {
                 checked: control.shortcutPreset === 1
                 onTriggered: {
                     control.preferences.shortcutPreset = 1;
-                    control.viewerFocusRequested();
+                    control.returnViewerFocusAfterClose = true;
                 }
             }
         }

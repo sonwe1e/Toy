@@ -26,6 +26,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstdlib>
@@ -1439,6 +1440,285 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
     return result;
 }
 
+struct PopupProbeTarget final {
+    std::string_view label;
+    std::string_view menuObjectName;
+    std::string_view parentMenuObjectName;
+};
+
+struct PopupProbeResult final {
+    std::string label;
+    bool captured = false;
+    std::uint64_t sampledPixels = 0U;
+    int minAlpha = 0;
+    bool passed = false;
+    std::string failureReason;
+};
+
+[[nodiscard]] PopupProbeResult samplePopupBackground(const std::string_view label,
+                                                     const QImage& image) {
+    PopupProbeResult result;
+    result.label = std::string{label};
+    const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    if (rgba.isNull()) {
+        result.failureReason = "convert-failed";
+        return result;
+    }
+    result.captured = true;
+    const int horizontalStep = (std::max)(1, rgba.width() / 48);
+    const int verticalStep = (std::max)(1, rgba.height() / 48);
+    int minimumAlpha = 255;
+    std::uint64_t sampledPixels = 0U;
+    for (int y = 0; y < rgba.height(); y += verticalStep) {
+        const auto* const row = rgba.constScanLine(y);
+        for (int x = 0; x < rgba.width(); x += horizontalStep) {
+            const int offset = x * 4;
+            const int alpha = static_cast<int>(row[offset + 3]);
+            ++sampledPixels;
+            if (alpha < minimumAlpha) {
+                minimumAlpha = alpha;
+            }
+        }
+    }
+    result.sampledPixels = sampledPixels;
+    result.minAlpha = minimumAlpha;
+    result.passed = sampledPixels > 0U && minimumAlpha == 255;
+    if (!result.passed) {
+        result.failureReason = sampledPixels == 0U ? "no-pixels" : "transparent-background";
+    }
+    return result;
+}
+
+[[nodiscard]] int runPopupPixelProbe(int& argc, char** argv, const SmokeSources& sources) {
+    dvs::ui::configureGraphicsBackend();
+    dvs::ui::DesktopApplication desktop{
+        argc,
+        argv,
+        dvs::ui::DesktopApplicationOptions{
+            .smokeMode = true,
+            .preferSoftwareDevice = true,
+        },
+    };
+    std::unique_ptr<dvs::app::ReviewRuntime> runtime = dvs::app::ReviewRuntime::create();
+    if (!runtime || runtime->controller() == nullptr || runtime->preferences() == nullptr ||
+        !desktop.load(*runtime->controller(),
+                      *runtime->preferences(),
+                      [&runtime](dvs::ui::ComparisonSurface& surface) {
+                          return runtime->attachSurface(surface);
+                      })) {
+        writeStandardError("DVS_POPUP_PIXEL_UI_LOAD_FAILED\n");
+        return EXIT_FAILURE;
+    }
+
+    enum class Stage {
+        WaitingForGraphics,
+        WaitingForFirstFrame,
+        ProbingMenus,
+        Completed,
+    };
+
+    constexpr std::array<PopupProbeTarget, 4> probeTargets = {{
+        {.label = "file", .menuObjectName = "fileMenu", .parentMenuObjectName = {}},
+        {.label = "compare", .menuObjectName = "compareMenu", .parentMenuObjectName = {}},
+        {.label = "layout",
+         .menuObjectName = "layoutMenu",
+         .parentMenuObjectName = "compareMenu"},
+        {.label = "source", .menuObjectName = "sourceMenu-0", .parentMenuObjectName = {}},
+    }};
+
+    Stage stage = Stage::WaitingForGraphics;
+    std::vector<PopupProbeResult> results;
+    bool completed = false;
+    bool failed = false;
+    std::string failureReason;
+    std::size_t probeIndex = 0U;
+    QElapsedTimer probeDelay;
+    bool probeMenuOpened = false;
+
+    const auto fail = [&](std::string reason) {
+        if (!failed) {
+            failed = true;
+            failureReason = std::move(reason);
+            desktop.exit(EXIT_FAILURE);
+        }
+    };
+
+    QTimer poll;
+    poll.setInterval(5);
+    QObject::connect(&poll, &QTimer::timeout, runtime->controller(), [&] {
+        if (failed || completed) {
+            return;
+        }
+        dvs::ui::ReviewController& controller = *runtime->controller();
+        if (hasReviewError(controller) && !controller.busy() && stage != Stage::ProbingMenus) {
+            fail("media-error:" + controller.lastErrorTechnicalDetail().toStdString());
+            return;
+        }
+
+        switch (stage) {
+        case Stage::WaitingForGraphics: {
+            if (!controller.graphicsReady()) {
+                return;
+            }
+            QList<QUrl> automationSources{localFileUrl(sources.first)};
+            if (sources.second.has_value()) {
+                automationSources.push_back(localFileUrl(*sources.second));
+            }
+            if (sources.third.has_value()) {
+                automationSources.push_back(localFileUrl(*sources.third));
+            }
+            if (!desktop.openSourcesForAutomation(automationSources)) {
+                fail("open-rejected");
+                return;
+            }
+            stage = Stage::WaitingForFirstFrame;
+            return;
+        }
+        case Stage::WaitingForFirstFrame:
+            if (controller.busy()) {
+                return;
+            }
+            if (hasReviewError(controller)) {
+                fail("media-error:" + controller.lastErrorTechnicalDetail().toStdString());
+                return;
+            }
+            stage = Stage::ProbingMenus;
+            probeIndex = 0U;
+            probeMenuOpened = false;
+            return;
+        case Stage::ProbingMenus: {
+            if (probeIndex >= probeTargets.size()) {
+                stage = Stage::Completed;
+                completed = true;
+                desktop.exit(EXIT_SUCCESS);
+                return;
+            }
+            const auto& target = probeTargets[probeIndex];
+            if (!probeMenuOpened) {
+                // Lazy-init retry timer for menu open.
+                if (!probeDelay.isValid()) {
+                    probeDelay.start();
+                }
+                // Open parent menu first if needed.
+                if (!target.parentMenuObjectName.empty()) {
+                    if (!desktop.menuIsOpenForAutomation(target.parentMenuObjectName)) {
+                        if (!desktop.openMenuForAutomation(target.parentMenuObjectName)) {
+                            if (probeDelay.hasExpired(5000)) {
+                                fail(std::string{target.label} + "-parent-open-rejected");
+                                return;
+                            }
+                            return;
+                        }
+                    }
+                }
+                if (!desktop.openMenuForAutomation(target.menuObjectName)) {
+                    // Retry for up to 5 seconds (the source menu may need QML rendering time).
+                    if (probeDelay.hasExpired(5000)) {
+                        fail(std::string{target.label} + "-open-rejected");
+                        return;
+                    }
+                    return;
+                }
+                probeMenuOpened = true;
+                probeDelay.restart();
+                return;
+            }
+            // Wait for the popup window to be created and rendered.
+            if (probeDelay.elapsed() < 200) {
+                return;
+            }
+            // Capture the popup window.
+            const std::optional<QImage> popupImage =
+                desktop.capturePopupWindowForAutomation(target.menuObjectName);
+            PopupProbeResult probeResult;
+            probeResult.label = std::string{target.label};
+            if (popupImage.has_value()) {
+                probeResult = samplePopupBackground(target.label, *popupImage);
+            } else {
+                probeResult.captured = false;
+                probeResult.failureReason = "popup-window-not-found";
+            }
+            results.push_back(probeResult);
+
+            // Close menus.
+            static_cast<void>(desktop.closeMenuForAutomation(target.menuObjectName));
+            if (!target.parentMenuObjectName.empty()) {
+                static_cast<void>(
+                    desktop.closeMenuForAutomation(target.parentMenuObjectName));
+            }
+            // Also close any remaining open menus to reset state.
+            for (const auto* const name :
+                 {"fileMenu", "compareMenu", "analyzeMenu", "viewMenu", "sourceMenu-0"}) {
+                if (desktop.menuIsOpenForAutomation(name)) {
+                    static_cast<void>(desktop.closeMenuForAutomation(name));
+                }
+            }
+
+            ++probeIndex;
+            probeMenuOpened = false;
+            // Reset the retry timer for the next probe target.
+            probeDelay = QElapsedTimer{};
+            return;
+        }
+        case Stage::Completed:
+            return;
+        }
+    });
+
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    timeout.setInterval(30'000);
+    QObject::connect(&timeout, &QTimer::timeout, runtime->controller(), [&] {
+        fail("popup-pixel-probe-timeout");
+    });
+    poll.start();
+    timeout.start();
+    int result = desktop.exec();
+    poll.stop();
+    timeout.stop();
+
+    if (!completed && !failed) {
+        failed = true;
+        failureReason = "popup-pixel-probe-incomplete";
+        result = EXIT_FAILURE;
+    }
+
+    // Build JSON report.
+    QJsonArray probeArray;
+    bool allPassed = true;
+    for (const auto& probeResult : results) {
+        QJsonObject entry;
+        entry.insert(QStringLiteral("name"), QString::fromStdString(probeResult.label));
+        entry.insert(QStringLiteral("captured"), probeResult.captured);
+        entry.insert(QStringLiteral("sampled_pixels"),
+                     static_cast<double>(probeResult.sampledPixels));
+        entry.insert(QStringLiteral("min_alpha"), probeResult.minAlpha);
+        entry.insert(QStringLiteral("pass"), probeResult.passed);
+        if (!probeResult.passed) {
+            entry.insert(QStringLiteral("failure"),
+                         QString::fromStdString(probeResult.failureReason));
+            allPassed = false;
+        }
+        probeArray.append(entry);
+    }
+    QJsonObject report;
+    report.insert(QStringLiteral("probes"), probeArray);
+    report.insert(QStringLiteral("passed"), completed && allPassed && !failed);
+    if (failed) {
+        report.insert(QStringLiteral("failure"), QString::fromStdString(failureReason));
+    }
+    const auto encodedReport = QJsonDocument{report}.toJson(QJsonDocument::Compact);
+    writeStandardError("DVS_POPUP_PIXEL_RESULT " + encodedReport.toStdString() + '\n');
+
+    runtime->prepareForSceneGraphRelease();
+    desktop.releaseSceneGraph();
+    if (!runtime->shutdownAfterSceneGraphRelease()) {
+        writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+        return EXIT_FAILURE;
+    }
+    return result;
+}
+
 } // namespace
 
 int main(int argc, char* argv[]) {
@@ -1477,6 +1757,16 @@ int main(int argc, char* argv[]) {
                                   .second = std::filesystem::path{argv[3]},
                                   .third = std::filesystem::path{argv[4]},
                               });
+        }
+        if (argc >= 3 && argc <= 5 && std::string_view{argv[1]} == "--ui-popup-pixels") {
+            SmokeSources popupSources{.first = std::filesystem::path{argv[2]}};
+            if (argc >= 4) {
+                popupSources.second = std::filesystem::path{argv[3]};
+            }
+            if (argc == 5) {
+                popupSources.third = std::filesystem::path{argv[4]};
+            }
+            return runPopupPixelProbe(argc, argv, popupSources);
         }
         if (argc == 4 && std::string_view{argv[1]} == "--ui-upgrade-settings-smoke") {
             return runUpgradeSettingsSmoke(argc,

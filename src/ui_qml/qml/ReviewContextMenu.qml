@@ -29,6 +29,7 @@ VcsMenu {
     signal fullScreenRequested
     signal viewerFocusRequested
 
+    property bool returnViewerFocusAfterClose: false
     objectName: "reviewContextMenu"
     readonly property bool anyMenuOpen: control.opened
 
@@ -38,7 +39,12 @@ VcsMenu {
         return control.referenceRequested(String(control.sourceIdentities[sourceIndex]));
     }
 
-    onClosed: control.viewerFocusRequested()
+    onClosed: {
+        if (control.returnViewerFocusAfterClose) {
+            control.returnViewerFocusAfterClose = false;
+            control.viewerFocusRequested();
+        }
+    }
 
     VcsMenuItem {
         objectName: "contextOpenAction"
@@ -58,21 +64,30 @@ VcsMenu {
             text: qsTr("Side by side")
             checkable: true
             checked: control.currentViewMode === 0
-            onTriggered: control.sideRequested()
+            onTriggered: {
+                control.sideRequested();
+                control.returnViewerFocusAfterClose = true;
+            }
         }
         VcsMenuItem {
             objectName: "contextWipeAction"
             text: qsTr("Wipe")
             checkable: true
             checked: control.currentViewMode === 5
-            onTriggered: control.wipeRequested()
+            onTriggered: {
+                control.wipeRequested();
+                control.returnViewerFocusAfterClose = true;
+            }
         }
         VcsMenuItem {
             objectName: "contextDifferenceAction"
             text: qsTr("Difference")
             checkable: true
             checked: control.currentViewMode === 3
-            onTriggered: control.diffRequested()
+            onTriggered: {
+                control.diffRequested();
+                control.returnViewerFocusAfterClose = true;
+            }
         }
     }
     VcsMenuSeparator {
@@ -93,7 +108,10 @@ VcsMenu {
                 text: String(modelData.label)
                 checkable: true
                 checked: index === control.currentEdgeIndex
-                onTriggered: control.edgeRequested(Number(modelData.preferenceValue))
+                onTriggered: {
+                    control.edgeRequested(Number(modelData.preferenceValue));
+                    control.returnViewerFocusAfterClose = true;
+                }
             }
         }
     }
@@ -107,21 +125,30 @@ VcsMenu {
             text: qsTr("Source A")
             checkable: true
             checked: control.canonicalSourceIndex === 0
-            onTriggered: control.changeReferenceByIndex(0)
+            onTriggered: {
+                control.changeReferenceByIndex(0);
+                control.returnViewerFocusAfterClose = true;
+            }
         }
         VcsMenuItem {
             text: qsTr("Source B")
             visible: control.sourceCount > 1
             checkable: true
             checked: control.canonicalSourceIndex === 1
-            onTriggered: control.changeReferenceByIndex(1)
+            onTriggered: {
+                control.changeReferenceByIndex(1);
+                control.returnViewerFocusAfterClose = true;
+            }
         }
         VcsMenuItem {
             text: qsTr("Source C")
             visible: control.sourceCount > 2
             checkable: true
             checked: control.canonicalSourceIndex === 2
-            onTriggered: control.changeReferenceByIndex(2)
+            onTriggered: {
+                control.changeReferenceByIndex(2);
+                control.returnViewerFocusAfterClose = true;
+            }
         }
     }
     VcsMenuSeparator {
@@ -131,10 +158,16 @@ VcsMenu {
         objectName: "contextInfoAction"
         text: qsTr("Inspector and media info")
         visible: control.sourceCount > 0
-        onTriggered: control.inspectorRequested()
+        onTriggered: {
+            control.inspectorRequested();
+            control.returnViewerFocusAfterClose = true;
+        }
     }
     VcsMenuItem {
         text: control.fullScreen ? qsTr("Exit full screen") : qsTr("Full screen")
-        onTriggered: control.fullScreenRequested()
+        onTriggered: {
+            control.fullScreenRequested();
+            control.returnViewerFocusAfterClose = true;
+        }
     }
 }

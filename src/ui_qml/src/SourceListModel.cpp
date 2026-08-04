@@ -45,6 +45,8 @@ QVariant SourceListModel::data(const QModelIndex& index, const int role) const {
         return row.missingReason;
     case ManualOffsetRole:
         return row.manualOffset;
+    case ChangedOnDiskRole:
+        return row.changedOnDisk;
     default:
         return {};
     }
@@ -63,6 +65,7 @@ QHash<int, QByteArray> SourceListModel::roleNames() const {
         {MissingRole, QByteArrayLiteral("missing")},
         {MissingReasonRole, QByteArrayLiteral("missingReason")},
         {ManualOffsetRole, QByteArrayLiteral("manualOffset")},
+        {ChangedOnDiskRole, QByteArrayLiteral("changedOnDisk")},
     };
 }
 
@@ -122,6 +125,9 @@ void SourceListModel::setRows(std::vector<SourceListRow> rows) {
         }
         if (before.manualOffset != after.manualOffset) {
             addRole(ManualOffsetRole);
+        }
+        if (before.changedOnDisk != after.changedOnDisk) {
+            addRole(ChangedOnDiskRole);
         }
     }
     rows_ = std::move(rows);

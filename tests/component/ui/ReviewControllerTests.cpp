@@ -87,6 +87,18 @@ template <typename Predicate>
     return snapshot;
 }
 
+[[nodiscard]] domain::SourceFileIdentity
+realFileIdentity(const std::filesystem::path& path) {
+    const QFileInfo info{QString::fromStdWString(path.wstring())};
+    return domain::SourceFileIdentity{
+        .byteSize = info.exists() ? static_cast<std::uint64_t>(info.size()) : 0U,
+        .modifiedUtcMilliseconds = info.exists()
+                                       ? info.lastModified().toMSecsSinceEpoch()
+                                       : 0,
+        .fingerprintSha256 = std::string(64U, '0'),
+    };
+}
+
 [[nodiscard]] application::SessionSnapshot
 readySnapshotWithTiming(const std::vector<std::filesystem::path>& paths,
                         const std::size_t referenceIndex,
@@ -124,12 +136,7 @@ readySnapshotWithTiming(const std::vector<std::filesystem::path>& paths,
                             .d3d11VaDecode = true,
                         },
                     .timingConfidence = timingConfidence,
-                    .sourceIdentity =
-                        domain::SourceFileIdentity{
-                            .byteSize = 7U,
-                            .modifiedUtcMilliseconds = 1'234,
-                            .fingerprintSha256 = std::string(64U, static_cast<char>('a' + index)),
-                        },
+                    .sourceIdentity = realFileIdentity(paths[index]),
                 },
             .displayName = std::string{"Source "} + static_cast<char>('A' + index),
         });
@@ -832,6 +839,53 @@ TEST_F(ReviewControllerTests, ShellUsesSourceIdentityForOperationsAndRollsBackFa
     EXPECT_EQ(shell.pendingSourceIdentities(), QStringList{sourceBIdentity});
     EXPECT_TRUE(shell.changeReferenceByIdentity(sourceBIdentity));
     EXPECT_EQ(backend->submitted.size(), 2U);
+    controller.stop();
+}
+
+TEST_F(ReviewControllerTests, FrozenIdentityStaysStableWhenFileChangesOnDisk) {
+    QTemporaryDir directory;
+    ASSERT_TRUE(directory.isValid());
+    const QString sourceA = createFile(directory, QStringLiteral("frozen_a.mp4"));
+    const QString sourceB = createFile(directory, QStringLiteral("frozen_b.mp4"));
+    ASSERT_FALSE(sourceA.isEmpty());
+    ASSERT_FALSE(sourceB.isEmpty());
+
+    auto backend = std::make_shared<FakeBackend>();
+    backend->currentSnapshot =
+        readySnapshotWithSources({std::filesystem::path{sourceA.toStdWString()},
+                                  std::filesystem::path{sourceB.toStdWString()}});
+    ReviewController controller{dependenciesFor(backend)};
+    ReviewShellController shell{controller};
+
+    ASSERT_EQ(shell.activeSourceIdentities().size(), 2);
+    const QStringList frozenIdentities = shell.activeSourceIdentities();
+    const QString frozenA = frozenIdentities.at(0);
+    const QString frozenB = frozenIdentities.at(1);
+    EXPECT_FALSE(frozenA.isEmpty());
+    EXPECT_FALSE(frozenB.isEmpty());
+
+    const auto* model = controller.sources();
+    ASSERT_NE(model, nullptr);
+    ASSERT_EQ(model->rowCount(), 2);
+    EXPECT_EQ(model->data(model->index(0, 0), SourceListModel::ChangedOnDiskRole).toBool(), false);
+    EXPECT_EQ(model->data(model->index(1, 0), SourceListModel::ChangedOnDiskRole).toBool(), false);
+
+    QFile fileB{sourceB};
+    ASSERT_TRUE(fileB.open(QIODevice::Append));
+    ASSERT_EQ(fileB.write("-appended"), 9);
+    fileB.close();
+
+    controller.refreshProjection();
+
+    EXPECT_EQ(shell.activeSourceIdentities().at(0), frozenA);
+    EXPECT_EQ(shell.activeSourceIdentities().at(1), frozenB);
+    EXPECT_EQ(model->data(model->index(0, 0), SourceListModel::SourceIdentityRole).toString(),
+              frozenA);
+    EXPECT_EQ(model->data(model->index(1, 0), SourceListModel::SourceIdentityRole).toString(),
+              frozenB);
+    EXPECT_EQ(model->data(model->index(0, 0), SourceListModel::ChangedOnDiskRole).toBool(), false);
+    EXPECT_EQ(model->data(model->index(1, 0), SourceListModel::ChangedOnDiskRole).toBool(), true);
+
     controller.stop();
 }
 

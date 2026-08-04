@@ -4,7 +4,9 @@
 #include "dvs/ui/SourceIdentity.h"
 #include "dvs/ui/SourceListModel.h"
 
+#include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QMetaObject>
 #include <QSet>
 #include <QThread>
@@ -700,6 +702,18 @@ public:
         refresh();
     }
 
+    [[nodiscard]] QString frozenSourceIdentity(const QUrl& source) const {
+        if (!source.isLocalFile()) {
+            return canonicalSourceIdentity(source);
+        }
+        const QString key = QDir::cleanPath(source.toLocalFile()).toCaseFolded();
+        const auto it = frozenIdentitiesByPath_.constFind(key);
+        if (it != frozenIdentitiesByPath_.cend()) {
+            return *it;
+        }
+        return canonicalSourceIdentity(source);
+    }
+
     void clearCandidateSourceErrors() noexcept {
         if (!onOwnerThread() || stopped_) {
             return;
@@ -774,6 +788,28 @@ private:
                 return;
             }
             snapshot_ = std::move(snapshot);
+            if (snapshot_->validatedComparison != frozenComparison_) {
+                frozenComparison_ = snapshot_->validatedComparison;
+                frozenIdentitiesByPath_.clear();
+                if (frozenComparison_) {
+                    for (const domain::ComparisonSource& source :
+                         frozenComparison_->sources()) {
+                        const QString path =
+                            QString::fromStdWString(source.descriptor.normalizedPath.wstring());
+                        const QString key =
+                            QDir::cleanPath(path).toCaseFolded();
+                        const auto& identity = source.descriptor.sourceIdentity;
+                        if (identity.has_value()) {
+                            frozenIdentitiesByPath_.insert(
+                                key,
+                                composeSourceIdentity(
+                                    path,
+                                    static_cast<std::int64_t>(identity->byteSize),
+                                    identity->modifiedUtcMilliseconds));
+                        }
+                    }
+                }
+            }
             if (completedForeground.has_value() && clearCandidateErrors &&
                 completedForeground->outcome == application::CommandOutcome::Succeeded) {
                 candidateSourceAErrorKey_.clear();
@@ -1201,7 +1237,26 @@ private:
                     if (sourceDescriptor != snapshot_->validatedComparison->sources().end()) {
                         const QString path = QString::fromStdWString(
                             sourceDescriptor->descriptor.normalizedPath.wstring());
-                        row.sourceIdentity = canonicalSourceIdentity(QUrl::fromLocalFile(path));
+                        const QString frozenKey = QDir::cleanPath(path).toCaseFolded();
+                        const auto frozenIt = frozenIdentitiesByPath_.constFind(frozenKey);
+                        if (frozenIt != frozenIdentitiesByPath_.cend()) {
+                            row.sourceIdentity = *frozenIt;
+                        } else {
+                            row.sourceIdentity =
+                                canonicalSourceIdentity(QUrl::fromLocalFile(path));
+                        }
+                        const QFileInfo liveInfo{path};
+                        const auto& descriptorIdentity =
+                            sourceDescriptor->descriptor.sourceIdentity;
+                        if (!liveInfo.exists() || !descriptorIdentity.has_value()) {
+                            row.changedOnDisk = !liveInfo.exists();
+                        } else {
+                            row.changedOnDisk =
+                                static_cast<std::uint64_t>(liveInfo.size()) !=
+                                    descriptorIdentity->byteSize ||
+                                liveInfo.lastModified().toMSecsSinceEpoch() !=
+                                    descriptorIdentity->modifiedUtcMilliseconds;
+                        }
                     }
                 }
                 if (presented != snapshot_->presentedSources.end()) {
@@ -1460,6 +1515,8 @@ private:
     std::uint64_t lastSubmittedCommandId_ = 0U;
     bool stopped_ = false;
     ReviewView view_;
+    std::shared_ptr<const domain::ValidatedComparisonSet> frozenComparison_;
+    QHash<QString, QString> frozenIdentitiesByPath_;
 };
 
 ReviewController::ReviewController(Dependencies dependencies, QObject* const parent)
@@ -1852,6 +1909,10 @@ bool ReviewController::togglePlayback() {
 
 void ReviewController::refreshProjection() noexcept {
     impl_->refreshProjection();
+}
+
+QString ReviewController::frozenSourceIdentity(const QUrl& source) const {
+    return impl_->frozenSourceIdentity(source);
 }
 
 void ReviewController::stop() noexcept {

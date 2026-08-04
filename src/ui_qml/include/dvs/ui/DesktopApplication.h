@@ -68,6 +68,19 @@ public:
     [[nodiscard]] std::optional<QImage>
     captureControlForAutomation(std::string_view objectName) const;
 
+    // Opens or closes a QML Menu by invoking its open()/close() slot. Returns whether the
+    // invocation succeeded. Used by the popup pixel probe to exercise Popup.Window menus.
+    [[nodiscard]] bool openMenuForAutomation(std::string_view objectName) noexcept;
+    [[nodiscard]] bool closeMenuForAutomation(std::string_view objectName) noexcept;
+    // Returns whether the named QML Menu reports opened == true.
+    [[nodiscard]] bool menuIsOpenForAutomation(std::string_view objectName) const noexcept;
+
+    // Captures the rendered pixels of the popup top-level window that contains the named QML
+    // object. The popup pixel probe uses this to assert that Popup.Window backgrounds are fully
+    // opaque (alpha == 255) across DPI scale factors.
+    [[nodiscard]] std::optional<QImage>
+    capturePopupWindowForAutomation(std::string_view objectName) const;
+
     // Called after the runtime has detached its renderer services. Destroying the engine is the
     // scene-graph barrier that releases the render node's pinned GPU publication.
     void releaseSceneGraph() noexcept;
