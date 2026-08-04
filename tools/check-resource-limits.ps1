@@ -1,12 +1,19 @@
 [CmdletBinding()]
 param(
-    [string]$PresetPath = (Join-Path $PSScriptRoot '..\CMakePresets.json'),
+    [string]$PresetPath,
 
-    [string]$WorkflowRoot = (Join-Path $PSScriptRoot '..\.github\workflows')
+    [string]$WorkflowRoot
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($PresetPath)) {
+    $PresetPath = Join-Path $PSScriptRoot '..\CMakePresets.json'
+}
+if ([string]::IsNullOrWhiteSpace($WorkflowRoot)) {
+    $WorkflowRoot = Join-Path $PSScriptRoot '..\.github\workflows'
+}
 
 $errors = [System.Collections.Generic.List[string]]::new()
 $presets = Get-Content -LiteralPath $PresetPath -Raw | ConvertFrom-Json
@@ -70,7 +77,7 @@ foreach ($preset in $explicitTestPresets) {
 }
 
 $heavyCommandPattern = '(?m)^\s*(?:&\s+)?(?:cmake|ctest|cpack)(?:\.exe)?\s'
-$wrapperPattern = '(?m)^\s*pwsh\s+-NoProfile\s+-File\s+' +
+$wrapperPattern = '(?m)^\s*(?:pwsh|powershell(?:\.exe)?)\s+-NoProfile\s+-File\s+' +
     '\.\\tools\\invoke-low-impact\.ps1\s'
 $runBlockPattern = '(?ms)^\s*run:\s*[>|]-?\s*\r?\n(?<body>(?:^\s{10,}.*(?:\r?\n|$))+)'
 $inlineRunPattern = '(?m)^\s*run:\s+(?<body>.+)$'

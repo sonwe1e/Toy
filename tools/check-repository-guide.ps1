@@ -1,10 +1,14 @@
 [CmdletBinding()]
 param(
-    [string]$GuidePath = (Join-Path $PSScriptRoot '..\AGENTS.md')
+    [string]$GuidePath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($GuidePath)) {
+    $GuidePath = Join-Path $PSScriptRoot '..\AGENTS.md'
+}
 
 if (-not (Test-Path -LiteralPath $GuidePath -PathType Leaf)) {
     Write-Error "Repository guide not found: $GuidePath"

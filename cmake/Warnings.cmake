@@ -2,17 +2,28 @@ include_guard(GLOBAL)
 
 add_library(dvs_project_warnings INTERFACE)
 target_compile_features(dvs_project_warnings INTERFACE cxx_std_20)
-target_compile_options(
-    dvs_project_warnings
-    INTERFACE
-        /W4
-        /WX
-        /permissive-
-        /Zc:__cplusplus
-        /Zc:preprocessor
-        /EHsc
-        /utf-8
-)
+if(MSVC)
+    target_compile_options(
+        dvs_project_warnings
+        INTERFACE
+            /W4
+            /WX
+            /permissive-
+            /Zc:__cplusplus
+            /Zc:preprocessor
+            /EHsc
+            /utf-8
+    )
+else()
+    target_compile_options(
+        dvs_project_warnings
+        INTERFACE
+            -Wall
+            -Wextra
+            -Wpedantic
+            -Werror
+    )
+endif()
 
 if(DVS_ENABLE_ASAN)
     string(REGEX REPLACE "(^| )[/-]RTC(1|s|u|su)($| )" " " CMAKE_CXX_FLAGS_DEBUG

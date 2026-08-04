@@ -39,7 +39,7 @@ jobs:
           ref: ${{ env.DVS_EXPECTED_SHA }}
 
       - name: Verify tested commit
-        shell: pwsh
+        shell: powershell
         run: |
           $actualSha = (git rev-parse HEAD).Trim()
           if ($actualSha -cne $env:DVS_EXPECTED_SHA) {
@@ -53,7 +53,7 @@ jobs:
           arch: x64
 
       - name: Verify pinned toolchain
-        shell: pwsh
+        shell: powershell
         run: |
           $cmakeVersion = cmake --version | Select-Object -First 1
           if ($cmakeVersion -notmatch '^cmake version 4\.4(\.|$)') {
@@ -81,7 +81,7 @@ jobs:
           Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
 
       - name: Verify hardware fixtures and runner desktop
-        shell: pwsh
+        shell: powershell
         run: |
           if (-not $env:DVS_PERFORMANCE_FIXTURE_ROOT) {
             throw 'Set the repository variable DVS_PERFORMANCE_FIXTURE_ROOT.'
@@ -104,36 +104,36 @@ jobs:
           .\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
 
       - name: Configure
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
           --preset release --fresh
 
       - name: Build
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
           --build --preset release
 
       - name: D3D11VA, zero-copy, and comparison pixel tests
-        shell: pwsh
+        shell: powershell
         env:
           DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset hardware-d3d11 --output-on-failure
 
       - name: Release-blocking performance gates
-        shell: pwsh
+        shell: powershell
         env:
           DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset performance-d3d11 --output-on-failure
 
       - name: Collect performance logs
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
           $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'out\performance-results'
           New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null

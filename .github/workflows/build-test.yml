@@ -47,7 +47,7 @@ jobs:
           arch: x64
 
       - name: Verify pinned toolchain
-        shell: pwsh
+        shell: powershell
         run: |
           $cmakeVersion = cmake --version | Select-Object -First 1
           if ($cmakeVersion -notmatch '^cmake version 4\.4(\.|$)') {
@@ -75,52 +75,52 @@ jobs:
           Get-Command cl.exe, ninja.exe, clang-format.exe, clang-tidy.exe -ErrorAction Stop
 
       - name: Configure
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
           --preset ${{ matrix.preset }} --fresh
 
       - name: Build
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
           --build --preset ${{ matrix.preset }}
 
       - name: Unit tests
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset ${{ matrix.preset }} -L unit --output-on-failure
 
       - name: Component and smoke tests
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
           --preset ${{ matrix.preset }}
           -L "component|e2e" --output-on-failure
 
       - name: Run startup check
-        shell: pwsh
+        shell: powershell
         run: >-
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1
           ".\out\build\${{ matrix.preset }}\bin\VCStationCli.exe"
           --startup-check
 
       - name: Windows core-only build and tests
         if: matrix.preset == 'dev'
-        shell: pwsh
+        shell: powershell
         run: |
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset core-dev --fresh
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset core-dev
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset core-dev
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset core-dev --fresh
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset core-dev
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset core-dev
 
       - name: Windows UI model-only build and tests
         if: matrix.preset == 'dev'
-        shell: pwsh
+        shell: powershell
         run: |
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset ui-dev --fresh
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset ui-dev
-          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset ui-dev
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset ui-dev --fresh
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset ui-dev
+          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset ui-dev
 
   core-linux:
     name: Linux Clang core
@@ -146,6 +146,6 @@ jobs:
       - name: Configure, build, and test core
         shell: bash
         run: |
-          cmake --preset core-dev --fresh
-          cmake --build --preset core-dev
-          ctest --preset core-dev --output-on-failure
+          CMAKE_BUILD_PARALLEL_LEVEL=4 VCPKG_MAX_CONCURRENCY=4 cmake --preset core-dev --fresh
+          CMAKE_BUILD_PARALLEL_LEVEL=4 cmake --build --preset core-dev
+          CTEST_PARALLEL_LEVEL=1 ctest --preset core-dev --output-on-failure

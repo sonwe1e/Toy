@@ -59,8 +59,20 @@
             <line number="1" hits="1"/>
           </lines>
         </class>
+        <class name="AlignmentWorkflow"
+               filename="src/application/src/AlignmentWorkflow.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
         <class name="ComparisonExactness"
                filename="src/application/src/ComparisonExactness.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
+        <class name="CoordinatorPublication"
+               filename="src/application/src/CoordinatorPublication.cpp">
           <lines>
             <line number="1" hits="1"/>
           </lines>
@@ -71,6 +83,11 @@
           </lines>
         </class>
         <class name="PrefetchScheduler" filename="src/application/src/PrefetchScheduler.cpp">
+          <lines>
+            <line number="1" hits="1"/>
+          </lines>
+        </class>
+        <class name="PlaybackTiming" filename="src/application/src/PlaybackTiming.cpp">
           <lines>
             <line number="1" hits="1"/>
           </lines>
