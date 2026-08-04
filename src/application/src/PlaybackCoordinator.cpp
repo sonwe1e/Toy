@@ -1300,11 +1300,13 @@ private:
             return;
         }
 
+        const domain::RationalRate canonicalRate = *set.canonicalRate();
+
         captureReadySessionForOpenRollback();
         beginOpenValidated(command.context,
                            std::move(validation.value().set),
                            std::move(validation.value().report),
-                           domain::CanonicalTimeline{*set.canonicalRate()});
+                           domain::CanonicalTimeline{canonicalRate});
     }
 
     // A newer navigation target replaces an in-flight exact seek: cancel its provider scope and
