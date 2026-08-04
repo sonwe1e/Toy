@@ -134,6 +134,12 @@ selectEvidence(const std::span<const FrameLumaSignature> reference,
         float activity = gradientDistance(reference[index],
                                           FrameLumaSignature{
                                               .frameId = reference[index].frameId,
+                                              .displayTime = std::nullopt,
+                                              .luma = {},
+                                              .detailBlocks = {},
+                                              .sobelBlocks = {},
+                                              .normalizedVariance = 0.0F,
+                                              .perceptualHash = 0,
                                           });
         if (index > 0U) {
             activity += normalizedLumaDifference(reference[index - 1U], reference[index]);
@@ -737,8 +743,13 @@ alignFrameSequences(const domain::SourceId targetSourceId,
 
         SequenceAlignmentResult result{
             .sourceId = targetSourceId,
+            .entries = {},
             .anomalies = std::move(anomalies),
+            .segments = {},
             .totalCost = end->cost,
+            .meanMatchCost = 1.0F,
+            .confidence = 0.0F,
+            .autoApplicable = false,
         };
         result.entries.reserve(reference.size());
         float totalMatchCost = 0.0F;

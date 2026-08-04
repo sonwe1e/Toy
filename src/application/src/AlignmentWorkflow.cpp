@@ -14,7 +14,10 @@ constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
 SequenceAlignmentSummary summarizeSequenceAlignment(const SequenceAlignmentResult& result) {
     SequenceAlignmentSummary summary{
         .sourceId = result.sourceId,
+        .anomalies = {},
         .anomalyCount = result.anomalies.size(),
+        .lowConfidenceRuns = {},
+        .segments = {},
         .totalCost = result.totalCost,
         .meanMatchCost = result.meanMatchCost,
         .confidence = result.confidence,
