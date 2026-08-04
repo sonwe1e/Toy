@@ -18,20 +18,47 @@ function(_dvs_allowed_dependencies target outputVariable)
         set(allowed)
     elseif(target STREQUAL "dvs_application")
         set(allowed dvs_domain)
-    elseif(target STREQUAL "dvs_platform_windows")
+    elseif(target STREQUAL "dvs_presentation_contract")
+        set(allowed)
+    elseif(target STREQUAL "dvs_windows_support")
         set(allowed dvs_application)
-    elseif(target MATCHES
-           "^dvs_(media_ffmpeg|persistence_json|ui_qml)$")
-        set(allowed dvs_application dvs_platform_windows)
+    elseif(target STREQUAL "dvs_graphics_d3d11")
+        set(allowed dvs_application dvs_presentation_contract)
+    elseif(target STREQUAL "dvs_platform_windows")
+        set(allowed dvs_windows_support dvs_graphics_d3d11)
+    elseif(target STREQUAL "dvs_ui_models")
+        set(allowed dvs_application dvs_presentation_contract)
+    elseif(target STREQUAL "dvs_ui_d3d11_bridge")
+        set(
+            allowed
+            dvs_ui_models
+            dvs_graphics_d3d11
+            dvs_presentation_contract
+        )
+    elseif(target STREQUAL "dvs_ui_qml")
+        set(allowed dvs_ui_models dvs_ui_d3d11_bridge)
+    elseif(target STREQUAL "dvs_media_ffmpeg")
+        set(
+            allowed
+            dvs_application
+            dvs_windows_support
+            dvs_graphics_d3d11
+        )
+    elseif(target STREQUAL "dvs_persistence_json")
+        set(allowed dvs_application dvs_windows_support)
     elseif(target STREQUAL "VCStationShell")
         set(allowed)
     elseif(target MATCHES "^VCStation(Cli)?$")
         set(
             allowed
             dvs_platform_windows
+            dvs_windows_support
+            dvs_graphics_d3d11
             dvs_media_ffmpeg
             dvs_persistence_json
             dvs_ui_qml
+            dvs_ui_models
+            dvs_ui_d3d11_bridge
         )
     else()
         message(FATAL_ERROR "No architecture rule exists for target: ${target}")

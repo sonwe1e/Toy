@@ -33,6 +33,38 @@ Item {
                 text: "Nested action"
             }
         }
+
+        Dvs.VcsRadioMenuItem {
+            id: radioMenuItem
+
+            objectName: "radioMenuItem"
+            text: "Radio action"
+            checked: true
+        }
+
+        Dvs.VcsMenuItem {
+            id: checkMenuItem
+
+            objectName: "checkMenuItem"
+            text: "Check action"
+            checkable: true
+            checked: true
+        }
+
+        Dvs.VcsMenuItem {
+            id: hiddenMenuItem
+
+            objectName: "hiddenMenuItem"
+            text: "Hidden action"
+            visible: false
+        }
+
+        Dvs.VcsMenuSeparator {
+            id: hiddenSeparator
+
+            objectName: "hiddenSeparator"
+            visible: false
+        }
     }
 
     TestCase {
@@ -62,6 +94,52 @@ Item {
             tryCompare(nestedMenu, "opened", true);
             verify(nestedMenu.x >= 0);
             verify(nestedMenu.y >= 0);
+        }
+
+        function test_disabled_menu_rejects_programmatic_open() {
+            rootMenu.enabled = false;
+            rootMenu.open();
+            wait(0);
+            compare(rootMenu.opened, false);
+            rootMenu.enabled = true;
+        }
+
+        function test_radio_and_checkbox_indicators_keep_distinct_semantics() {
+            rootMenu.popup(root, 24, 24);
+            tryCompare(rootMenu, "opened", true);
+            const radioIndicator = findChild(rootMenu, "radioMenuItemIndicator");
+            const radioDot = findChild(rootMenu, "radioMenuItemRadioDot");
+            const checkIndicator = findChild(rootMenu, "checkMenuItemIndicator");
+            const checkDot = findChild(rootMenu, "checkMenuItemRadioDot");
+            verify(radioIndicator !== null);
+            verify(radioDot !== null);
+            verify(checkIndicator !== null);
+            verify(checkDot !== null);
+
+            compare(radioMenuItem.radioIndicator, true);
+            compare(radioMenuItem.autoExclusive, true);
+            compare(radioMenuItem.checked, true);
+            compare(radioIndicator.radius, radioIndicator.width / 2);
+            compare(radioDot.visible, true);
+            compare(checkMenuItem.radioIndicator, false);
+            compare(checkIndicator.radius, 3);
+            compare(checkDot.visible, false);
+        }
+
+        function test_hidden_rows_and_separators_collapse_to_zero_height() {
+            compare(hiddenMenuItem.implicitHeight, 0);
+            compare(hiddenMenuItem.height, 0);
+            compare(hiddenSeparator.implicitHeight, 0);
+            compare(hiddenSeparator.height, 0);
+
+            nestedMenu.menuItemVisible = false;
+            wait(0);
+            const nestedRow = rootMenu.itemAt(1);
+            verify(nestedRow !== null);
+            compare(nestedRow.visible, false);
+            compare(nestedRow.implicitHeight, 0);
+            compare(nestedRow.height, 0);
+            nestedMenu.menuItemVisible = true;
         }
 
         function test_escape_closes_popup() {

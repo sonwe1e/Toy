@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dvs/domain/MediaDescriptor.h"
+#include "dvs/presentation/ComparisonContract.h"
 
 #include <array>
 #include <cstdint>
@@ -60,51 +61,12 @@ struct D3dScissorRect final {
     [[nodiscard]] constexpr bool operator==(const D3dScissorRect&) const = default;
 };
 
-enum class SurfaceViewMode : std::uint8_t {
-    SideBySide = 0,
-    ThreeUp = 1,
-    ReferenceFocus = 2,
-    Difference = 3,
-    AnalysisGrid = 4,
-    Wipe = 5,
-    Single = 6,
-};
-
-enum class SurfaceDifferenceMetric : std::uint8_t {
-    RgbAbsolute,
-    Luma,
-    Chroma,
-    Heatmap,
-    ExactPlanes,
-};
-
-enum class SurfaceDifferenceGain : std::uint8_t {
-    Gain1x,
-    Gain2x,
-    Gain4x,
-    Gain8x,
-    Gain16x,
-};
-
-// Selects which pair of source slots the difference view compares (USERPLAN 7): any two
-// loaded sources may form the difference edge. Slot indices follow session source order.
-enum class SurfaceDifferenceEdge : std::uint8_t {
-    Between0And1,
-    Between0And2,
-    Between1And2,
-};
-
-enum class SurfaceDifferenceFilter : std::uint8_t {
-    Nearest,
-    Bilinear,
-    Bicubic,
-};
-
-enum class SurfaceThresholdPolicy : std::uint8_t {
-    LumaOnly,
-    AnyChannel,
-    AllChannels,
-};
+using SurfaceViewMode = presentation::ViewMode;
+using SurfaceDifferenceMetric = presentation::DifferenceMetric;
+using SurfaceDifferenceGain = presentation::DifferenceGain;
+using SurfaceDifferenceEdge = presentation::DifferenceEdge;
+using SurfaceDifferenceFilter = presentation::DifferenceFilter;
+using SurfaceThresholdPolicy = presentation::ThresholdPolicy;
 
 struct SurfaceViewTransform final {
     float centerX = 0.5F;

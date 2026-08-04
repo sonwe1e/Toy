@@ -13,11 +13,10 @@ target_link_libraries(dvs_app_unit_tests PRIVATE Qt6::Core Qt6::Network dvs::tes
 dvs_apply_project_warnings(dvs_app_unit_tests)
 set_target_properties(dvs_app_unit_tests PROPERTIES FOLDER "Tests/Unit/App")
 
-gtest_discover_tests(
-    dvs_app_unit_tests
+dvs_add_gtest(
+    TARGET dvs_app_unit_tests
     TEST_PREFIX "app."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "unit;app"
-        TIMEOUT 10
+    LAYER unit
+    MODULE app
+    TIMEOUT 10
 )

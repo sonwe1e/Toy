@@ -20,15 +20,15 @@ target_include_directories(
 dvs_apply_project_warnings(dvs_ui_component_tests)
 set_target_properties(dvs_ui_component_tests PROPERTIES FOLDER "Tests/Component/UI")
 
-gtest_discover_tests(
-    dvs_ui_component_tests
+dvs_add_gtest(
+    TARGET dvs_ui_component_tests
     TEST_PREFIX "ui."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;ui_qml"
-        TIMEOUT 10
+    LAYER component
+    MODULE ui_qml
+    TIMEOUT 10
 )
 
+if(DVS_BUILD_ADAPTERS)
 add_executable(dvs_main_qml_contract_tests MainQmlContractTests.cpp)
 target_link_libraries(
     dvs_main_qml_contract_tests
@@ -44,15 +44,14 @@ set_target_properties(
     PROPERTIES FOLDER "Tests/Component/UI"
 )
 
-gtest_discover_tests(
-    dvs_main_qml_contract_tests
+dvs_add_gtest(
+    TARGET dvs_main_qml_contract_tests
     TEST_PREFIX "ui."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;ui_qml"
-        TIMEOUT 20
-        RUN_SERIAL TRUE
-        ENVIRONMENT "QSG_RENDER_LOOP=basic;QT_QUICK_CONTROLS_STYLE=Basic"
+    LAYER component
+    MODULE ui_qml
+    TIMEOUT 20
+    RUN_SERIAL
+    ENVIRONMENT QSG_RENDER_LOOP=basic QT_QUICK_CONTROLS_STYLE=Basic
 )
 
 set(dvs_toolbar_combo_qml_test "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_toolbar_combo.qml")
@@ -170,3 +169,25 @@ foreach(dvs_menu_qml_test IN ITEMS vcs_menu application_menu_bar active_source_s
         endforeach()
     endforeach()
 endforeach()
+
+foreach(dvs_qml_style IN ITEMS Basic Windows)
+    foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+        string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
+        add_test(
+            NAME "ui.vcs_tool_tip.${dvs_qml_style}.scale-${dvs_scale_name}"
+            COMMAND
+                "$<TARGET_FILE:Qt6::qmltestrunner>"
+                -input "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_vcs_tool_tip.qml"
+        )
+        set_tests_properties(
+            "ui.vcs_tool_tip.${dvs_qml_style}.scale-${dvs_scale_name}"
+            PROPERTIES
+                LABELS "component;ui_qml"
+                TIMEOUT 20
+                RUN_SERIAL TRUE
+                ENVIRONMENT
+                    "QT_QUICK_CONTROLS_STYLE=${dvs_qml_style};QSG_RENDER_LOOP=basic;QT_SCALE_FACTOR=${dvs_scale_factor}"
+        )
+    endforeach()
+endforeach()
+endif()

@@ -31,11 +31,11 @@ target_include_directories(
 dvs_apply_project_warnings(dvs_media_component_tests)
 set_target_properties(dvs_media_component_tests PROPERTIES FOLDER "Tests/Component/Media")
 
-gtest_discover_tests(
-    dvs_media_component_tests
+dvs_add_gtest(
+    TARGET dvs_media_component_tests
     TEST_PREFIX "media."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;media_ffmpeg;media_software"
-        TIMEOUT 10
+    LAYER component
+    MODULE media_ffmpeg
+    EXTRA_LABELS media_software
+    TIMEOUT 10
 )

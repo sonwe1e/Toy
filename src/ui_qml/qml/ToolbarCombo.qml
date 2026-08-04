@@ -2,20 +2,21 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Templates as T
+import "VcsTheme.js" as Theme
 
 T.ComboBox {
     id: control
 
     property bool blocksGlobalMediaShortcuts: true
     property bool popupInputContext: popup.visible
-    property color panelColor: "#1d2635"
-    property color disabledPanelColor: "#202938"
-    property color textColor: "#f3f6fb"
-    property color disabledTextColor: "#93a2ba"
-    property color borderColor: "#303d51"
-    property color focusColor: "#4b8df8"
-    property color highlightColor: "#285da9"
-    property color highlightedTextColor: "#f3f6fb"
+    property color panelColor: Theme.raisedPanel
+    property color disabledPanelColor: Theme.disabledPanel
+    property color textColor: Theme.primaryText
+    property color disabledTextColor: Theme.mutedText
+    property color borderColor: Theme.border
+    property color focusColor: Theme.accent
+    property color highlightColor: Theme.controlPressed
+    property color highlightedTextColor: Theme.primaryText
 
     implicitWidth: Math.max(implicitBackgroundWidth + leftInset + rightInset, implicitContentWidth + leftPadding + rightPadding)
     implicitHeight: Math.max(implicitBackgroundHeight + topInset + bottomInset, implicitContentHeight + topPadding + bottomPadding, implicitIndicatorHeight + topPadding + bottomPadding)

@@ -24,13 +24,13 @@ set_target_properties(
     PROPERTIES FOLDER "Tests/Component/ShellWindows"
 )
 
-gtest_discover_tests(
-    dvs_shell_component_tests
+dvs_add_gtest(
+    TARGET dvs_shell_component_tests
     TEST_PREFIX "shell_windows."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;shell_windows"
-        TIMEOUT 15
-        ENVIRONMENT
-            "DVS_SHELL_TEST_DLL=$<TARGET_FILE:VCStationShell>;DVS_SHELL_TEST_PROBE_EXE=$<TARGET_FILE:dvs_shell_invoke_probe>"
+    LAYER component
+    MODULE shell_windows
+    TIMEOUT 15
+    ENVIRONMENT
+        "DVS_SHELL_TEST_DLL=$<TARGET_FILE:VCStationShell>"
+        "DVS_SHELL_TEST_PROBE_EXE=$<TARGET_FILE:dvs_shell_invoke_probe>"
 )

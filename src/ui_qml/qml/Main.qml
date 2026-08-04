@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
+import "VcsTheme.js" as Theme
 // Dvs.Ui is registered by the C++ host before this document is loaded.
 // qmllint disable import
 import Dvs.Ui 1.0
@@ -18,15 +19,15 @@ ApplicationWindow {
     minimumHeight: 640
     visible: false
     title: qsTr("VCStation — VideoCompareStation")
-    color: "#0d121b"
+    color: Theme.window
 
-    readonly property color panelColor: "#171e2a"
-    readonly property color raisedPanelColor: "#1d2635"
-    readonly property color borderColor: "#303d51"
-    readonly property color accentColor: "#4b8df8"
-    readonly property color mutedTextColor: "#93a2ba"
-    readonly property color primaryTextColor: "#f3f6fb"
-    readonly property color errorColor: "#f87171"
+    readonly property color panelColor: Theme.menu
+    readonly property color raisedPanelColor: Theme.raisedPanel
+    readonly property color borderColor: Theme.border
+    readonly property color accentColor: Theme.accent
+    readonly property color mutedTextColor: Theme.mutedText
+    readonly property color primaryTextColor: Theme.primaryText
+    readonly property color errorColor: Theme.error
 
     palette {
         window: root.panelColor
@@ -37,16 +38,22 @@ ApplicationWindow {
         button: root.raisedPanelColor
         buttonText: root.primaryTextColor
         highlight: root.accentColor
-        highlightedText: "#ffffff"
+        highlightedText: Theme.inverseText
         toolTipBase: root.raisedPanelColor
         toolTipText: root.primaryTextColor
     }
 
-    // reviewController is provided by the C++ application context.
+    // reviewFacade is the stable composition boundary provided by the C++ host.
     // qmllint disable unqualified
-    readonly property var controller: reviewController
-    readonly property var preferences: reviewPreferences
-    readonly property var shell: reviewSession
+    readonly property var facade: reviewFacade
+    readonly property var controller: facade ? facade.playback : null
+    readonly property var preferences: facade ? facade.comparison : null
+    readonly property var shell: facade ? facade.shell : null
+
+    ReviewMessageCatalog {
+        id: reviewMessageCatalog
+    }
+    readonly property var messageCatalog: reviewMessageCatalog
     // qmllint enable unqualified
 
     readonly property int referenceSourceIndex: controller ? Number(controller.referenceSourceIndex) : -1
@@ -412,23 +419,6 @@ ApplicationWindow {
             shell.moveStagedSource(first, second);
     }
 
-    function droppedUrlError(errorKey, detail) {
-        switch (errorKey) {
-        case "drop-empty":
-            return qsTr("No files were dropped.");
-        case "drop-too-many":
-            return qsTr("Drop at most three video files.");
-        case "drop-invalid-local":
-            return qsTr("Only local files can be dropped.");
-        case "drop-missing":
-            return qsTr("Dropped file is missing: %1").arg(detail);
-        case "drop-duplicate":
-            return qsTr("The same file was dropped more than once: %1").arg(detail);
-        default:
-            return qsTr("The dropped videos could not be opened.");
-        }
-    }
-
     function resetReviewVisualState() {
         sourceOffsetValues = {};
         if (shell)
@@ -515,7 +505,7 @@ ApplicationWindow {
     function reviewUrls(urls, allowSingleSourceAppend) {
         const reviewed = controller.handleDroppedUrls(urls);
         if (!reviewed.accepted) {
-            dropError = droppedUrlError(reviewed.errorKey, reviewed.detail);
+            dropError = root.messageCatalog.droppedUrlError(reviewed.errorKey, reviewed.detail);
             return;
         }
         const normalizedUrls = reviewed.urls;
@@ -564,40 +554,6 @@ ApplicationWindow {
         pendingNewReviewWantsThreeUp = Boolean(shell && shell.stagedSources.length === 3);
         if (shell && !shell.openStagedSources(pendingComparisonPreservesPosition && sourceCount > 0))
             pendingNewReviewWantsThreeUp = false;
-    }
-
-    function intentKindText(kind, sourceCountValue) {
-        switch (Number(kind)) {
-        case 0:
-            return qsTr("Open %1 video(s)").arg(sourceCountValue);
-        case 1:
-            return qsTr("Replace videos");
-        case 2:
-            return qsTr("Add video");
-        case 3:
-            return qsTr("Remove video");
-        case 4:
-            return qsTr("Change reference");
-        case 5:
-            return qsTr("Close videos");
-        default:
-            return qsTr("Review request");
-        }
-    }
-
-    function intentErrorText(error) {
-        switch (Number(error)) {
-        case 2:
-            return qsTr("The review request queue is full.");
-        case 3:
-            return qsTr("The video list changed; please repeat the operation.");
-        case 4:
-            return qsTr("The review request could not be started.");
-        case 5:
-            return qsTr("The review request failed.");
-        default:
-            return qsTr("The review request was rejected.");
-        }
     }
 
     function activeSourceUrls() {
@@ -776,76 +732,14 @@ ApplicationWindow {
     function errorDetails() {
         const errors = [];
         if (sourceAErrorKey.length > 0)
-            errors.push(qsTr("Source A: %1").arg(errorMessage(sourceAErrorKey)));
+            errors.push(qsTr("Source A: %1").arg(root.messageCatalog.errorMessage(sourceAErrorKey)));
         if (sourceBErrorKey.length > 0)
-            errors.push(qsTr("Source B: %1").arg(errorMessage(sourceBErrorKey)));
+            errors.push(qsTr("Source B: %1").arg(root.messageCatalog.errorMessage(sourceBErrorKey)));
         if (sourceCErrorKey.length > 0)
-            errors.push(qsTr("Source C: %1").arg(errorMessage(sourceCErrorKey)));
+            errors.push(qsTr("Source C: %1").arg(root.messageCatalog.errorMessage(sourceCErrorKey)));
         if (pairErrorKey.length > 0)
-            errors.push(qsTr("Comparison: %1").arg(errorMessage(pairErrorKey)));
+            errors.push(qsTr("Comparison: %1").arg(root.messageCatalog.errorMessage(pairErrorKey)));
         return errors.join(" | ");
-    }
-
-    function errorMessage(errorKey) {
-        switch (errorKey) {
-        case "invalid-argument":
-            return qsTr("The request is invalid.");
-        case "invalid-rate":
-            return qsTr("The media frame rate is invalid.");
-        case "invalid-frame-id":
-        case "frame-out-of-range":
-            return qsTr("The requested frame is outside the available range.");
-        case "invalid-frame-count":
-            return qsTr("The media frame count is invalid.");
-        case "invalid-dimensions":
-            return qsTr("The media dimensions are invalid.");
-        case "invalid-duration":
-            return qsTr("The media duration is invalid.");
-        case "invalid-media-descriptor":
-            return qsTr("The media description is incomplete or invalid.");
-        case "arithmetic-overflow":
-            return qsTr("The media timing values are too large to process safely.");
-        case "source-frame-rate-mismatch":
-            return qsTr("Source frame rates differ; inspect alignment before comparing.");
-        case "source-frame-count-mismatch":
-            return qsTr("Source frame counts differ; unavailable mapped frames stay Missing.");
-        case "source-duration-mismatch":
-            return qsTr("Source durations differ; inspect alignment before comparing.");
-        case "source-resolution-mismatch":
-            return qsTr("Source resolutions differ; visual comparison is resampled.");
-        case "source-color-metadata-mismatch":
-            return qsTr("Source color metadata differs; comparison applies color conversion.");
-        case "source-missing":
-            return qsTr("The selected source file is missing or cannot be read.");
-        case "source-fingerprint-mismatch":
-            return qsTr("The source file no longer matches its recorded identity.");
-        case "file-io":
-            return qsTr("The file could not be read or written.");
-        case "media-open-failed":
-            return qsTr("The media file could not be opened.");
-        case "media-probe-failed":
-            return qsTr("The media information could not be read.");
-        case "invalid-cfr-timing":
-            return qsTr("The media does not have supported constant-frame-rate timing.");
-        case "unsupported-codec":
-            return qsTr("The media codec is not supported.");
-        case "unsupported-pixel-format":
-            return qsTr("The media pixel format is not supported.");
-        case "media-decode-failed":
-            return qsTr("A video frame could not be decoded.");
-        case "frame-timeline-invalid":
-            return qsTr("The video timeline cannot address every frame exactly.");
-        case "frame-budget-exceeded":
-            return qsTr("The frame memory limit was exceeded.");
-        case "graphics-unavailable":
-            return qsTr("The graphics device is unavailable.");
-        case "graphics-device-lost":
-            return qsTr("The graphics device was reset or disconnected.");
-        case "frame-presentation-timed-out":
-            return qsTr("The requested frame was not displayed in time.");
-        default:
-            return qsTr("An unexpected media error occurred.");
-        }
     }
 
     function compatibilityDetails() {
@@ -859,73 +753,9 @@ ApplicationWindow {
                 severity = qsTr("incompatible");
             else if (Number(finding.severity) === 2)
                 severity = qsTr("alignment required");
-            messages.push(qsTr("%1: %2 — %3").arg(labels.join(" ↔ ")).arg(errorMessage(finding.code)).arg(severity));
+            messages.push(qsTr("%1: %2 — %3").arg(labels.join(" ↔ ")).arg(root.messageCatalog.errorMessage(finding.code)).arg(severity));
         }
         return messages.join(" | ");
-    }
-
-    component ActionButton: Button {
-        id: control
-
-        property bool blocksGlobalMediaShortcuts: true
-        property string helpText: ""
-
-        implicitWidth: Math.max(112, contentItem.implicitWidth + 34)
-        implicitHeight: 40
-        leftPadding: 17
-        rightPadding: 17
-        activeFocusOnTab: true
-
-        contentItem: Text {
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            text: control.text
-            color: control.enabled ? root.primaryTextColor : "#637086"
-            font.pixelSize: 13
-            font.weight: Font.DemiBold
-            elide: Text.ElideRight
-        }
-
-        background: Rectangle {
-            radius: 5
-            color: !control.enabled ? "#202938" : (control.down ? "#285da9" : (control.hovered ? "#2d69bf" : "#253247"))
-            border.width: control.activeFocus ? 2 : 1
-            border.color: control.activeFocus ? root.accentColor : (control.enabled ? "#3b4d67" : "#2a3444")
-        }
-
-        ToolTip.visible: hovered && helpText.length > 0
-        ToolTip.delay: 500
-        ToolTip.text: helpText
-    }
-
-    component OffsetSpinBox: SpinBox {
-        id: offsetControl
-
-        property bool blocksGlobalMediaShortcuts: true
-        property bool textEditingInputContext: true
-        from: -16
-        to: 16
-        editable: true
-        implicitWidth: 76
-        implicitHeight: 34
-
-        contentItem: TextInput {
-            text: offsetControl.textFromValue(offsetControl.value, offsetControl.locale)
-            color: offsetControl.enabled ? root.primaryTextColor : root.mutedTextColor
-            selectionColor: root.accentColor
-            selectedTextColor: "white"
-            horizontalAlignment: TextInput.AlignHCenter
-            verticalAlignment: TextInput.AlignVCenter
-            readOnly: !offsetControl.editable
-            validator: offsetControl.validator
-            inputMethodHints: Qt.ImhFormattedNumbersOnly
-        }
-
-        background: Rectangle {
-            radius: 4
-            color: root.raisedPanelColor
-            border.color: offsetControl.activeFocus ? root.accentColor : root.borderColor
-        }
     }
 
     menuBar: ApplicationMenuBar {
@@ -1040,16 +870,16 @@ ApplicationWindow {
 
         function onIntentEvent(intentId, status, kind, error, sourceCountValue) {
             if (Number(status) === 5)
-                root.showIntentMessage(root.intentErrorText(error));
+                root.showIntentMessage(root.messageCatalog.intentErrorText(error));
             else if (Number(status) === 6)
-                root.showIntentMessage(qsTr("A newer request replaced %1.").arg(root.intentKindText(kind, sourceCountValue)));
+                root.showIntentMessage(qsTr("A newer request replaced %1.").arg(root.messageCatalog.intentKindText(kind, sourceCountValue)));
         }
 
         function onIntentFinished(intentId, kind, outcome, errorKey) {
             if (Number(outcome) !== 0) {
                 if (Number(kind) === 0)
                     root.pendingNewReviewWantsThreeUp = false;
-                root.showIntentMessage(errorKey.length > 0 ? root.errorMessage(errorKey) : qsTr("The review request failed."));
+                root.showIntentMessage(errorKey.length > 0 ? root.messageCatalog.errorMessage(errorKey) : qsTr("The review request failed."));
                 return;
             }
             if (Number(kind) === 0) {
@@ -1157,11 +987,9 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                ComboBox {
+                ToolbarCombo {
                     id: anchorSource
 
-                    property bool blocksGlobalMediaShortcuts: true
-                    property bool popupInputContext: popup.visible
                     objectName: "anchorSourceCombo"
                     width: 90
                     model: anchorDialog.sourceChoices
@@ -1175,11 +1003,9 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                SpinBox {
+                ReviewOffsetSpinBox {
                     id: canonicalAnchorFrame
 
-                    property bool blocksGlobalMediaShortcuts: true
-                    property bool textEditingInputContext: true
                     objectName: "canonicalAnchorFrame"
                     from: 1
                     to: Math.max(1, Math.min(2147483647, root.totalFrames))
@@ -1196,18 +1022,16 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                SpinBox {
+                ReviewOffsetSpinBox {
                     id: sourceAnchorFrame
 
-                    property bool blocksGlobalMediaShortcuts: true
-                    property bool textEditingInputContext: true
                     objectName: "sourceAnchorFrame"
                     from: 1
                     to: Math.max(1, Math.min(2147483647, root.totalFrames + 16))
                     editable: true
                 }
 
-                ActionButton {
+                ReviewActionButton {
                     objectName: "addManualAnchorButton"
                     text: qsTr("Add / replace")
                     enabled: !root.busy && anchorSource.currentIndex >= 0
@@ -1217,7 +1041,7 @@ ApplicationWindow {
                     }
                 }
 
-                ActionButton {
+                ReviewActionButton {
                     objectName: "clearManualAnchorsButton"
                     text: qsTr("Clear all")
                     enabled: !root.busy && root.manualAnchorActive
@@ -1230,7 +1054,7 @@ ApplicationWindow {
 
             Text {
                 text: root.manualAnchorStatus.length > 0 ? root.manualAnchorStatus : qsTr("No manual anchors")
-                color: root.manualAnchorActive ? "#efbf83" : root.mutedTextColor
+                color: root.manualAnchorActive ? Theme.warning : root.mutedTextColor
                 wrapMode: Text.WordWrap
                 width: parent.width
             }
@@ -1290,7 +1114,7 @@ ApplicationWindow {
         objectName: "inspectorScrim"
         z: 19
         visible: root.drawerMode
-        color: "#99060a10"
+        color: Theme.modalScrim
         anchors {
             left: parent.left
             right: parent.right
@@ -1532,7 +1356,7 @@ ApplicationWindow {
 
             Text {
                 visible: Number(intentQueuePanel.runningIntent.id || 0) > 0
-                text: qsTr("Working · %1").arg(root.intentKindText(intentQueuePanel.runningIntent.kind, intentQueuePanel.runningIntent.sourceCount))
+                text: qsTr("Working · %1").arg(root.messageCatalog.intentKindText(intentQueuePanel.runningIntent.kind, intentQueuePanel.runningIntent.sourceCount))
                 color: root.primaryTextColor
                 font.pixelSize: 12
                 elide: Text.ElideRight
@@ -1551,12 +1375,13 @@ ApplicationWindow {
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
-                ToolButton {
+                VcsToolButton {
                     id: cancelAllButton
 
                     text: qsTr("Cancel all")
                     implicitWidth: 74
                     implicitHeight: 24
+                    labelPixelSize: 11
                     onClicked: root.shell.cancelAllQueuedIntents()
                 }
             }
@@ -1571,7 +1396,7 @@ ApplicationWindow {
                     width: queueColumn.width
 
                     Text {
-                        text: root.intentKindText(queuedIntentRow.modelData.kind, queuedIntentRow.modelData.sourceCount)
+                        text: root.messageCatalog.intentKindText(queuedIntentRow.modelData.kind, queuedIntentRow.modelData.sourceCount)
                         color: root.primaryTextColor
                         font.pixelSize: 11
                         elide: Text.ElideRight
@@ -1579,12 +1404,13 @@ ApplicationWindow {
                         anchors.verticalCenter: parent.verticalCenter
                     }
 
-                    ToolButton {
+                    VcsToolButton {
                         id: cancelQueuedButton
 
                         text: qsTr("Cancel")
                         implicitWidth: 58
                         implicitHeight: 22
+                        labelPixelSize: 11
                         onClicked: root.shell.cancelQueuedIntent(queuedIntentRow.modelData.id)
                     }
                 }

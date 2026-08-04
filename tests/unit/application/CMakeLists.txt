@@ -19,11 +19,10 @@ target_link_libraries(
 dvs_apply_project_warnings(dvs_application_unit_tests)
 set_target_properties(dvs_application_unit_tests PROPERTIES FOLDER "Tests/Unit/Application")
 
-gtest_discover_tests(
-    dvs_application_unit_tests
+dvs_add_gtest(
+    TARGET dvs_application_unit_tests
     TEST_PREFIX "application."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "unit;application"
-        TIMEOUT 10
+    LAYER unit
+    MODULE application
+    TIMEOUT 10
 )

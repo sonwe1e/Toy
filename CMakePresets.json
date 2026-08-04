@@ -49,6 +49,44 @@
       }
     },
     {
+      "name": "core-dev",
+      "displayName": "Platform-neutral core development build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/core-dev",
+      "installDir": "${sourceDir}/out/install/core-dev",
+      "cacheVariables": {
+        "BUILD_TESTING": true,
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": true,
+        "CMAKE_TOOLCHAIN_FILE": {
+          "type": "FILEPATH",
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        },
+        "DVS_BUILD_ADAPTERS": false,
+        "DVS_BUILD_DESKTOP": false,
+        "DVS_BUILD_UI": false,
+        "DVS_ENABLE_QUALITY_TOOLS": false,
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/vcpkg-core",
+        "VCPKG_MANIFEST_INSTALL": true,
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": true
+      }
+    },
+    {
+      "name": "ui-dev",
+      "displayName": "Qt view-model development build",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "DVS_BUILD_ADAPTERS": false,
+        "DVS_BUILD_DESKTOP": false,
+        "DVS_BUILD_UI": true,
+        "DVS_ENABLE_QUALITY_TOOLS": false,
+        "VCPKG_MANIFEST_FEATURES": "ui-models",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": true,
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/out/vcpkg-ui"
+      }
+    },
+    {
       "name": "dev-coverage",
       "displayName": "Debug coverage build",
       "inherits": "base",
@@ -81,6 +119,16 @@
   ],
   "buildPresets": [
     {
+      "name": "core-dev",
+      "configurePreset": "core-dev",
+      "jobs": 4
+    },
+    {
+      "name": "ui-dev",
+      "configurePreset": "ui-dev",
+      "jobs": 4
+    },
+    {
       "name": "dev",
       "configurePreset": "dev",
       "jobs": 4
@@ -102,6 +150,28 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "core-dev",
+      "configurePreset": "core-dev",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "ui-dev",
+      "configurePreset": "ui-dev",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "jobs": 1,
+        "noTestsAction": "error"
+      }
+    },
     {
       "name": "dev",
       "configurePreset": "dev",

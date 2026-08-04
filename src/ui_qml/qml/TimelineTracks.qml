@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 Item {
     id: control
@@ -56,7 +56,7 @@ Item {
 
         height: 5
         radius: 2.5
-        color: "#303d51"
+        color: Theme.border
         anchors {
             left: parent.left
             right: parent.right
@@ -101,7 +101,7 @@ Item {
                 id: markerHover
             }
 
-            ToolTip {
+            VcsToolTip {
                 visible: markerHover.hovered
                 text: qsTr("Source %1 · %2\nFrame %3\nConfidence %4%").arg(String(marker.modelData.source)).arg(marker.kind).arg(Number(marker.modelData.frame) + 1).arg(Number(marker.modelData.confidence))
             }
@@ -112,7 +112,7 @@ Item {
         width: Math.max(0, Math.min(mainRail.width, control.positionForFrame(Math.round(control.progress * Math.max(0, control.totalFrames - 1))) * mainRail.width))
         height: mainRail.height
         radius: mainRail.radius
-        color: "#4b8df8"
+        color: Theme.accent
         anchors {
             left: mainRail.left
             verticalCenter: mainRail.verticalCenter
@@ -124,7 +124,7 @@ Item {
         height: 13
         radius: 6.5
         x: Math.max(0, Math.min(control.width - width, control.positionForFrame(Math.round(control.progress * Math.max(0, control.totalFrames - 1))) * control.width - width / 2))
-        color: control.enabled ? "#4b8df8" : "#536176"
+        color: control.enabled ? Theme.accent : Theme.disabledText
         border.color: "#d8e2f2"
         anchors.verticalCenter: mainRail.verticalCenter
     }
@@ -168,7 +168,7 @@ Item {
     Text {
         visible: control.zoomFactor > 1
         text: qsTr("%1×").arg(control.zoomFactor.toFixed(1))
-        color: "#7dd3fc"
+        color: Theme.information
         font.pixelSize: 9
         anchors {
             right: parent.right

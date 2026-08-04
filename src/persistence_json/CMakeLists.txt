@@ -15,7 +15,7 @@ target_include_directories(
 target_link_libraries(
     dvs_persistence_json
     PUBLIC dvs_application
-    PRIVATE dvs_platform_windows dvs::json_dependencies
+    PRIVATE dvs_windows_support dvs::json_dependencies
 )
 
 dvs_apply_project_warnings(dvs_persistence_json)

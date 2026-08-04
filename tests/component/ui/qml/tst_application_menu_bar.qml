@@ -70,7 +70,18 @@ Item {
             findChild(menuBar, "compareMenu").close();
             findChild(menuBar, "viewMenu").close();
             menuBar.sourceCount = 2;
+            menuBar.currentViewMode = 0;
             wait(0);
+        }
+
+        function menuRowsHeight(menu) {
+            let total = 0;
+            for (let index = 0; index < menu.count; ++index) {
+                const item = menu.itemAt(index);
+                if (item)
+                    total += item.height;
+            }
+            return total;
         }
 
         function test_hides_three_source_layout_for_a_pair() {
@@ -84,6 +95,91 @@ Item {
             menuBar.sourceCount = 3;
             tryCompare(layout, "menuItemVisible", true);
             tryCompare(pair, "menuItemVisible", true);
+        }
+
+        function test_compare_modes_use_radio_indicators() {
+            const side = findChild(menuBar, "sideBySideMenuItem");
+            const wipe = findChild(menuBar, "wipeMenuItem");
+            const difference = findChild(menuBar, "differenceMenuItem");
+            verify(side !== null);
+            verify(wipe !== null);
+            verify(difference !== null);
+
+            compare(side.radioIndicator, true);
+            compare(wipe.radioIndicator, true);
+            compare(difference.radioIndicator, true);
+            compare(side.checked, true);
+            compare(wipe.checked, false);
+            compare(difference.checked, false);
+
+            menuBar.currentViewMode = 3;
+            tryCompare(side, "checked", false);
+            tryCompare(wipe, "checked", false);
+            tryCompare(difference, "checked", true);
+        }
+
+        function test_two_video_compare_menu_collapses_three_video_rows() {
+            const compareMenu = findChild(menuBar, "compareMenu");
+            verify(compareMenu !== null);
+            menuBar.sourceCount = 2;
+            compareMenu.popup(root, 24, 24);
+            tryCompare(compareMenu, "opened", true);
+
+            const modeSeparator = compareMenu.itemAt(3);
+            const layoutRow = compareMenu.itemAt(4);
+            const pairRow = compareMenu.itemAt(5);
+            const referenceRow = compareMenu.itemAt(6);
+            const inspectorSeparator = compareMenu.itemAt(7);
+            const inspectorRow = compareMenu.itemAt(8);
+            verify(modeSeparator !== null);
+            verify(layoutRow !== null);
+            verify(pairRow !== null);
+            verify(referenceRow !== null);
+            verify(inspectorSeparator !== null);
+            verify(inspectorRow !== null);
+
+            compare(modeSeparator.height, 11);
+            compare(layoutRow.visible, false);
+            compare(layoutRow.height, 0);
+            compare(pairRow.visible, false);
+            compare(pairRow.height, 0);
+            compare(referenceRow.text, "Reference");
+            compare(referenceRow.height, 35);
+            compare(inspectorSeparator.height, 11);
+            compare(inspectorRow.height, 35);
+            const compactRowsHeight = menuRowsHeight(compareMenu);
+
+            compareMenu.close();
+            tryCompare(compareMenu, "opened", false);
+            menuBar.sourceCount = 3;
+            compareMenu.popup(root, 24, 24);
+            tryCompare(compareMenu, "opened", true);
+            tryCompare(layoutRow, "height", 35);
+            tryCompare(pairRow, "height", 35);
+            compare(menuRowsHeight(compareMenu), compactRowsHeight + 70);
+        }
+
+        function test_single_video_compare_is_disabled_and_cannot_open() {
+            const compareMenu = findChild(menuBar, "compareMenu");
+            const compareButton = findChild(menuBar, "compareMenuButton");
+            verify(compareMenu !== null);
+            verify(compareButton !== null);
+
+            menuBar.sourceCount = 1;
+            tryCompare(compareMenu, "enabled", false);
+            tryCompare(compareButton, "enabled", false);
+
+            compareMenu.open();
+            wait(0);
+            compare(compareMenu.opened, false);
+
+            mouseClick(compareButton, compareButton.width / 2, compareButton.height / 2);
+            wait(0);
+            compare(compareMenu.opened, false);
+
+            keyClick(compareButton, Qt.Key_Return);
+            wait(0);
+            compare(compareMenu.opened, false);
         }
 
         function test_open_state_and_reference_use_source_identity() {

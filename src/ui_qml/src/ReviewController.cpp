@@ -792,20 +792,17 @@ private:
                 frozenComparison_ = snapshot_->validatedComparison;
                 frozenIdentitiesByPath_.clear();
                 if (frozenComparison_) {
-                    for (const domain::ComparisonSource& source :
-                         frozenComparison_->sources()) {
+                    for (const domain::ComparisonSource& source : frozenComparison_->sources()) {
                         const QString path =
                             QString::fromStdWString(source.descriptor.normalizedPath.wstring());
-                        const QString key =
-                            QDir::cleanPath(path).toCaseFolded();
+                        const QString key = QDir::cleanPath(path).toCaseFolded();
                         const auto& identity = source.descriptor.sourceIdentity;
                         if (identity.has_value()) {
                             frozenIdentitiesByPath_.insert(
                                 key,
-                                composeSourceIdentity(
-                                    path,
-                                    static_cast<std::int64_t>(identity->byteSize),
-                                    identity->modifiedUtcMilliseconds));
+                                composeSourceIdentity(path,
+                                                      static_cast<std::int64_t>(identity->byteSize),
+                                                      identity->modifiedUtcMilliseconds));
                         }
                     }
                 }
@@ -1242,8 +1239,7 @@ private:
                         if (frozenIt != frozenIdentitiesByPath_.cend()) {
                             row.sourceIdentity = *frozenIt;
                         } else {
-                            row.sourceIdentity =
-                                canonicalSourceIdentity(QUrl::fromLocalFile(path));
+                            row.sourceIdentity = canonicalSourceIdentity(QUrl::fromLocalFile(path));
                         }
                         const QFileInfo liveInfo{path};
                         const auto& descriptorIdentity =
@@ -1251,11 +1247,10 @@ private:
                         if (!liveInfo.exists() || !descriptorIdentity.has_value()) {
                             row.changedOnDisk = !liveInfo.exists();
                         } else {
-                            row.changedOnDisk =
-                                static_cast<std::uint64_t>(liveInfo.size()) !=
-                                    descriptorIdentity->byteSize ||
-                                liveInfo.lastModified().toMSecsSinceEpoch() !=
-                                    descriptorIdentity->modifiedUtcMilliseconds;
+                            row.changedOnDisk = static_cast<std::uint64_t>(liveInfo.size()) !=
+                                                    descriptorIdentity->byteSize ||
+                                                liveInfo.lastModified().toMSecsSinceEpoch() !=
+                                                    descriptorIdentity->modifiedUtcMilliseconds;
                         }
                     }
                 }

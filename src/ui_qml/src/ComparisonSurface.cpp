@@ -61,96 +61,32 @@ struct PresentationOptions final {
 
 [[nodiscard]] platform::SurfaceViewMode
 nativeViewMode(const ComparisonSurface::ViewMode value) noexcept {
-    switch (value) {
-    case ComparisonSurface::Difference:
-        return platform::SurfaceViewMode::Difference;
-    case ComparisonSurface::ThreeUp:
-        return platform::SurfaceViewMode::ThreeUp;
-    case ComparisonSurface::ReferenceFocus:
-        return platform::SurfaceViewMode::ReferenceFocus;
-    case ComparisonSurface::AnalysisGrid:
-        return platform::SurfaceViewMode::AnalysisGrid;
-    case ComparisonSurface::Wipe:
-        return platform::SurfaceViewMode::Wipe;
-    case ComparisonSurface::Single:
-        return platform::SurfaceViewMode::Single;
-    case ComparisonSurface::SideBySide:
-        break;
-    }
-    return platform::SurfaceViewMode::SideBySide;
+    return static_cast<platform::SurfaceViewMode>(value);
 }
 
 [[nodiscard]] platform::SurfaceThresholdPolicy
 nativeThresholdPolicy(const ComparisonSurface::ThresholdPolicy value) noexcept {
-    switch (value) {
-    case ComparisonSurface::ThresholdLumaOnly:
-        return platform::SurfaceThresholdPolicy::LumaOnly;
-    case ComparisonSurface::ThresholdAllChannels:
-        return platform::SurfaceThresholdPolicy::AllChannels;
-    case ComparisonSurface::ThresholdAnyChannel:
-        break;
-    }
-    return platform::SurfaceThresholdPolicy::AnyChannel;
+    return static_cast<platform::SurfaceThresholdPolicy>(value);
 }
 
 [[nodiscard]] platform::SurfaceDifferenceMetric
 nativeDifferenceMetric(const ComparisonSurface::DifferenceMetric value) noexcept {
-    switch (value) {
-    case ComparisonSurface::RgbAbsolute:
-        return platform::SurfaceDifferenceMetric::RgbAbsolute;
-    case ComparisonSurface::Luma:
-        return platform::SurfaceDifferenceMetric::Luma;
-    case ComparisonSurface::Chroma:
-        return platform::SurfaceDifferenceMetric::Chroma;
-    case ComparisonSurface::Heatmap:
-        return platform::SurfaceDifferenceMetric::Heatmap;
-    case ComparisonSurface::ExactPlanes:
-        return platform::SurfaceDifferenceMetric::ExactPlanes;
-    }
-    return platform::SurfaceDifferenceMetric::RgbAbsolute;
+    return static_cast<platform::SurfaceDifferenceMetric>(value);
 }
 
 [[nodiscard]] platform::SurfaceDifferenceGain
 nativeDifferenceGain(const ComparisonSurface::DifferenceGain value) noexcept {
-    switch (value) {
-    case ComparisonSurface::Gain1x:
-        return platform::SurfaceDifferenceGain::Gain1x;
-    case ComparisonSurface::Gain2x:
-        return platform::SurfaceDifferenceGain::Gain2x;
-    case ComparisonSurface::Gain4x:
-        return platform::SurfaceDifferenceGain::Gain4x;
-    case ComparisonSurface::Gain8x:
-        return platform::SurfaceDifferenceGain::Gain8x;
-    case ComparisonSurface::Gain16x:
-        return platform::SurfaceDifferenceGain::Gain16x;
-    }
-    return platform::SurfaceDifferenceGain::Gain1x;
+    return static_cast<platform::SurfaceDifferenceGain>(value);
 }
 
 [[nodiscard]] platform::SurfaceDifferenceEdge
 nativeDifferenceEdge(const ComparisonSurface::DifferenceEdge value) noexcept {
-    switch (value) {
-    case ComparisonSurface::Edge0And2:
-        return platform::SurfaceDifferenceEdge::Between0And2;
-    case ComparisonSurface::Edge1And2:
-        return platform::SurfaceDifferenceEdge::Between1And2;
-    case ComparisonSurface::Edge0And1:
-        break;
-    }
-    return platform::SurfaceDifferenceEdge::Between0And1;
+    return static_cast<platform::SurfaceDifferenceEdge>(value);
 }
 
 [[nodiscard]] platform::SurfaceDifferenceFilter
 nativeDifferenceFilter(const ComparisonSurface::DifferenceFilter value) noexcept {
-    switch (value) {
-    case ComparisonSurface::Nearest:
-        return platform::SurfaceDifferenceFilter::Nearest;
-    case ComparisonSurface::Bilinear:
-        return platform::SurfaceDifferenceFilter::Bilinear;
-    case ComparisonSurface::Bicubic:
-        return platform::SurfaceDifferenceFilter::Bicubic;
-    }
-    return platform::SurfaceDifferenceFilter::Bilinear;
+    return static_cast<platform::SurfaceDifferenceFilter>(value);
 }
 
 [[nodiscard]] PresentationOptions presentationOptions(const ComparisonSurface& surface) noexcept {

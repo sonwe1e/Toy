@@ -17,9 +17,10 @@ set_target_properties(
     PROPERTIES FOLDER "Tests/Unit/ShellWindows"
 )
 
-gtest_discover_tests(
-    dvs_shell_support_unit_tests
+dvs_add_gtest(
+    TARGET dvs_shell_support_unit_tests
     TEST_PREFIX "shell_windows."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES LABELS "unit;shell_windows" TIMEOUT 10
+    LAYER unit
+    MODULE shell_windows
+    TIMEOUT 10
 )

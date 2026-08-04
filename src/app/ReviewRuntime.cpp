@@ -20,7 +20,8 @@
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 
-#include <QMetaObject>
+#include "RuntimeBridges.h"
+
 #include <QObject>
 
 #include <algorithm>
@@ -46,127 +47,9 @@ constexpr auto kAdapterShutdownTimeout = 2s;
 constexpr auto kTotalShutdownTimeout = 7s;
 constexpr auto kShutdownReturnMargin = 50ms;
 
-class RenderActivityBridge final : public platform::IRenderActivitySink {
-public:
-    void bind(std::shared_ptr<platform::IRenderActivitySink> sink) noexcept {
-        sink_.store(std::move(sink), std::memory_order_release);
-    }
-
-    void unbind() noexcept {
-        sink_.store({}, std::memory_order_release);
-    }
-
-    void notifyFramePublished() noexcept override {
-        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
-                sink_.load(std::memory_order_acquire)) {
-            sink->notifyFramePublished();
-        }
-    }
-
-    void notifyFrameRenderStarted() noexcept override {
-        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
-                sink_.load(std::memory_order_acquire)) {
-            sink->notifyFrameRenderStarted();
-        }
-    }
-
-    void notifyAckPublished() noexcept override {
-        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
-                sink_.load(std::memory_order_acquire)) {
-            sink->notifyAckPublished();
-        }
-    }
-
-    void notifyAckBackpressured() noexcept override {
-        if (const std::shared_ptr<platform::IRenderActivitySink> sink =
-                sink_.load(std::memory_order_acquire)) {
-            sink->notifyAckBackpressured();
-        }
-    }
-
-private:
-    std::atomic<std::shared_ptr<platform::IRenderActivitySink>> sink_;
-};
-
-class ReviewProjectionBridge final {
-public:
-    void bind(ui::ReviewController& controller) noexcept {
-        std::scoped_lock lock(mutex_);
-        controller_ = &controller;
-    }
-
-    void unbind() noexcept {
-        std::scoped_lock lock(mutex_);
-        controller_ = nullptr;
-    }
-
-    void notify() noexcept {
-        std::scoped_lock lock(mutex_);
-        if (controller_ == nullptr) {
-            return;
-        }
-        ui::ReviewController* const controller = controller_;
-        static_cast<void>(QMetaObject::invokeMethod(
-            controller, [controller] { controller->refreshProjection(); }, Qt::QueuedConnection));
-    }
-
-private:
-    std::mutex mutex_;
-    ui::ReviewController* controller_ = nullptr;
-};
-
-// The coordinator worker snapshots decoder selection after publishing session state. The GUI
-// reads only this immutable cache, so media-info projection never waits on decoder actors.
-class DecoderBackendStateCache final {
-public:
-    void refresh(const std::weak_ptr<media::MultiSourceFrameProvider>& weakProvider) noexcept {
-        try {
-            const std::shared_ptr<media::MultiSourceFrameProvider> provider = weakProvider.lock();
-            if (!provider) {
-                states_.store({}, std::memory_order_release);
-                return;
-            }
-
-            const std::vector<media::DecoderBackendStatus> backendStatuses =
-                provider->decoderBackendStatuses();
-            std::vector<ui::ReviewController::DecoderBackendState> next;
-            next.reserve(backendStatuses.size());
-            for (const media::DecoderBackendStatus& status : backendStatuses) {
-                const bool initialized = status.backend == media::DecoderBackend::D3d11Va ||
-                                         status.deviceGeneration.value() != 0U ||
-                                         !status.fallbackReason.empty() ||
-                                         status.completedDecodeCount != 0U;
-                if (!initialized) {
-                    continue;
-                }
-                next.push_back(ui::ReviewController::DecoderBackendState{
-                    .sourceId = status.sourceId,
-                    .d3d11Va = status.backend == media::DecoderBackend::D3d11Va,
-                    .fallbackReason = status.fallbackReason,
-                });
-            }
-            states_.store(
-                std::make_shared<const std::vector<ui::ReviewController::DecoderBackendState>>(
-                    std::move(next)),
-                std::memory_order_release);
-        } catch (...) {
-            states_.store({}, std::memory_order_release);
-        }
-    }
-
-    [[nodiscard]] std::vector<ui::ReviewController::DecoderBackendState> snapshot() const noexcept {
-        try {
-            const auto states = states_.load(std::memory_order_acquire);
-            return states ? *states : std::vector<ui::ReviewController::DecoderBackendState>{};
-        } catch (...) {
-            return {};
-        }
-    }
-
-private:
-    std::atomic<std::shared_ptr<const std::vector<ui::ReviewController::DecoderBackendState>>>
-        states_;
-};
+using detail::DecoderBackendStateCache;
+using detail::RenderActivityBridge;
+using detail::ReviewProjectionBridge;
 
 class GraphicsNotificationPump final {
 public:

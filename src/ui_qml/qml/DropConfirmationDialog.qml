@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 Dialog {
     id: control
@@ -13,28 +14,12 @@ Dialog {
 
     signal moveRequested(int fromIndex, int toIndex)
 
-    component CompactMoveButton: Button {
+    component CompactMoveButton: VcsToolButton {
         id: button
 
         implicitWidth: 52
         implicitHeight: 30
-        padding: 0
-
-        contentItem: Text {
-            text: button.text
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            color: button.enabled ? "#f3f6fb" : "#637086"
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
-        }
-
-        background: Rectangle {
-            radius: 5
-            color: !button.enabled ? "#202938" : (button.down ? "#285da9" : (button.hovered ? "#2d69bf" : "#253247"))
-            border.width: button.activeFocus ? 2 : 1
-            border.color: button.activeFocus ? "#4b8df8" : "#3b4d67"
-        }
+        labelPixelSize: 14
     }
 
     objectName: "dropReviewDialog"
@@ -62,21 +47,21 @@ Dialog {
     }
 
     Overlay.modal: Rectangle {
-        color: "#99060a10"
+        color: Theme.modalScrim
     }
 
     background: Rectangle {
         objectName: "dropDialogBackground"
-        color: "#ff171e2a"
+        color: Theme.menu
         radius: 10
         border.width: 1
-        border.color: "#40516a"
+        border.color: Theme.menuBorder
     }
 
     header: Rectangle {
         objectName: "dropDialogHeader"
         implicitHeight: 52
-        color: "#ff111823"
+        color: Theme.panel
         radius: 10
 
         Rectangle {
@@ -91,7 +76,7 @@ Dialog {
 
         Text {
             text: control.title
-            color: "#fff3f6fb"
+            color: Theme.primaryText
             font.pixelSize: 16
             font.weight: Font.DemiBold
             anchors {
@@ -108,7 +93,7 @@ Dialog {
         Text {
             width: parent.width
             text: qsTr("The order below becomes Source A/B/C. Choose which stream owns the canonical frame index before opening.")
-            color: "#ff93a2ba"
+            color: Theme.mutedText
             wrapMode: Text.WordWrap
         }
 
@@ -135,7 +120,7 @@ Dialog {
                 Text {
                     width: parent.width - 162
                     text: control.fileNameFunction(droppedRow.modelData)
-                    color: "#fff3f6fb"
+                    color: Theme.primaryText
                     elide: Text.ElideMiddle
                     anchors.verticalCenter: parent.verticalCenter
                 }
@@ -159,7 +144,7 @@ Dialog {
 
             Text {
                 text: qsTr("Reference")
-                color: "#fff3f6fb"
+                color: Theme.primaryText
                 anchors.verticalCenter: parent.verticalCenter
             }
             ToolbarCombo {
@@ -179,33 +164,16 @@ Dialog {
         alignment: Qt.AlignRight
         padding: 12
 
-        delegate: Button {
+        delegate: ReviewActionButton {
             id: footerButton
 
             objectName: "dropFooterStandardButton"
             implicitWidth: 88
             implicitHeight: 30
-            padding: 0
-
-            contentItem: Text {
-                text: footerButton.text
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                color: footerButton.enabled ? "#f3f6fb" : "#637086"
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
-            }
-
-            background: Rectangle {
-                radius: 5
-                color: !footerButton.enabled ? "#202938" : (footerButton.down ? "#285da9" : (footerButton.hovered ? "#2d69bf" : "#253247"))
-                border.width: footerButton.activeFocus ? 2 : 1
-                border.color: footerButton.activeFocus ? "#4b8df8" : "#3b4d67"
-            }
         }
 
         background: Rectangle {
-            color: "#ff111823"
+            color: Theme.panel
             radius: 10
 
             Rectangle {

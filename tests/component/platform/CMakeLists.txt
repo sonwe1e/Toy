@@ -25,13 +25,12 @@ target_include_directories(
 dvs_apply_project_warnings(dvs_platform_component_tests)
 set_target_properties(dvs_platform_component_tests PROPERTIES FOLDER "Tests/Component/Platform")
 
-gtest_discover_tests(
-    dvs_platform_component_tests
+dvs_add_gtest(
+    TARGET dvs_platform_component_tests
     TEST_PREFIX "platform."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;platform_windows"
-        TIMEOUT 10
+    LAYER component
+    MODULE platform_windows
+    TIMEOUT 10
 )
 
 add_executable(
@@ -62,13 +61,13 @@ set_target_properties(
     PROPERTIES FOLDER "Tests/Component/Platform"
 )
 
-gtest_discover_tests(
-    dvs_graphics_device_broker_component_tests
+dvs_add_gtest(
+    TARGET dvs_graphics_device_broker_component_tests
     TEST_PREFIX "platform."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "component;platform_windows;ui_qml;graphics;warp"
-        TIMEOUT 20
-        RUN_SERIAL TRUE
-        ENVIRONMENT "QSG_RENDER_LOOP=threaded"
+    LAYER component
+    MODULE platform_windows
+    EXTRA_LABELS ui_qml graphics warp
+    TIMEOUT 20
+    RUN_SERIAL
+    ENVIRONMENT QSG_RENDER_LOOP=threaded
 )

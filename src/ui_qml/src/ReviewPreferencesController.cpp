@@ -620,6 +620,26 @@ ReviewPreferencesController::differenceFilter() const noexcept {
     return impl_->differenceFilter();
 }
 
+int ReviewPreferencesController::viewModeCode() const noexcept {
+    return static_cast<int>(viewMode());
+}
+
+int ReviewPreferencesController::differenceMetricCode() const noexcept {
+    return static_cast<int>(differenceMetric());
+}
+
+int ReviewPreferencesController::differenceGainCode() const noexcept {
+    return static_cast<int>(differenceGain());
+}
+
+int ReviewPreferencesController::differenceEdgeCode() const noexcept {
+    return static_cast<int>(differenceEdge());
+}
+
+int ReviewPreferencesController::differenceFilterCode() const noexcept {
+    return static_cast<int>(differenceFilter());
+}
+
 int ReviewPreferencesController::oscMode() const noexcept {
     return impl_->oscMode();
 }
@@ -650,6 +670,26 @@ void ReviewPreferencesController::setDifferenceEdge(const DifferenceEdge value) 
 
 void ReviewPreferencesController::setDifferenceFilter(const DifferenceFilter value) {
     impl_->setDifferenceFilter(value);
+}
+
+void ReviewPreferencesController::setViewModeCode(const int value) {
+    setViewMode(static_cast<ViewMode>(value));
+}
+
+void ReviewPreferencesController::setDifferenceMetricCode(const int value) {
+    setDifferenceMetric(static_cast<DifferenceMetric>(value));
+}
+
+void ReviewPreferencesController::setDifferenceGainCode(const int value) {
+    setDifferenceGain(static_cast<DifferenceGain>(value));
+}
+
+void ReviewPreferencesController::setDifferenceEdgeCode(const int value) {
+    setDifferenceEdge(static_cast<DifferenceEdge>(value));
+}
+
+void ReviewPreferencesController::setDifferenceFilterCode(const int value) {
+    setDifferenceFilter(static_cast<DifferenceFilter>(value));
 }
 
 void ReviewPreferencesController::setOscMode(const int value) {

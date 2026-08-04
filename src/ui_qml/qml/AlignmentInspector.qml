@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 Rectangle {
     id: control
@@ -10,7 +11,7 @@ Rectangle {
 
     objectName: "advancedAlignmentInspector"
     width: 360
-    color: "#111823"
+    color: Theme.panel
     border.color: control.host.borderColor
 
     ScrollView {
@@ -32,7 +33,7 @@ Rectangle {
                 objectName: "alignmentModeStatus"
                 width: parent.width - parent.leftPadding - parent.rightPadding
                 text: control.host.anyManualAlignmentActive ? qsTr("Manual alignment") : (control.host.autoAlignmentActive ? qsTr("Automatic alignment") : qsTr("Strict Index"))
-                color: control.host.anyManualAlignmentActive || control.host.autoAlignmentActive ? "#efbf83" : "#8ce2c2"
+                color: control.host.anyManualAlignmentActive || control.host.autoAlignmentActive ? Theme.warning : Theme.success
                 font.pixelSize: 12
                 font.weight: Font.DemiBold
             }
@@ -41,7 +42,7 @@ Rectangle {
                 objectName: "manualOffsetStatusLabel"
                 width: parent.width - parent.leftPadding - parent.rightPadding
                 text: control.host.manualOffsetActive ? qsTr("Frame alignment offset · active") : qsTr("Frame alignment offset")
-                color: control.host.manualOffsetActive ? "#efbf83" : control.host.mutedTextColor
+                color: control.host.manualOffsetActive ? Theme.warning : control.host.mutedTextColor
                 font.pixelSize: 11
             }
 
@@ -172,7 +173,7 @@ Rectangle {
             Text {
                 visible: control.host.compatibilityDetails().length > 0
                 text: control.host.compatibilityDetails()
-                color: "#efbf83"
+                color: Theme.warning
                 font.pixelSize: 10
                 width: parent.width - parent.leftPadding - parent.rightPadding
                 wrapMode: Text.WordWrap

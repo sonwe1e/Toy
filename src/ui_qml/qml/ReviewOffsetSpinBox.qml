@@ -2,17 +2,18 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 SpinBox {
     id: control
 
     property bool blocksGlobalMediaShortcuts: true
     property bool textEditingInputContext: true
-    property color textColor: "#f3f6fb"
-    property color mutedTextColor: "#93a2ba"
-    property color accentColor: "#4b8df8"
-    property color panelColor: "#1d2635"
-    property color borderColor: "#303d51"
+    property color textColor: Theme.primaryText
+    property color mutedTextColor: Theme.mutedText
+    property color accentColor: Theme.accent
+    property color panelColor: Theme.raisedPanel
+    property color borderColor: Theme.border
 
     from: -16
     to: 16
@@ -24,7 +25,7 @@ SpinBox {
         text: control.textFromValue(control.value, control.locale)
         color: control.enabled ? control.textColor : control.mutedTextColor
         selectionColor: control.accentColor
-        selectedTextColor: "white"
+        selectedTextColor: Theme.inverseText
         horizontalAlignment: TextInput.AlignHCenter
         verticalAlignment: TextInput.AlignVCenter
         readOnly: !control.editable

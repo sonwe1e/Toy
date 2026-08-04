@@ -105,3 +105,47 @@ jobs:
           pwsh -NoProfile -File .\tools\invoke-low-impact.ps1
           ".\out\build\${{ matrix.preset }}\bin\VCStationCli.exe"
           --startup-check
+
+      - name: Windows core-only build and tests
+        if: matrix.preset == 'dev'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset core-dev --fresh
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset core-dev
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset core-dev
+
+      - name: Windows UI model-only build and tests
+        if: matrix.preset == 'dev'
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --preset ui-dev --fresh
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 cmake --build --preset ui-dev
+          pwsh -NoProfile -File .\tools\invoke-low-impact.ps1 ctest --preset ui-dev
+
+  core-linux:
+    name: Linux Clang core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CC: clang-18
+      CXX: clang++-18
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Provision pinned CMake and vcpkg
+        shell: bash
+        run: |
+          python3 -m pip install --user --disable-pip-version-check cmake==4.4.0 ninja
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> "$GITHUB_ENV"
+
+      - name: Configure, build, and test core
+        shell: bash
+        run: |
+          cmake --preset core-dev --fresh
+          cmake --build --preset core-dev
+          ctest --preset core-dev --output-on-failure

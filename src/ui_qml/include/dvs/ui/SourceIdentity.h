@@ -16,8 +16,7 @@ namespace dvs::ui {
 // then absolute fallback, cleanPath, case fold) matches canonicalSourceIdentity exactly; the
 // byte size and modification timestamp are injected rather than re-read from disk so that a
 // snapshot-frozen descriptor produces a stable identity across projections.
-[[nodiscard]] QString composeSourceIdentity(const QString& path,
-                                            std::int64_t byteSize,
-                                            std::int64_t modifiedMs);
+[[nodiscard]] QString
+composeSourceIdentity(const QString& path, std::int64_t byteSize, std::int64_t modifiedMs);
 
 } // namespace dvs::ui

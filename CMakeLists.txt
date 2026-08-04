@@ -1,8 +1,17 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(VCStation VERSION 1.4.4 LANGUAGES CXX)
+project(VCStation VERSION 1.4.5 LANGUAGES CXX)
 
-if(NOT WIN32)
+option(DVS_BUILD_DESKTOP "Build the Windows desktop application and packaging" ON)
+option(DVS_BUILD_ADAPTERS "Build Windows, FFmpeg, and JSON adapters" ON)
+option(DVS_BUILD_UI "Build Qt view models and QML UI" ON)
+option(DVS_ENABLE_QUALITY_TOOLS "Configure clang-format, clang-tidy, and qmllint targets" ON)
+
+if(DVS_BUILD_DESKTOP AND (NOT DVS_BUILD_ADAPTERS OR NOT DVS_BUILD_UI))
+    message(FATAL_ERROR "DVS_BUILD_DESKTOP requires DVS_BUILD_ADAPTERS and DVS_BUILD_UI.")
+endif()
+
+if((DVS_BUILD_DESKTOP OR DVS_BUILD_ADAPTERS OR DVS_BUILD_UI) AND NOT WIN32)
     message(FATAL_ERROR "VCStation supports Windows only.")
 endif()
 
@@ -14,30 +23,34 @@ if(CMAKE_CONFIGURATION_TYPES)
     message(FATAL_ERROR "Multi-config generators are not supported.")
 endif()
 
-if(NOT MSVC)
+if((DVS_BUILD_DESKTOP OR DVS_BUILD_ADAPTERS OR DVS_BUILD_UI) AND NOT MSVC)
     message(FATAL_ERROR "VCStation requires the MSVC 2022 compiler.")
 endif()
 
-if(NOT MSVC_TOOLSET_VERSION STREQUAL "143")
+if((DVS_BUILD_DESKTOP OR DVS_BUILD_ADAPTERS OR DVS_BUILD_UI) AND
+   NOT MSVC_TOOLSET_VERSION STREQUAL "143")
     message(FATAL_ERROR "VCStation requires the Visual Studio 2022 v143 toolset.")
 endif()
 
-get_filename_component(_dvs_msvc_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
-set(_dvs_expected_archiver "${_dvs_msvc_bin_dir}/lib.exe")
-cmake_path(NORMAL_PATH _dvs_expected_archiver)
-cmake_path(NORMAL_PATH CMAKE_AR OUTPUT_VARIABLE _dvs_configured_archiver)
-if(NOT _dvs_configured_archiver STREQUAL _dvs_expected_archiver)
-    message(FATAL_ERROR
-        "VCStation requires the MSVC archiver '${_dvs_expected_archiver}', but CMAKE_AR is "
-        "'${CMAKE_AR}'. Run CMake from a Visual Studio developer shell with "
-        "'cmake --fresh --preset dev'.")
+if(DVS_BUILD_DESKTOP OR DVS_BUILD_ADAPTERS OR DVS_BUILD_UI)
+    get_filename_component(_dvs_msvc_bin_dir "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    set(_dvs_expected_archiver "${_dvs_msvc_bin_dir}/lib.exe")
+    cmake_path(NORMAL_PATH _dvs_expected_archiver)
+    cmake_path(NORMAL_PATH CMAKE_AR OUTPUT_VARIABLE _dvs_configured_archiver)
+    if(NOT _dvs_configured_archiver STREQUAL _dvs_expected_archiver)
+        message(FATAL_ERROR
+            "VCStation requires the MSVC archiver '${_dvs_expected_archiver}', but CMAKE_AR is "
+            "'${CMAKE_AR}'. Run CMake from a Visual Studio developer shell with "
+            "'cmake --fresh --preset dev'.")
+    endif()
 endif()
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "VCStation requires a 64-bit compiler environment.")
 endif()
 
-if(NOT VCPKG_TARGET_TRIPLET STREQUAL "x64-windows")
+if((DVS_BUILD_DESKTOP OR DVS_BUILD_ADAPTERS OR DVS_BUILD_UI) AND
+   NOT VCPKG_TARGET_TRIPLET STREQUAL "x64-windows")
     message(FATAL_ERROR "VCPKG_TARGET_TRIPLET must be x64-windows.")
 endif()
 
@@ -45,7 +58,9 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 set(DVS_SHELL_BINARY_BASENAME
     "VCStationShell-${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}"
@@ -93,19 +108,30 @@ dvs_resolve_dependencies()
 
 add_subdirectory(src/domain)
 add_subdirectory(src/application)
-add_subdirectory(src/platform_windows)
-add_subdirectory(src/media_ffmpeg)
-add_subdirectory(src/persistence_json)
-add_subdirectory(src/ui_qml)
-add_subdirectory(src/shell_windows)
-add_subdirectory(src/app)
+add_subdirectory(src/presentation_contract)
+if(DVS_BUILD_ADAPTERS)
+    add_subdirectory(src/platform_windows)
+    add_subdirectory(src/media_ffmpeg)
+    add_subdirectory(src/persistence_json)
+endif()
+if(DVS_BUILD_UI)
+    add_subdirectory(src/ui_qml)
+endif()
+if(DVS_BUILD_DESKTOP)
+    add_subdirectory(src/shell_windows)
+    add_subdirectory(src/app)
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
 dvs_validate_architecture()
-dvs_add_quality_targets()
+if(DVS_ENABLE_QUALITY_TOOLS)
+    dvs_add_quality_targets()
+endif()
 
-include(Install)
-include(Packaging)
+if(DVS_BUILD_DESKTOP)
+    include(Install)
+    include(Packaging)
+endif()

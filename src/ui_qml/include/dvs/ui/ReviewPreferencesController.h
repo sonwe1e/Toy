@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dvs/application/Ports.h"
+#include "dvs/presentation/ComparisonContract.h"
 
 #include <QObject>
 
@@ -15,60 +16,23 @@ class ReviewPreferencesController final : public QObject {
         int shortcutPreset READ shortcutPreset WRITE setShortcutPreset NOTIFY preferencesChanged)
     Q_PROPERTY(bool dropFrameTimecode READ dropFrameTimecode WRITE setDropFrameTimecode NOTIFY
                    preferencesChanged)
-    Q_PROPERTY(ViewMode viewMode READ viewMode WRITE setViewMode NOTIFY preferencesChanged)
-    Q_PROPERTY(DifferenceMetric differenceMetric READ differenceMetric WRITE setDifferenceMetric
-                   NOTIFY preferencesChanged)
-    Q_PROPERTY(DifferenceGain differenceGain READ differenceGain WRITE setDifferenceGain NOTIFY
+    Q_PROPERTY(int viewMode READ viewModeCode WRITE setViewModeCode NOTIFY preferencesChanged)
+    Q_PROPERTY(int differenceMetric READ differenceMetricCode WRITE setDifferenceMetricCode NOTIFY
                    preferencesChanged)
-    Q_PROPERTY(DifferenceEdge differenceEdge READ differenceEdge WRITE setDifferenceEdge NOTIFY
+    Q_PROPERTY(int differenceGain READ differenceGainCode WRITE setDifferenceGainCode NOTIFY
                    preferencesChanged)
-    Q_PROPERTY(DifferenceFilter differenceFilter READ differenceFilter WRITE setDifferenceFilter
-                   NOTIFY preferencesChanged)
+    Q_PROPERTY(int differenceEdge READ differenceEdgeCode WRITE setDifferenceEdgeCode NOTIFY
+                   preferencesChanged)
+    Q_PROPERTY(int differenceFilter READ differenceFilterCode WRITE setDifferenceFilterCode NOTIFY
+                   preferencesChanged)
     Q_PROPERTY(int oscMode READ oscMode WRITE setOscMode NOTIFY preferencesChanged)
 
 public:
-    enum class ViewMode {
-        SideBySide,
-        ThreeUp,
-        ReferenceFocus,
-        Difference,
-        AnalysisGrid,
-        Wipe,
-    };
-    Q_ENUM(ViewMode)
-
-    enum class DifferenceMetric {
-        RgbAbsolute,
-        Luma,
-        Chroma,
-        Heatmap,
-        ExactPlanes,
-    };
-    Q_ENUM(DifferenceMetric)
-
-    enum class DifferenceGain {
-        Gain1x,
-        Gain2x,
-        Gain4x,
-        Gain8x,
-        Gain16x,
-    };
-    Q_ENUM(DifferenceGain)
-
-    // Which two source slots the difference view compares (slot order = session source order).
-    enum class DifferenceEdge {
-        Edge0And1,
-        Edge0And2,
-        Edge1And2,
-    };
-    Q_ENUM(DifferenceEdge)
-
-    enum class DifferenceFilter {
-        Nearest,
-        Bilinear,
-        Bicubic,
-    };
-    Q_ENUM(DifferenceFilter)
+    using ViewMode = presentation::ViewMode;
+    using DifferenceMetric = presentation::DifferenceMetric;
+    using DifferenceGain = presentation::DifferenceGain;
+    using DifferenceEdge = presentation::DifferenceEdge;
+    using DifferenceFilter = presentation::DifferenceFilter;
 
     explicit ReviewPreferencesController(
         std::shared_ptr<application::ISettingsRepository> repository, QObject* parent = nullptr);
@@ -86,6 +50,11 @@ public:
     [[nodiscard]] DifferenceGain differenceGain() const noexcept;
     [[nodiscard]] DifferenceEdge differenceEdge() const noexcept;
     [[nodiscard]] DifferenceFilter differenceFilter() const noexcept;
+    [[nodiscard]] int viewModeCode() const noexcept;
+    [[nodiscard]] int differenceMetricCode() const noexcept;
+    [[nodiscard]] int differenceGainCode() const noexcept;
+    [[nodiscard]] int differenceEdgeCode() const noexcept;
+    [[nodiscard]] int differenceFilterCode() const noexcept;
     [[nodiscard]] int oscMode() const noexcept;
 
     void setShortcutPreset(int value);
@@ -95,6 +64,11 @@ public:
     void setDifferenceGain(DifferenceGain value);
     void setDifferenceEdge(DifferenceEdge value);
     void setDifferenceFilter(DifferenceFilter value);
+    void setViewModeCode(int value);
+    void setDifferenceMetricCode(int value);
+    void setDifferenceGainCode(int value);
+    void setDifferenceEdgeCode(int value);
+    void setDifferenceFilterCode(int value);
     void setOscMode(int value);
 
     Q_INVOKABLE void stop() noexcept;

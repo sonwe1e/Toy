@@ -25,7 +25,10 @@ target_include_directories(
 target_link_libraries(dvs_media_ffmpeg PUBLIC dvs_application)
 target_link_libraries(
     dvs_media_ffmpeg
-    PRIVATE dvs_platform_windows dvs::ffmpeg_dependencies
+    PRIVATE
+        dvs_windows_support
+        dvs_graphics_d3d11
+        dvs::ffmpeg_dependencies
 )
 
 dvs_apply_project_warnings(dvs_media_ffmpeg)

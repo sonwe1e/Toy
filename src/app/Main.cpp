@@ -561,8 +561,11 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
                 if (controller.busy() || controller.currentFrame() != 0) {
                     return;
                 }
-                if (!desktop.sendKeyForAutomation(Qt::Key_Right)) {
-                    std::cerr << "DVS_UI_SMOKE_SHORTCUT_RIGHT_REJECTED\n";
+                // A/D are exact previous/next in every shortcut preset. Arrow keys intentionally
+                // change meaning in the Premiere preset, so they cannot make this smoke test
+                // deterministic when it runs with the user's persisted preferences.
+                if (!desktop.sendKeyForAutomation(Qt::Key_D)) {
+                    std::cerr << "DVS_UI_SMOKE_SHORTCUT_NEXT_REJECTED\n";
                     desktop.exit(EXIT_FAILURE);
                     return;
                 }
@@ -572,8 +575,8 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
                 if (controller.busy() || controller.currentFrame() != 1) {
                     return;
                 }
-                if (!desktop.sendKeyForAutomation(Qt::Key_Left)) {
-                    std::cerr << "DVS_UI_SMOKE_SHORTCUT_LEFT_REJECTED\n";
+                if (!desktop.sendKeyForAutomation(Qt::Key_A)) {
+                    std::cerr << "DVS_UI_SMOKE_SHORTCUT_PREVIOUS_REJECTED\n";
                     desktop.exit(EXIT_FAILURE);
                     return;
                 }
@@ -675,11 +678,17 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         });
         smokeTimeout.setSingleShot(true);
         smokeTimeout.setInterval(30'000);
-        QObject::connect(
-            &smokeTimeout, &QTimer::timeout, runtime->controller(), [&desktop, &smokeStage] {
-                std::cerr << "DVS_UI_SMOKE_TIMEOUT stage=" << static_cast<int>(smokeStage) << '\n';
-                desktop.exit(EXIT_FAILURE);
-            });
+        QObject::connect(&smokeTimeout,
+                         &QTimer::timeout,
+                         runtime->controller(),
+                         [&desktop, &smokeStage, controller = runtime->controller()] {
+                             std::cerr
+                                 << "DVS_UI_SMOKE_TIMEOUT stage=" << static_cast<int>(smokeStage)
+                                 << " frame=" << controller->currentFrame()
+                                 << " busy=" << controller->busy()
+                                 << " canNext=" << controller->canNext() << '\n';
+                             desktop.exit(EXIT_FAILURE);
+                         });
         smokePoll.start();
         smokeTimeout.start();
     }
@@ -1517,14 +1526,20 @@ struct PopupProbeResult final {
         Completed,
     };
 
-    constexpr std::array<PopupProbeTarget, 4> probeTargets = {{
+    std::vector<PopupProbeTarget> probeTargets{
         {.label = "file", .menuObjectName = "fileMenu", .parentMenuObjectName = {}},
-        {.label = "compare", .menuObjectName = "compareMenu", .parentMenuObjectName = {}},
-        {.label = "layout",
-         .menuObjectName = "layoutMenu",
-         .parentMenuObjectName = "compareMenu"},
-        {.label = "source", .menuObjectName = "sourceMenu-0", .parentMenuObjectName = {}},
-    }};
+    };
+    if (sources.second.has_value()) {
+        probeTargets.push_back(
+            {.label = "compare", .menuObjectName = "compareMenu", .parentMenuObjectName = {}});
+    }
+    if (sources.third.has_value()) {
+        probeTargets.push_back({.label = "layout",
+                                .menuObjectName = "layoutMenu",
+                                .parentMenuObjectName = "compareMenu"});
+    }
+    probeTargets.push_back(
+        {.label = "source", .menuObjectName = "sourceMenu-0", .parentMenuObjectName = {}});
 
     Stage stage = Stage::WaitingForGraphics;
     std::vector<PopupProbeResult> results;
@@ -1581,6 +1596,17 @@ struct PopupProbeResult final {
             if (hasReviewError(controller)) {
                 fail("media-error:" + controller.lastErrorTechnicalDetail().toStdString());
                 return;
+            }
+            if (!sources.second.has_value()) {
+                PopupProbeResult disabledCompare;
+                disabledCompare.label = "compare-disabled";
+                disabledCompare.minAlpha = 255;
+                disabledCompare.passed = !desktop.openMenuForAutomation("compareMenu") &&
+                                         !desktop.menuIsOpenForAutomation("compareMenu");
+                if (!disabledCompare.passed) {
+                    disabledCompare.failureReason = "disabled-menu-opened";
+                }
+                results.push_back(std::move(disabledCompare));
             }
             stage = Stage::ProbingMenus;
             probeIndex = 0U;
@@ -1643,8 +1669,7 @@ struct PopupProbeResult final {
             // Close menus.
             static_cast<void>(desktop.closeMenuForAutomation(target.menuObjectName));
             if (!target.parentMenuObjectName.empty()) {
-                static_cast<void>(
-                    desktop.closeMenuForAutomation(target.parentMenuObjectName));
+                static_cast<void>(desktop.closeMenuForAutomation(target.parentMenuObjectName));
             }
             // Also close any remaining open menus to reset state.
             for (const auto* const name :

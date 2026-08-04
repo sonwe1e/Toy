@@ -2,18 +2,22 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 MenuBar {
     id: control
 
-    property color menuBarColor: "#171e2a"
-    property color menuBarBorderColor: "#40516a"
-    property color textColor: "#f3f6fb"
-    property color mutedTextColor: "#93a2ba"
-    property color accentColor: "#285da9"
+    property color menuBarColor: Theme.menu
+    property color menuBarBorderColor: Theme.menuBorder
+    property color textColor: Theme.primaryText
+    property color mutedTextColor: Theme.mutedText
+    property color accentColor: Theme.controlPressed
 
     delegate: MenuBarItem {
         id: topLevelItem
+
+        objectName: menu && menu.objectName.length > 0 ? menu.objectName + "Button" : ""
+        enabled: Boolean(menu && menu.enabled)
 
         leftPadding: 12
         rightPadding: 12
@@ -30,9 +34,9 @@ MenuBar {
 
         background: Rectangle {
             radius: 3
-            color: topLevelItem.highlighted || topLevelItem.down || topLevelItem.activeFocus ? control.accentColor : "transparent"
+            color: topLevelItem.enabled && (topLevelItem.highlighted || topLevelItem.down || topLevelItem.activeFocus) ? control.accentColor : "transparent"
             border.width: topLevelItem.activeFocus ? 1 : 0
-            border.color: "#72a7fa"
+            border.color: Theme.focus
         }
     }
 

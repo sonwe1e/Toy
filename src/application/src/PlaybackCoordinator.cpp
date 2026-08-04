@@ -4,6 +4,10 @@
 #include "dvs/application/PrefetchScheduler.h"
 #include "dvs/domain/ComparisonValidator.h"
 
+#include "AlignmentWorkflow.h"
+#include "CoordinatorPublication.h"
+#include "PlaybackTiming.h"
+
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
@@ -45,65 +49,6 @@ constexpr auto kPlaybackProjectionInterval = 33ms;
 // a review tool exists to inspect. Only a stall beyond this tolerance skips complete FrameSets to
 // recover the wall-clock anchor; a sustained shortfall still accumulates past it and is caught.
 constexpr auto kPlaybackCatchUpTolerance = 2000ms;
-constexpr float kLowAlignmentConfidence = 0.30F;
-constexpr std::size_t kMaximumSnapshotAlignmentMarkers = 256U;
-
-[[nodiscard]] SequenceAlignmentSummary
-summarizeSequenceAlignment(const SequenceAlignmentResult& result) {
-    SequenceAlignmentSummary summary{
-        .sourceId = result.sourceId,
-        .anomalyCount = result.anomalies.size(),
-        .totalCost = result.totalCost,
-        .meanMatchCost = result.meanMatchCost,
-        .confidence = result.confidence,
-        .autoApplicable = result.autoApplicable,
-    };
-    const std::size_t anomalyLimit =
-        std::min(result.anomalies.size(), kMaximumSnapshotAlignmentMarkers);
-    summary.anomalies.assign(result.anomalies.begin(),
-                             result.anomalies.begin() + static_cast<std::ptrdiff_t>(anomalyLimit));
-    const std::size_t segmentLimit =
-        std::min(result.segments.size(), kMaximumSnapshotAlignmentMarkers);
-    summary.segments.assign(result.segments.begin(),
-                            result.segments.begin() + static_cast<std::ptrdiff_t>(segmentLimit));
-
-    bool inRun = false;
-    SequenceAlignmentLowConfidenceRun run;
-    for (const SequenceAlignmentEntry& entry : result.entries) {
-        const bool lowConfidence =
-            entry.sourceFrameId.has_value() && entry.confidence < kLowAlignmentConfidence;
-        if (lowConfidence && !inRun) {
-            run = SequenceAlignmentLowConfidenceRun{
-                .firstCanonicalFrame = entry.canonicalFrameId,
-                .lastCanonicalFrame = entry.canonicalFrameId,
-                .minimumConfidence = entry.confidence,
-            };
-            inRun = true;
-        } else if (lowConfidence) {
-            run.lastCanonicalFrame = entry.canonicalFrameId;
-            run.minimumConfidence = std::min(run.minimumConfidence, entry.confidence);
-        }
-        if (inRun && !lowConfidence) {
-            summary.lowConfidenceRuns.push_back(run);
-            inRun = false;
-            if (summary.lowConfidenceRuns.size() >= kMaximumSnapshotAlignmentMarkers) {
-                break;
-            }
-        }
-    }
-    if (inRun && summary.lowConfidenceRuns.size() < kMaximumSnapshotAlignmentMarkers) {
-        summary.lowConfidenceRuns.push_back(run);
-    }
-    if (!result.autoApplicable && summary.lowConfidenceRuns.empty() && !result.entries.empty()) {
-        summary.lowConfidenceRuns.push_back(SequenceAlignmentLowConfidenceRun{
-            .firstCanonicalFrame = result.entries.front().canonicalFrameId,
-            .lastCanonicalFrame = result.entries.back().canonicalFrameId,
-            .minimumConfidence = result.confidence,
-        });
-    }
-    return summary;
-}
-
 enum class PendingPhase {
     kOpeningProvider,
     kOpeningFirstFrame,
@@ -170,55 +115,6 @@ struct CommandIdentityHash final {
 
 // Checked signed 64-bit addition. Returns the sum, or nullopt when a + b would over/underflow
 // the int64 range, so callers never commit signed-overflow UB into a MediaTime or a tick delta.
-[[nodiscard]] std::optional<std::int64_t> checkedAddInt64(const std::int64_t a,
-                                                          const std::int64_t b) noexcept {
-    if (b > 0 && a > INT64_MAX - b) {
-        return std::nullopt;
-    }
-    if (b < 0 && a < INT64_MIN - b) {
-        return std::nullopt;
-    }
-    return a + b;
-}
-
-// Checked signed 64-bit subtraction: returns a - b, or nullopt when the result would
-// over/underflow the int64 range (e.g. near the steady-clock epoch/rest bounds).
-[[nodiscard]] std::optional<std::int64_t> checkedSubInt64(const std::int64_t a,
-                                                          const std::int64_t b) noexcept {
-    if (b > 0) {
-        if (a < INT64_MIN + b) {
-            return std::nullopt;
-        }
-    } else if (b < 0) {
-        if (a > INT64_MAX + b) {
-            return std::nullopt;
-        }
-    }
-    return a - b;
-}
-
-// Applies a microsecond duration to a steady_clock time_point without UB: the conversion of the
-// duration to clock ticks is verified exact, and the addition is checked against the time_point's
-// representable bounds. Returns nullopt when the result cannot be represented, so callers fall
-// through to the existing arithmetic-overflow path instead of producing an invalid deadline.
-[[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
-addDurationSafe(std::chrono::steady_clock::time_point tp,
-                std::chrono::microseconds delta) noexcept {
-    const auto ticks = std::chrono::duration_cast<std::chrono::steady_clock::duration>(delta);
-    if (std::chrono::duration_cast<std::chrono::microseconds>(ticks) != delta) {
-        return std::nullopt;
-    }
-    const std::chrono::steady_clock::duration epoch = tp.time_since_epoch();
-    const std::int64_t count = ticks.count();
-    if (count > 0 && epoch > std::chrono::steady_clock::duration::max() - ticks) {
-        return std::nullopt;
-    }
-    if (count < 0 && epoch < std::chrono::steady_clock::duration::min() - ticks) {
-        return std::nullopt;
-    }
-    return tp + ticks;
-}
-
 class CoordinatorEventTarget {
 public:
     virtual ~CoordinatorEventTarget() = default;
@@ -344,21 +240,16 @@ public:
     }
 
     [[nodiscard]] std::shared_ptr<const SessionSnapshot> snapshot() const {
-        std::scoped_lock lock(publicationMutex_);
-        return publishedSnapshot_;
+        return publication_.snapshot();
     }
 
     [[nodiscard]] std::vector<CommandTerminal> takeCompletedCommands() {
-        std::scoped_lock lock(publicationMutex_);
-        std::vector<CommandTerminal> terminals = std::move(completedCommands_);
-        completedCommands_.clear();
-        return terminals;
+        return publication_.takeCompletedCommands();
     }
 
     [[nodiscard]] std::shared_ptr<const std::vector<SequenceAlignmentResult>>
     acceptedSequenceAlignments() const {
-        std::scoped_lock lock(publicationMutex_);
-        return publishedSequenceAlignmentMaps_;
+        return publication_.acceptedSequenceAlignments();
     }
 
     [[nodiscard]] EventPostResult postCritical(ApplicationEvent event) noexcept override {
@@ -693,20 +584,7 @@ private:
     void publishSnapshot(const bool notify = true) {
         state_.alignmentOffsets = alignmentOffsets_;
         state_.canonicalTimeline = canonicalTimeline_;
-        auto snapshot = std::make_shared<const SessionSnapshot>(state_);
-        std::shared_ptr<const std::vector<SequenceAlignmentResult>> sequenceMaps;
-        if (publishedSequenceAlignmentRevision_ != state_.alignmentRevision) {
-            sequenceMaps = std::make_shared<const std::vector<SequenceAlignmentResult>>(
-                sequenceAlignmentMaps_);
-        }
-        {
-            std::scoped_lock lock(publicationMutex_);
-            if (sequenceMaps) {
-                publishedSequenceAlignmentMaps_ = std::move(sequenceMaps);
-                publishedSequenceAlignmentRevision_ = state_.alignmentRevision;
-            }
-            publishedSnapshot_ = std::move(snapshot);
-        }
+        publication_.publish(state_, sequenceAlignmentMaps_);
         if (notify) {
             notifyStatePublished();
         }
@@ -725,14 +603,11 @@ private:
     void completeCommand(const CommandContext& context,
                          const CommandOutcome outcome,
                          std::optional<domain::MediaError> error = std::nullopt) {
-        {
-            std::scoped_lock lock(publicationMutex_);
-            completedCommands_.push_back(CommandTerminal{
-                .context = context,
-                .outcome = outcome,
-                .error = std::move(error),
-            });
-        }
+        publication_.complete(CommandTerminal{
+            .context = context,
+            .outcome = outcome,
+            .error = std::move(error),
+        });
         notifyStatePublished();
     }
 
@@ -913,13 +788,13 @@ private:
         if (!startTarget || !startAnchor) {
             return std::nullopt;
         }
-        const auto deltaMicroseconds =
-            checkedSubInt64(startTarget.value().microseconds(), startAnchor.value().microseconds());
+        const auto deltaMicroseconds = detail::checkedSubtract(startTarget.value().microseconds(),
+                                                               startAnchor.value().microseconds());
         if (!deltaMicroseconds.has_value()) {
             return std::nullopt;
         }
-        return addDurationSafe(playbackRun_->wallAnchor,
-                               std::chrono::microseconds{*deltaMicroseconds});
+        return detail::addDuration(playbackRun_->wallAnchor,
+                                   std::chrono::microseconds{*deltaMicroseconds});
     }
 
     [[nodiscard]] domain::FrameId
@@ -929,7 +804,7 @@ private:
         }
         const PlaybackRun& run = *playbackRun_;
         if (const auto nextDue = playbackDue(run.nextMinimum); nextDue.has_value()) {
-            const auto catchUpDue = addDurationSafe(
+            const auto catchUpDue = detail::addDuration(
                 *nextDue,
                 std::chrono::duration_cast<std::chrono::microseconds>(kPlaybackCatchUpTolerance));
             if (catchUpDue.has_value() && now <= *catchUpDue) {
@@ -959,7 +834,7 @@ private:
         // advanced far past the media end, so fall back to the final frame rather than accumulate
         // through undefined arithmetic.
         const auto targetMedia =
-            checkedAddInt64(startAnchor.value().microseconds(), elapsedMicroseconds);
+            detail::checkedAdd(startAnchor.value().microseconds(), elapsedMicroseconds);
         if (targetMedia.has_value()) {
             const auto atOrBefore = domain::canonicalFrameAtOrBefore(
                 *canonicalTimeline_, domain::MediaTime{*targetMedia});
@@ -1121,10 +996,10 @@ private:
             return activatePlaybackTarget(dueTarget);
         }
         const auto earliestRequestDue =
-            addDurationSafe(now,
-                            std::chrono::duration_cast<std::chrono::microseconds>(
-                                kMinimumPlaybackPreparationDelay));
-        const auto preferredRequestDue = addDurationSafe(
+            detail::addDuration(now,
+                                std::chrono::duration_cast<std::chrono::microseconds>(
+                                    kMinimumPlaybackPreparationDelay));
+        const auto preferredRequestDue = detail::addDuration(
             *due,
             -std::chrono::duration_cast<std::chrono::microseconds>(kPlaybackPresentationLead));
         if (!earliestRequestDue.has_value() || !preferredRequestDue.has_value()) {
@@ -2928,7 +2803,7 @@ private:
             state_.sequenceAlignments.reserve(analyzed.size());
             bool hasReviewableSegment = false;
             for (const SequenceAlignmentResult& result : analyzed) {
-                state_.sequenceAlignments.push_back(summarizeSequenceAlignment(result));
+                state_.sequenceAlignments.push_back(detail::summarizeSequenceAlignment(result));
                 hasReviewableSegment =
                     hasReviewableSegment ||
                     std::any_of(result.segments.begin(),
@@ -3043,7 +2918,7 @@ private:
                                           return segment.state == AlignmentSegmentState::Accepted;
                                       });
                 result.autoApplicable = hasAcceptedSegment;
-                summaries.push_back(summarizeSequenceAlignment(result));
+                summaries.push_back(detail::summarizeSequenceAlignment(result));
                 if (hasAcceptedSegment) {
                     accepted.push_back(std::move(result));
                 }
@@ -3116,7 +2991,7 @@ private:
         state_.sequenceAlignments.reserve(sequenceAlignmentMaps_.size());
         state_.alignmentRequired = false;
         for (const SequenceAlignmentResult& result : sequenceAlignmentMaps_) {
-            state_.sequenceAlignments.push_back(summarizeSequenceAlignment(result));
+            state_.sequenceAlignments.push_back(detail::summarizeSequenceAlignment(result));
             state_.alignmentRequired =
                 state_.alignmentRequired ||
                 std::any_of(result.segments.begin(),
@@ -3358,11 +3233,7 @@ private:
     std::uint64_t nextAnalysisJobId_ = 1U;
     std::unordered_set<CommandIdentity, CommandIdentityHash> seenCommands_;
 
-    mutable std::mutex publicationMutex_;
-    std::shared_ptr<const SessionSnapshot> publishedSnapshot_;
-    std::shared_ptr<const std::vector<SequenceAlignmentResult>> publishedSequenceAlignmentMaps_;
-    std::uint64_t publishedSequenceAlignmentRevision_ = std::numeric_limits<std::uint64_t>::max();
-    std::vector<CommandTerminal> completedCommands_;
+    CoordinatorPublication publication_;
 
     std::mutex ingressMutex_;
     std::condition_variable condition_;

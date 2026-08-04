@@ -5,6 +5,7 @@
 #include "dvs/ui/GraphicsBackend.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
+#include "dvs/ui/ReviewSessionFacade.h"
 #include "dvs/ui/ReviewShellController.h"
 
 #include <QCoreApplication>
@@ -14,8 +15,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QImage>
 #include <QHoverEvent>
+#include <QImage>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QObject>
@@ -91,12 +92,8 @@ void sendMouseRelease(QWindow& window, const QPointF& localPos) {
 
 void sendMouseMove(QWindow& window, const QPointF& localPos) {
     const QPointF globalPos = window.mapToGlobal(localPos.toPoint());
-    QMouseEvent move{QEvent::MouseMove,
-                     localPos,
-                     globalPos,
-                     Qt::NoButton,
-                     Qt::NoButton,
-                     Qt::NoModifier};
+    QMouseEvent move{
+        QEvent::MouseMove, localPos, globalPos, Qt::NoButton, Qt::NoButton, Qt::NoModifier};
     QCoreApplication::sendEvent(&window, &move);
 }
 
@@ -152,9 +149,9 @@ public:
 };
 
 TEST(MainQmlContractTests, MapsEveryCurrentMediaErrorAndExcludesDeletedUiDomains) {
-    QFile mainQml{QStringLiteral(":/qml/Main.qml")};
-    ASSERT_TRUE(mainQml.open(QIODevice::ReadOnly));
-    const QString source = QString::fromUtf8(mainQml.readAll());
+    QFile messageCatalog{QStringLiteral(":/qml/ReviewMessageCatalog.qml")};
+    ASSERT_TRUE(messageCatalog.open(QIODevice::ReadOnly));
+    const QString source = QString::fromUtf8(messageCatalog.readAll());
     constexpr std::array<std::string_view, 28U> kMediaErrorKeys{
         "invalid-argument",
         "invalid-rate",
@@ -270,6 +267,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     preferences.setViewMode(ReviewPreferencesController::ViewMode::Wipe);
     preferences.setDifferenceEdge(ReviewPreferencesController::DifferenceEdge::Edge0And2);
     ReviewShellController shell{controller, preferences};
+    ReviewSessionFacade facade{controller, preferences, shell};
 
     QQmlEngine engine;
     engine.addImportPath(
@@ -277,6 +275,7 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewFacade"), &facade);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -771,6 +770,7 @@ TEST(MainQmlContractTests, ShowsIntentMessageOnSynchronousRejection) {
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
     ReviewShellController shell{controller, preferences};
+    ReviewSessionFacade facade{controller, preferences, shell};
 
     QQmlEngine engine;
     engine.addImportPath(
@@ -778,6 +778,7 @@ TEST(MainQmlContractTests, ShowsIntentMessageOnSynchronousRejection) {
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewFacade"), &facade);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -791,10 +792,11 @@ TEST(MainQmlContractTests, ShowsIntentMessageOnSynchronousRejection) {
 
     // Test changeReference rejection
     QVariant changeResult;
-    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
-                                          "changeReference",
-                                          Q_RETURN_ARG(QVariant, changeResult),
-                                          Q_ARG(QVariant, QVariant{QStringLiteral("nonexistent-identity")})));
+    ASSERT_TRUE(QMetaObject::invokeMethod(
+        root.get(),
+        "changeReference",
+        Q_RETURN_ARG(QVariant, changeResult),
+        Q_ARG(QVariant, QVariant{QStringLiteral("nonexistent-identity")})));
     EXPECT_FALSE(changeResult.toBool());
     EXPECT_FALSE(root->property("intentMessage").toString().isEmpty())
         << "changeReference rejection should show intent message";
@@ -805,10 +807,11 @@ TEST(MainQmlContractTests, ShowsIntentMessageOnSynchronousRejection) {
 
     // Test removeSelectedSource rejection
     QVariant removeResult;
-    ASSERT_TRUE(QMetaObject::invokeMethod(root.get(),
-                                          "removeSelectedSource",
-                                          Q_RETURN_ARG(QVariant, removeResult),
-                                          Q_ARG(QVariant, QVariant{QStringLiteral("does-not-exist")})));
+    ASSERT_TRUE(
+        QMetaObject::invokeMethod(root.get(),
+                                  "removeSelectedSource",
+                                  Q_RETURN_ARG(QVariant, removeResult),
+                                  Q_ARG(QVariant, QVariant{QStringLiteral("does-not-exist")})));
     EXPECT_FALSE(removeResult.toBool());
     EXPECT_FALSE(root->property("intentMessage").toString().isEmpty())
         << "removeSelectedSource rejection should show intent message";
@@ -923,6 +926,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
     ReviewShellController shell{controller, preferences};
+    ReviewSessionFacade facade{controller, preferences, shell};
 
     QQmlEngine engine;
     engine.addImportPath(
@@ -930,6 +934,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewFacade"), &facade);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -941,8 +946,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
 
     auto* const scrim = root->findChild<QObject*>(QStringLiteral("inspectorScrim"));
     ASSERT_NE(scrim, nullptr);
-    auto* const inspectorItem =
-        root->findChild<QQuickItem*>(QStringLiteral("tabbedInspector"));
+    auto* const inspectorItem = root->findChild<QQuickItem*>(QStringLiteral("tabbedInspector"));
     ASSERT_NE(inspectorItem, nullptr);
     auto* const transportItem = root->findChild<QQuickItem*>(QStringLiteral("transport"));
     ASSERT_NE(transportItem, nullptr);
@@ -982,15 +986,14 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
 
         // Transport spans approximately the full viewport width.
         const QPointF transportRightClosed =
-            transportItem->mapToItem(window->contentItem(),
-                                     QPointF{transportItem->width(), 0.0});
+            transportItem->mapToItem(window->contentItem(), QPointF{transportItem->width(), 0.0});
         const double contentWidth = window->contentItem()->width();
         const double closedViewportWidth = viewportItem->width();
         // Allow a small margin for chrome margins.
         EXPECT_GE(transportRightClosed.x(), contentWidth * 0.85)
             << size.width << "x" << size.height
-            << " transport should span viewport when closed (right="
-            << transportRightClosed.x() << " contentWidth=" << contentWidth << ")";
+            << " transport should span viewport when closed (right=" << transportRightClosed.x()
+            << " contentWidth=" << contentWidth << ")";
 
         // --- Inspector open ---
         shell.setInspectorVisible(true);
@@ -1005,15 +1008,13 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
                 << size.width << "x" << size.height << " scrim visible in drawer";
 
             // Transport right edge <= inspector left edge (in window coords).
-            const QPointF transportRightOpen =
-                transportItem->mapToItem(window->contentItem(),
-                                         QPointF{transportItem->width(), 0.0});
+            const QPointF transportRightOpen = transportItem->mapToItem(
+                window->contentItem(), QPointF{transportItem->width(), 0.0});
             const QPointF inspectorLeft =
                 inspectorItem->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
             EXPECT_LE(transportRightOpen.x(), inspectorLeft.x() + 2.0)
-                << size.width << "x" << size.height
-                << " transport right (" << transportRightOpen.x()
-                << ") <= inspector left (" << inspectorLeft.x() << ")";
+                << size.width << "x" << size.height << " transport right ("
+                << transportRightOpen.x() << ") <= inspector left (" << inspectorLeft.x() << ")";
 
             // Inspector is fully within the window.
             EXPECT_LE(inspectorLeft.x() + inspectorItem->width(),
@@ -1033,13 +1034,11 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
 
             // Viewport right edge <= inspector left edge.
             const QPointF viewportRight =
-                viewportItem->mapToItem(window->contentItem(),
-                                        QPointF{viewportItem->width(), 0.0});
+                viewportItem->mapToItem(window->contentItem(), QPointF{viewportItem->width(), 0.0});
             const QPointF inspectorLeft =
                 inspectorItem->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
             EXPECT_LE(viewportRight.x(), inspectorLeft.x() + 2.0)
-                << size.width << "x" << size.height
-                << " viewport right (" << viewportRight.x()
+                << size.width << "x" << size.height << " viewport right (" << viewportRight.x()
                 << ") <= inspector left (" << inspectorLeft.x() << ")";
         }
     }
@@ -1064,8 +1063,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
         QThread::msleep(5U);
     }
-    EXPECT_FALSE(shell.inspectorVisible())
-        << "Esc should close the inspector drawer";
+    EXPECT_FALSE(shell.inspectorVisible()) << "Esc should close the inspector drawer";
 
     // --- Pixel gate: 960x640 drawer open ---
     shell.setInspectorVisible(true);
@@ -1106,7 +1104,8 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
         // Verify the transport area just left of the inspector has non-background pixels
         // (the transport panel is visible there).
         const int transportRow = static_cast<int>(600.0 * dpr);
-        const int justLeftOfInspector = std::max(0, inspectorLeftDevice - static_cast<int>(10.0 * dpr));
+        const int justLeftOfInspector =
+            std::max(0, inspectorLeftDevice - static_cast<int>(10.0 * dpr));
         const QColor leftOfInspectorPx = grab.pixelColor(justLeftOfInspector, transportRow);
         // The viewport background is #06080d (very dark). Transport or scrim area should
         // differ from this. Accept any pixel that is not the pure viewport background.
@@ -1115,11 +1114,9 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
 
         // Verify that the inspector panel area to the right has opaque panel pixels.
         if (inspectorLeftDevice + static_cast<int>(20.0 * dpr) < expectedGrabWidth) {
-            const QColor inspectorAreaPx =
-                grab.pixelColor(inspectorLeftDevice + static_cast<int>(20.0 * dpr),
-                                static_cast<int>(400.0 * dpr));
-            EXPECT_EQ(inspectorAreaPx.alpha(), 255)
-                << "inspector panel area should be opaque";
+            const QColor inspectorAreaPx = grab.pixelColor(
+                inspectorLeftDevice + static_cast<int>(20.0 * dpr), static_cast<int>(400.0 * dpr));
+            EXPECT_EQ(inspectorAreaPx.alpha(), 255) << "inspector panel area should be opaque";
         }
     }
 }
@@ -1244,6 +1241,7 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
     };
     ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
     ReviewShellController shell{controller, preferences};
+    ReviewSessionFacade facade{controller, preferences, shell};
 
     QQmlEngine engine;
     engine.addImportPath(
@@ -1251,6 +1249,7 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
     engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
     engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewFacade"), &facade);
     QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
     ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
 
@@ -1300,17 +1299,16 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
             }
         }
         if (layoutContentItem) {
-            const QPointF layoutCenter = QPointF{layoutContentItem->width() / 2.0,
-                                                  layoutContentItem->height() / 2.0};
+            const QPointF layoutCenter =
+                QPointF{layoutContentItem->width() / 2.0, layoutContentItem->height() / 2.0};
             const QPointF scenePos = layoutContentItem->mapToScene(layoutCenter);
-            const QPointF globalScenePos =
-                comparePopup->mapToGlobal(scenePos.toPoint());
+            const QPointF globalScenePos = comparePopup->mapToGlobal(scenePos.toPoint());
             // Send hover event to the compare popup window.
-            QHoverEvent hoverEnter{QEvent::HoverEnter, scenePos, globalScenePos,
-                                   QPointF{}, Qt::NoModifier};
+            QHoverEvent hoverEnter{
+                QEvent::HoverEnter, scenePos, globalScenePos, QPointF{}, Qt::NoModifier};
             QCoreApplication::sendEvent(comparePopup, &hoverEnter);
-            QHoverEvent hoverMove{QEvent::HoverMove, scenePos, globalScenePos,
-                                  scenePos, Qt::NoModifier};
+            QHoverEvent hoverMove{
+                QEvent::HoverMove, scenePos, globalScenePos, scenePos, Qt::NoModifier};
             QCoreApplication::sendEvent(comparePopup, &hoverMove);
             QCoreApplication::processEvents();
 
@@ -1370,8 +1368,7 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
             if (sampleX < grab.width() && sampleY < grab.height()) {
                 const QColor bgPixel = grab.pixelColor(sampleX, sampleY);
                 EXPECT_EQ(bgPixel.alpha(), 255)
-                    << "popup background pixel should be opaque (alpha="
-                    << bgPixel.alpha() << ")";
+                    << "popup background pixel should be opaque (alpha=" << bgPixel.alpha() << ")";
             }
         }
     }
@@ -1379,13 +1376,12 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
     // Step 6: Click "Three up" with real mouse events in the layoutMenu popup.
     auto* threeUpQuickItem = qobject_cast<QQuickItem*>(threeUpItem);
     if (!threeUpQuickItem && layoutPopup) {
-        threeUpQuickItem =
-            layoutPopup->findChild<QQuickItem*>(QStringLiteral("threeUpMenuItem"));
+        threeUpQuickItem = layoutPopup->findChild<QQuickItem*>(QStringLiteral("threeUpMenuItem"));
     }
 
     if (threeUpQuickItem && layoutPopup) {
-        const QPointF itemCenter = QPointF{threeUpQuickItem->width() / 2.0,
-                                           threeUpQuickItem->height() / 2.0};
+        const QPointF itemCenter =
+            QPointF{threeUpQuickItem->width() / 2.0, threeUpQuickItem->height() / 2.0};
         const QPointF windowPos = threeUpQuickItem->mapToScene(itemCenter);
         sendMousePress(*layoutPopup, windowPos);
         sendMouseRelease(*layoutPopup, windowPos);
@@ -1404,8 +1400,7 @@ TEST(MainQmlContractTests, NestedPopupMouseTraversal) {
     while (closeWait.elapsed() < 500) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
         QThread::msleep(5U);
-        if (!compareMenu->property("opened").toBool() &&
-            !layoutMenu->property("opened").toBool()) {
+        if (!compareMenu->property("opened").toBool() && !layoutMenu->property("opened").toBool()) {
             break;
         }
     }

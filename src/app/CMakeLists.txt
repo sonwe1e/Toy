@@ -6,6 +6,8 @@ add_executable(
     Main.cpp
     ReviewRuntime.cpp
     ReviewRuntime.h
+    RuntimeBridges.cpp
+    RuntimeBridges.h
     StartupRequest.cpp
     StartupRequest.h
     StartupRequestBroker.cpp

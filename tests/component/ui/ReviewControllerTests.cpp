@@ -87,14 +87,11 @@ template <typename Predicate>
     return snapshot;
 }
 
-[[nodiscard]] domain::SourceFileIdentity
-realFileIdentity(const std::filesystem::path& path) {
+[[nodiscard]] domain::SourceFileIdentity realFileIdentity(const std::filesystem::path& path) {
     const QFileInfo info{QString::fromStdWString(path.wstring())};
     return domain::SourceFileIdentity{
         .byteSize = info.exists() ? static_cast<std::uint64_t>(info.size()) : 0U,
-        .modifiedUtcMilliseconds = info.exists()
-                                       ? info.lastModified().toMSecsSinceEpoch()
-                                       : 0,
+        .modifiedUtcMilliseconds = info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0,
         .fingerprintSha256 = std::string(64U, '0'),
     };
 }

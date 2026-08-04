@@ -4,9 +4,12 @@ add_library(
         src/Alignment.cpp
         src/AlignmentCacheIdentity.cpp
         src/AlignmentWorkEstimator.cpp
+        src/AlignmentWorkflow.cpp
         src/ComparisonExactness.cpp
+        src/CoordinatorPublication.cpp
         src/Module.cpp
         src/PlaybackCoordinator.cpp
+        src/PlaybackTiming.cpp
         src/PrefetchScheduler.cpp
         src/SessionSnapshot.cpp
 )

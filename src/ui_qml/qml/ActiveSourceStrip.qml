@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 Rectangle {
     id: control
@@ -13,11 +14,11 @@ Rectangle {
     required property string canonicalSourceIdentity
     required property var pendingSourceIdentities
     required property var sourceIdentities
-    property color panelColor: "#111823"
-    property color borderColor: "#303d51"
-    property color accentColor: "#4b8df8"
-    property color textColor: "#f3f6fb"
-    property color mutedTextColor: "#93a2ba"
+    property color panelColor: Theme.panel
+    property color borderColor: Theme.border
+    property color accentColor: Theme.accent
+    property color textColor: Theme.primaryText
+    property color mutedTextColor: Theme.mutedText
 
     signal addRequested
     signal removeRequested(string sourceIdentity)
@@ -76,7 +77,7 @@ Rectangle {
                 readonly property bool isCanonical: chip.resolvedSourceIdentity.length > 0 ? chip.resolvedSourceIdentity === control.canonicalSourceIdentity : chip.sourceId === control.canonicalSourceIndex
                 readonly property bool pending: control.pendingSourceIdentities.indexOf(chip.resolvedSourceIdentity) >= 0 || requestQueued
                 property bool requestQueued: false
-                color: chip.isCanonical ? "#243f68" : "#1d2635"
+                color: chip.isCanonical ? Theme.controlChecked : Theme.raisedPanel
                 border.color: chip.isCanonical ? control.accentColor : control.borderColor
 
                 function requestReference() {
@@ -146,9 +147,9 @@ Rectangle {
                         width: 24
                         height: 24
                         radius: 6
-                        color: "#253247"
+                        color: Theme.control
                         border.width: 1
-                        border.color: "#3b4d67"
+                        border.color: Theme.controlBorder
                         Accessible.name: qsTr("Canonical reference")
 
                         Text {
@@ -172,8 +173,10 @@ Rectangle {
                         border.width: 1
                         border.color: "#b08630"
                         Accessible.name: qsTr("Video changed on disk")
-                        ToolTip.visible: changedOnDiskHover.hovered
-                        ToolTip.text: qsTr("Video changed on disk")
+                        VcsToolTip {
+                            visible: changedOnDiskHover.hovered
+                            text: qsTr("Video changed on disk")
+                        }
 
                         HoverHandler {
                             id: changedOnDiskHover
@@ -188,7 +191,7 @@ Rectangle {
                         }
                     }
 
-                    ToolButton {
+                    VcsToolButton {
                         id: overflowButton
 
                         objectName: "sourceOverflowButton-" + chip.sourceId
@@ -199,27 +202,9 @@ Rectangle {
                         height: 30
                         text: "⋯"
                         enabled: !chip.pending && chip.resolvedSourceIdentity.length > 0
-                        padding: 0
+                        helpText: chip.pending ? qsTr("Updating video…") : qsTr("Source actions")
                         Accessible.name: qsTr("Source actions for %1").arg(chip.filename)
-                        ToolTip.visible: hovered
-                        ToolTip.text: chip.pending ? qsTr("Updating video…") : qsTr("Source actions")
                         onClicked: sourceMenu.popup(overflowButton, Qt.point(0, overflowButton.height))
-
-                        contentItem: Text {
-                            text: overflowButton.text
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            color: overflowButton.enabled ? "#f3f6fb" : "#637086"
-                            font.pixelSize: 16
-                            font.weight: Font.DemiBold
-                        }
-
-                        background: Rectangle {
-                            radius: 6
-                            color: !overflowButton.enabled ? "#202938" : (overflowButton.down ? "#285da9" : (overflowButton.hovered ? "#2d69bf" : "#253247"))
-                            border.width: overflowButton.activeFocus ? 2 : 1
-                            border.color: overflowButton.activeFocus ? "#4b8df8" : "#3b4d67"
-                        }
                     }
 
                     VcsMenu {
@@ -275,7 +260,7 @@ Rectangle {
             }
         }
 
-        ToolButton {
+        VcsToolButton {
             id: addSourceChipButton
 
             objectName: "addSourceChipButton"
@@ -284,27 +269,9 @@ Rectangle {
             height: chips.height
             text: "+"
             enabled: true
-            padding: 0
-            Accessible.name: qsTr("Add video")
-            ToolTip.visible: hovered
-            ToolTip.text: qsTr("Add a video")
+            helpText: qsTr("Add a video")
             onClicked: control.addRequested()
-
-            contentItem: Text {
-                text: addSourceChipButton.text
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
-                color: addSourceChipButton.enabled ? "#f3f6fb" : "#637086"
-                font.pixelSize: 16
-                font.weight: Font.DemiBold
-            }
-
-            background: Rectangle {
-                radius: 15
-                color: !addSourceChipButton.enabled ? "#202938" : (addSourceChipButton.down ? "#285da9" : (addSourceChipButton.hovered ? "#2d69bf" : "#253247"))
-                border.width: addSourceChipButton.activeFocus ? 2 : 1
-                border.color: addSourceChipButton.activeFocus ? "#4b8df8" : "#3b4d67"
-            }
+            controlRadius: 15
         }
     }
 }

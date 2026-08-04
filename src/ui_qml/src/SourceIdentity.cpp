@@ -24,9 +24,9 @@ QString canonicalSourceIdentity(const QUrl& source) {
     if (path.isEmpty()) {
         path = file.absoluteFilePath();
     }
-    return composeSourceIdentity(
-        path, file.exists() ? file.size() : -1,
-        file.exists() ? file.lastModified().toMSecsSinceEpoch() : -1);
+    return composeSourceIdentity(path,
+                                 file.exists() ? file.size() : -1,
+                                 file.exists() ? file.lastModified().toMSecsSinceEpoch() : -1);
 }
 
 } // namespace dvs::ui

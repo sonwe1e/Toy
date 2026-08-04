@@ -1,5 +1,10 @@
 # Target Architecture
 
+Focused references: [state ownership](architecture/state-ownership.md),
+[dependency rules](architecture/dependency-rules.md),
+[feature change impact](architecture/feature-change-impact.md), and
+[architecture decisions](adr/).
+
 Status: **phases 0–6 implemented and locally validated**. The FrameSet model,
 1–3 source validation with compatibility reports, missing-frame semantics, parallel
 multi-source decode/render pipeline, three-up/reference-focus layouts, selectable

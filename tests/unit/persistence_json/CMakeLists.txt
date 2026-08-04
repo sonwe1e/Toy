@@ -24,11 +24,10 @@ set_target_properties(
     PROPERTIES FOLDER "Tests/Unit/PersistenceJson"
 )
 
-gtest_discover_tests(
-    dvs_persistence_json_unit_tests
+dvs_add_gtest(
+    TARGET dvs_persistence_json_unit_tests
     TEST_PREFIX "persistence_json."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "unit;persistence_json"
-        TIMEOUT 10
+    LAYER unit
+    MODULE persistence_json
+    TIMEOUT 10
 )

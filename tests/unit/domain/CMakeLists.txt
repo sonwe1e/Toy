@@ -20,11 +20,10 @@ target_link_libraries(
 dvs_apply_project_warnings(dvs_domain_unit_tests)
 set_target_properties(dvs_domain_unit_tests PROPERTIES FOLDER "Tests/Unit/Domain")
 
-gtest_discover_tests(
-    dvs_domain_unit_tests
+dvs_add_gtest(
+    TARGET dvs_domain_unit_tests
     TEST_PREFIX "domain."
-    DISCOVERY_MODE PRE_TEST
-    PROPERTIES
-        LABELS "unit;domain"
-        TIMEOUT 10
+    LAYER unit
+    MODULE domain
+    TIMEOUT 10
 )

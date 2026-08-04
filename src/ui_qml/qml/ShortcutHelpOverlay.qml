@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "VcsTheme.js" as Theme
 
 Popup {
     id: control
@@ -20,9 +21,9 @@ Popup {
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     background: Rectangle {
-        color: "#ff171e2a"
+        color: Theme.menu
         radius: 10
-        border.color: "#40516a"
+        border.color: Theme.menuBorder
     }
 
     contentItem: Column {
@@ -30,7 +31,7 @@ Popup {
 
         Label {
             text: qsTr("Keyboard shortcuts")
-            color: "#f3f6fb"
+            color: Theme.primaryText
             font.pixelSize: 20
             font.weight: Font.DemiBold
         }

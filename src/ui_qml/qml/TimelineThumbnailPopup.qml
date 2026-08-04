@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import "VcsTheme.js" as Theme
 
 Rectangle {
     id: control
@@ -14,14 +15,14 @@ Rectangle {
     width: 184
     height: 112
     radius: 7
-    color: "#f0171e2a"
+    color: Theme.thumbnailPanel
     border.color: "#50637f"
 
     Rectangle {
         width: parent.width - 12
         height: 66
         radius: 4
-        color: "#090d14"
+        color: Theme.canvas
         anchors {
             top: parent.top
             topMargin: 6
@@ -48,7 +49,7 @@ Rectangle {
 
     Text {
         text: qsTr("%1  ·  Frame %2").arg(control.previewTimecode).arg(control.previewFrame + 1)
-        color: "#f3f6fb"
+        color: Theme.primaryText
         font.pixelSize: 11
         anchors {
             left: parent.left

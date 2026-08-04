@@ -1,42 +1,72 @@
 {
   "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "vcstation",
-  "version-semver": "1.4.4",
-  "supports": "windows & x64",
-  "dependencies": [
-    {
-      "name": "ffmpeg",
-      "default-features": false,
-      "features": [
-        "avcodec",
-        "avformat",
-        "swscale"
-      ],
-      "version>=": "8.1.2"
-    },
-    "gtest",
-    "nlohmann-json",
-    {
-      "name": "qtbase",
-      "default-features": false,
-      "features": [
-        "gui",
-        "network",
-        "png",
-        "testlib",
-        "windeployqt"
-      ],
-      "version>=": "6.11.1"
-    },
-    {
-      "name": "qtdeclarative",
-      "version>=": "6.11.1"
-    },
-    {
-      "name": "qtshadertools",
-      "version>=": "6.11.1"
-    }
+  "version-semver": "1.4.5",
+  "default-features": [
+    "desktop",
+    "ui"
   ],
+  "dependencies": [
+    "gtest"
+  ],
+  "features": {
+    "desktop": {
+      "description": "Windows desktop, media, persistence, and Qt dependencies",
+      "dependencies": [
+        {
+          "name": "ffmpeg",
+          "default-features": false,
+          "features": [
+            "avcodec",
+            "avformat",
+            "swscale"
+          ],
+          "version>=": "8.1.2",
+          "platform": "windows & x64"
+        },
+        "nlohmann-json"
+      ]
+    },
+    "ui-models": {
+      "description": "Qt Core dependency for the UI model-only build",
+      "dependencies": [
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "version>=": "6.11.1",
+          "platform": "windows & x64"
+        }
+      ]
+    },
+    "ui": {
+      "description": "Qt view-model and QML dependencies",
+      "dependencies": [
+        {
+          "name": "qtbase",
+          "default-features": false,
+          "features": [
+            "gui",
+            "network",
+            "png",
+            "testlib",
+            "windeployqt"
+          ],
+          "version>=": "6.11.1",
+          "platform": "windows & x64"
+        },
+        {
+          "name": "qtdeclarative",
+          "version>=": "6.11.1",
+          "platform": "windows & x64"
+        },
+        {
+          "name": "qtshadertools",
+          "version>=": "6.11.1",
+          "platform": "windows & x64"
+        }
+      ]
+    }
+  },
   "overrides": [
     {
       "name": "ffmpeg",

@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls
+import "VcsTheme.js" as Theme
 
 // Dark popup menu with a fixed width, used both for the top-level File/Compare/Analyze/View
 // menus and for their one-level nested submenus. Rows are rendered by VcsMenuItem; the nested
@@ -14,8 +15,8 @@ Menu {
     // delegate reads these properties when it renders this Menu as a parent-menu row.
     property bool menuItemVisible: true
     property bool menuItemEnabled: true
-    property color menuBackgroundColor: "#171e2a"
-    property color menuBorderColor: "#40516a"
+    property color menuBackgroundColor: Theme.menu
+    property color menuBorderColor: Theme.menuBorder
     property real menuRadius: 8
     property real menuWidth: 280
 
@@ -27,6 +28,13 @@ Menu {
     cascade: true
     focus: true
     delegate: VcsMenuItem {}
+
+    // Qt permits open() to be invoked on a disabled Popup. Close at the pre-show boundary so
+    // neither automation nor a style-specific MenuBar delegate can create an empty window.
+    onAboutToShow: {
+        if (!control.enabled)
+            control.close();
+    }
 
     background: Rectangle {
         radius: control.menuRadius

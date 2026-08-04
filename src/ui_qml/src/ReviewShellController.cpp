@@ -1,5 +1,6 @@
 #include "dvs/ui/ReviewShellController.h"
 
+#include "dvs/presentation/ComparisonContract.h"
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 
@@ -823,11 +824,10 @@ std::uint64_t ReviewShellController::allocateIntentId() noexcept {
 
 ReviewShellController::EffectiveComparisonState
 ReviewShellController::effectiveComparisonState() const noexcept {
-    constexpr int kSideBySide = 0;
-    constexpr int kDifference = 3;
-    constexpr int kWipe = 5;
-    constexpr int kSingle = 6;
-    constexpr int kEdge0And1 = 0;
+    using presentation::DifferenceEdge;
+    using presentation::ViewMode;
+
+    constexpr int kEdge0And1 = static_cast<int>(DifferenceEdge::Between0And1);
 
     // The shell deliberately keeps Active Sources unchanged while a transaction is loading.
     // Outside that window, the controller's validated projection is authoritative even if the
@@ -836,31 +836,23 @@ ReviewShellController::effectiveComparisonState() const noexcept {
         review_.busy() ? static_cast<int>(activeSources_.size()) : review_.sourceCount();
     if (sourceCount <= 1) {
         return EffectiveComparisonState{
-            .viewMode = kSingle,
+            .viewMode = static_cast<int>(ViewMode::Single),
             .differenceEdge = kEdge0And1,
             .edgeAvailable = false,
         };
     }
 
-    const int requestedView =
-        preferences_ != nullptr ? static_cast<int>(preferences_->viewMode()) : kSideBySide;
+    const int requestedView = preferences_ != nullptr ? static_cast<int>(preferences_->viewMode())
+                                                      : static_cast<int>(ViewMode::SideBySide);
     const int requestedEdge =
         preferences_ != nullptr ? static_cast<int>(preferences_->differenceEdge()) : kEdge0And1;
-    if (sourceCount == 2) {
-        const bool supported =
-            requestedView == kSideBySide || requestedView == kDifference || requestedView == kWipe;
-        return EffectiveComparisonState{
-            .viewMode = supported ? requestedView : kSideBySide,
-            .differenceEdge = kEdge0And1,
-            .edgeAvailable = true,
-        };
-    }
-
-    const bool validView = requestedView >= kSideBySide && requestedView <= kWipe;
-    const bool validEdge = requestedEdge >= kEdge0And1 && requestedEdge <= 2;
+    const ViewMode effectiveMode = presentation::effectiveViewMode(
+        static_cast<ViewMode>(requestedView), static_cast<std::size_t>(sourceCount));
+    const bool validEdge = requestedEdge >= kEdge0And1 &&
+                           requestedEdge <= static_cast<int>(DifferenceEdge::Between1And2);
     return EffectiveComparisonState{
-        .viewMode = validView ? requestedView : kSideBySide,
-        .differenceEdge = validEdge ? requestedEdge : kEdge0And1,
+        .viewMode = static_cast<int>(effectiveMode),
+        .differenceEdge = sourceCount == 2 ? kEdge0And1 : (validEdge ? requestedEdge : kEdge0And1),
         .edgeAvailable = true,
     };
 }

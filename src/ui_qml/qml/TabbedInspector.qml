@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "VcsTheme.js" as Theme
 // qmllint disable import
 import Dvs.Ui 1.0
 
@@ -55,7 +56,7 @@ Rectangle {
 
     objectName: "tabbedInspector"
     width: Math.max(300, Math.min(380, parent ? parent.width * 0.3 : 360))
-    color: "#111823"
+    color: Theme.panel
     border.color: control.borderColor
 
     readonly property int effectiveTab: control.singleMode && tabs.currentIndex < 2 ? 2 : tabs.currentIndex
@@ -81,18 +82,18 @@ Rectangle {
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
-            color: darkTabButton.checked ? "#f3f6fb" : (darkTabButton.hovered ? "#f3f6fb" : "#93a2ba")
+            color: darkTabButton.checked ? Theme.primaryText : (darkTabButton.hovered ? Theme.primaryText : Theme.mutedText)
             font.pixelSize: 12
             font.weight: darkTabButton.checked ? Font.DemiBold : Font.Normal
         }
 
         background: Rectangle {
-            color: darkTabButton.checked ? "#243f68" : (darkTabButton.hovered ? "#253247" : "transparent")
+            color: darkTabButton.checked ? Theme.controlChecked : (darkTabButton.hovered ? Theme.control : "transparent")
 
             Rectangle {
                 visible: darkTabButton.checked
                 height: 2
-                color: "#4b8df8"
+                color: Theme.accent
                 anchors {
                     left: parent.left
                     right: parent.right
@@ -113,7 +114,7 @@ Rectangle {
         contentItem: Text {
             text: darkCheckBox.text
             font.pixelSize: 12
-            color: darkCheckBox.enabled ? "#f3f6fb" : "#637086"
+            color: darkCheckBox.enabled ? Theme.primaryText : Theme.disabledText
             verticalAlignment: Text.AlignVCenter
             leftPadding: darkCheckBox.indicator.width + darkCheckBox.spacing
         }
@@ -124,14 +125,14 @@ Rectangle {
             implicitWidth: 16
             implicitHeight: 16
             radius: 3
-            color: darkCheckBox.checked ? "#4b8df8" : "#1d2635"
-            border.color: darkCheckBox.checked ? "#4b8df8" : (darkCheckBox.hovered ? "#4b8df8" : "#40516a")
+            color: darkCheckBox.checked ? Theme.accent : Theme.raisedPanel
+            border.color: darkCheckBox.checked ? Theme.accent : (darkCheckBox.hovered ? Theme.accent : Theme.menuBorder)
             border.width: 1
 
             Text {
                 anchors.centerIn: parent
                 text: darkCheckBox.checked ? "✓" : ""
-                color: "#ffffff"
+                color: Theme.inverseText
                 font.pixelSize: 10
                 font.bold: true
             }
@@ -144,7 +145,7 @@ Rectangle {
         objectName: "inspectorTabBar"
         width: parent.width
         background: Rectangle {
-            color: "#171e2a"
+            color: Theme.menu
 
             Rectangle {
                 anchors {
@@ -153,7 +154,7 @@ Rectangle {
                     bottom: parent.bottom
                 }
                 height: 1
-                color: "#303d51"
+                color: Theme.border
             }
         }
         DarkTabButton {
@@ -282,81 +283,17 @@ Rectangle {
                     checked: control.differenceThresholdEnabled
                     onToggled: control.differenceThresholdEnabledRequested(checked)
                 }
-                SpinBox {
+                ReviewOffsetSpinBox {
                     id: thresholdSpinBox
 
-                    property bool blocksGlobalMediaShortcuts: true
-                    property bool textEditingInputContext: true
                     visible: control.differenceMode && control.differenceThresholdEnabled
                     width: parent.width
                     from: 0
                     to: 255
                     value: control.differenceThresholdCode
                     editable: true
-                    implicitHeight: 34
                     Accessible.name: qsTr("Difference threshold in 8-bit code values")
                     onValueModified: control.differenceThresholdCodeRequested(value)
-
-                    contentItem: TextInput {
-                        text: thresholdSpinBox.textFromValue(thresholdSpinBox.value, thresholdSpinBox.locale)
-                        color: thresholdSpinBox.enabled ? "#f3f6fb" : "#637086"
-                        selectionColor: "#4b8df8"
-                        selectedTextColor: "#ffffff"
-                        horizontalAlignment: TextInput.AlignHCenter
-                        verticalAlignment: TextInput.AlignVCenter
-                        readOnly: !thresholdSpinBox.editable
-                        validator: thresholdSpinBox.validator
-                        inputMethodHints: Qt.ImhFormattedNumbersOnly
-                    }
-
-                    up.indicator: Rectangle {
-                        x: thresholdSpinBox.mirrored ? 0 : thresholdSpinBox.width - width
-                        height: thresholdSpinBox.height
-                        implicitWidth: 32
-                        implicitHeight: 40
-                        color: thresholdSpinBox.up.pressed ? "#285da9" : "#253247"
-                        border.color: "#3b4d67"
-                        border.width: 1
-
-                        Rectangle {
-                            x: (parent.width - width) / 2
-                            y: (parent.height - height) / 2
-                            width: parent.width / 3
-                            height: 2
-                            color: "#f3f6fb"
-                        }
-                        Rectangle {
-                            x: (parent.width - width) / 2
-                            y: (parent.height - height) / 2
-                            width: 2
-                            height: parent.width / 3
-                            color: "#f3f6fb"
-                        }
-                    }
-
-                    down.indicator: Rectangle {
-                        x: thresholdSpinBox.mirrored ? thresholdSpinBox.width - width : 0
-                        height: thresholdSpinBox.height
-                        implicitWidth: 32
-                        implicitHeight: 40
-                        color: thresholdSpinBox.down.pressed ? "#285da9" : "#253247"
-                        border.color: "#3b4d67"
-                        border.width: 1
-
-                        Rectangle {
-                            x: (parent.width - width) / 2
-                            y: (parent.height - height) / 2
-                            width: parent.width / 3
-                            height: 2
-                            color: "#f3f6fb"
-                        }
-                    }
-
-                    background: Rectangle {
-                        radius: 4
-                        color: thresholdSpinBox.enabled ? "#1d2635" : "#202938"
-                        border.color: thresholdSpinBox.activeFocus ? "#4b8df8" : "#303d51"
-                    }
                 }
                 ToolbarCombo {
                     visible: control.differenceMode && control.differenceThresholdEnabled
@@ -390,14 +327,14 @@ Rectangle {
                         implicitWidth: 200
                         implicitHeight: 6
                         radius: 3
-                        color: "#40516a"
+                        color: Theme.menuBorder
 
                         Rectangle {
                             y: wipeSlider.horizontal ? 0 : wipeSlider.visualPosition * parent.height
                             width: wipeSlider.horizontal ? wipeSlider.position * parent.width : 6
                             height: wipeSlider.horizontal ? 6 : wipeSlider.position * parent.height
                             radius: 3
-                            color: "#4b8df8"
+                            color: Theme.accent
                         }
                     }
 
@@ -407,9 +344,9 @@ Rectangle {
                         implicitWidth: 16
                         implicitHeight: 16
                         radius: width / 2
-                        color: wipeSlider.pressed ? "#285da9" : "#4b8df8"
+                        color: wipeSlider.pressed ? Theme.controlPressed : Theme.accent
                         border.width: wipeSlider.activeFocus ? 2 : 1
-                        border.color: wipeSlider.activeFocus ? "#b7d3ff" : "#f3f6fb"
+                        border.color: wipeSlider.activeFocus ? Theme.strongFocus : Theme.primaryText
                     }
                 }
 
@@ -539,7 +476,7 @@ Rectangle {
                     visible: Boolean(control.controller) && Number(control.controller.alignmentTimelineMarkerOverflowCount) > 0
                     wrapMode: Text.WordWrap
                     text: qsTr("%1 additional alignment markers are not shown on the timeline.").arg(Number(control.controller.alignmentTimelineMarkerOverflowCount))
-                    color: "#efbf83"
+                    color: Theme.warning
                 }
             }
         }
@@ -573,7 +510,7 @@ Rectangle {
                         width: infoColumn.width
                         height: mediaInfo.implicitHeight + 20
                         radius: 6
-                        color: "#1d2635"
+                        color: Theme.raisedPanel
                         border.color: control.borderColor
 
                         Label {
@@ -591,7 +528,7 @@ Rectangle {
                 }
                 Label {
                     text: control.graphicsReady ? qsTr("D3D11 renderer ready") : qsTr("Graphics unavailable")
-                    color: control.graphicsReady ? "#8ce2c2" : "#efbf83"
+                    color: control.graphicsReady ? Theme.success : Theme.warning
                 }
             }
         }

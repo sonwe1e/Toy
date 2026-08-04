@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import "VcsTheme.js" as Theme
 
 Item {
     id: control
@@ -56,7 +57,7 @@ Item {
         anchors.fill: parent
         opacity: control.controlsEnabled ? 1.0 : 0.0
         enabled: control.controlsEnabled
-        color: "#ed111823"
+        color: Theme.oscPanel
         border.color: "#384860"
 
         Behavior on opacity {
@@ -89,14 +90,14 @@ Item {
 
             Text {
                 text: control.timecodeText
-                color: "#f3f6fb"
+                color: Theme.primaryText
                 font.family: "Consolas"
                 font.pixelSize: 13
                 font.weight: Font.DemiBold
             }
             Text {
                 text: control.currentFrame >= 0 ? qsTr("Frame %1 / %2").arg(control.currentFrame + 1).arg(control.totalFrames) : qsTr("No frame")
-                color: "#93a2ba"
+                color: Theme.mutedText
                 font.pixelSize: 12
             }
             Text {

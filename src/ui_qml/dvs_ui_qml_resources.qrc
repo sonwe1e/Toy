@@ -1,6 +1,10 @@
 <RCC>
     <qresource prefix="/qml">
         <file alias="Main.qml">qml/Main.qml</file>
+        <file alias="VcsTheme.js">qml/VcsTheme.js</file>
+        <file alias="VcsToolTip.qml">qml/VcsToolTip.qml</file>
+        <file alias="VcsToolButton.qml">qml/VcsToolButton.qml</file>
+        <file alias="ReviewMessageCatalog.qml">qml/ReviewMessageCatalog.qml</file>
         <file alias="ApplicationMenuBar.qml">qml/ApplicationMenuBar.qml</file>
         <file alias="DropConfirmationDialog.qml">qml/DropConfirmationDialog.qml</file>
         <file alias="ReviewActions.qml">qml/ReviewActions.qml</file>
@@ -13,6 +17,7 @@
         <file alias="VcsMenuBar.qml">qml/VcsMenuBar.qml</file>
         <file alias="VcsMenu.qml">qml/VcsMenu.qml</file>
         <file alias="VcsMenuItem.qml">qml/VcsMenuItem.qml</file>
+        <file alias="VcsRadioMenuItem.qml">qml/VcsRadioMenuItem.qml</file>
         <file alias="VcsMenuSeparator.qml">qml/VcsMenuSeparator.qml</file>
         <file alias="VcsMenuShortcut.qml">qml/VcsMenuShortcut.qml</file>
         <file alias="ReviewActionButton.qml">qml/ReviewActionButton.qml</file>

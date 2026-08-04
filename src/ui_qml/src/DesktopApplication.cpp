@@ -4,6 +4,7 @@
 #include "dvs/ui/ReviewController.h"
 #include "dvs/ui/ReviewPreferencesController.h"
 #include "dvs/ui/ReviewSessionFacade.h"
+#include "dvs/ui/ReviewShellController.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -15,7 +16,6 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QObject>
-#include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -91,9 +91,13 @@ public:
         engine->rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewPreferences"),
                                                   &preferences);
-        shellController_ = std::make_unique<ReviewSessionFacade>(controller, preferences);
+        shellController_ = std::make_unique<ReviewShellController>(controller, preferences);
         engine->rootContext()->setContextProperty(QStringLiteral("reviewSession"),
                                                   shellController_.get());
+        sessionFacade_ =
+            std::make_unique<ReviewSessionFacade>(controller, preferences, *shellController_);
+        engine->rootContext()->setContextProperty(QStringLiteral("reviewFacade"),
+                                                  sessionFacade_.get());
         const QMetaObject::Connection warningConnection = QObject::connect(
             engine.get(),
             &QQmlEngine::warnings,
@@ -380,7 +384,7 @@ public:
         }
         QObject* const menu = window_->findChild<QObject*>(
             QString::fromUtf8(objectName.data(), static_cast<qsizetype>(objectName.size())));
-        if (menu == nullptr) {
+        if (menu == nullptr || !menu->property("enabled").toBool()) {
             return false;
         }
         return QMetaObject::invokeMethod(menu, "open");
@@ -484,6 +488,7 @@ public:
         surface_ = nullptr;
         window_ = nullptr;
         engine_.reset();
+        sessionFacade_.reset();
         shellController_.reset();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
     }
@@ -499,7 +504,8 @@ private:
     bool nativeMenuWindowsDisabled_ = false;
     QGuiApplication application_;
     std::unique_ptr<QQmlApplicationEngine> engine_;
-    std::unique_ptr<ReviewSessionFacade> shellController_;
+    std::unique_ptr<ReviewShellController> shellController_;
+    std::unique_ptr<ReviewSessionFacade> sessionFacade_;
     QQuickWindow* window_ = nullptr;
     ComparisonSurface* surface_ = nullptr;
     double activeScreenRefreshRate_ = 0.0;

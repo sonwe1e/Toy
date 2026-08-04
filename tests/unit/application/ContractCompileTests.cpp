@@ -1,5 +1,8 @@
+#include "dvs/application/AlignmentCommands.h"
 #include "dvs/application/Commands.h"
+#include "dvs/application/PlaybackCommands.h"
 #include "dvs/application/Ports.h"
+#include "dvs/application/SessionCommands.h"
 #include "dvs/application/SessionSnapshot.h"
 
 #include <filesystem>

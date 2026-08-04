@@ -59,30 +59,27 @@ VcsMenu {
         enabled: control.sourceCount > 1
         visible: control.sourceCount > 1
 
-        VcsMenuItem {
+        VcsRadioMenuItem {
             objectName: "contextSideAction"
             text: qsTr("Side by side")
-            checkable: true
             checked: control.currentViewMode === 0
             onTriggered: {
                 control.sideRequested();
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
             objectName: "contextWipeAction"
             text: qsTr("Wipe")
-            checkable: true
             checked: control.currentViewMode === 5
             onTriggered: {
                 control.wipeRequested();
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
             objectName: "contextDifferenceAction"
             text: qsTr("Difference")
-            checkable: true
             checked: control.currentViewMode === 3
             onTriggered: {
                 control.diffRequested();
@@ -102,11 +99,10 @@ VcsMenu {
         Repeater {
             model: control.differenceEdges
 
-            delegate: VcsMenuItem {
+            delegate: VcsRadioMenuItem {
                 required property int index
                 required property var modelData
                 text: String(modelData.label)
-                checkable: true
                 checked: index === control.currentEdgeIndex
                 onTriggered: {
                     control.edgeRequested(Number(modelData.preferenceValue));
@@ -121,29 +117,26 @@ VcsMenu {
         enabled: control.sourceCount > 1
         visible: control.sourceCount > 1
 
-        VcsMenuItem {
+        VcsRadioMenuItem {
             text: qsTr("Source A")
-            checkable: true
             checked: control.canonicalSourceIndex === 0
             onTriggered: {
                 control.changeReferenceByIndex(0);
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
             text: qsTr("Source B")
             visible: control.sourceCount > 1
-            checkable: true
             checked: control.canonicalSourceIndex === 1
             onTriggered: {
                 control.changeReferenceByIndex(1);
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
             text: qsTr("Source C")
             visible: control.sourceCount > 2
-            checkable: true
             checked: control.canonicalSourceIndex === 2
             onTriggered: {
                 control.changeReferenceByIndex(2);

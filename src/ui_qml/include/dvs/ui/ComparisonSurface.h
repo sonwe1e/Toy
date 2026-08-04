@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dvs/presentation/ComparisonContract.h"
+
 #include <QQuickItem>
 #include <QVariantList>
 #include <QVariantMap>
@@ -60,54 +62,54 @@ class ComparisonSurface : public QQuickItem {
 
 public:
     enum ViewMode {
-        SideBySide = 0,
-        ThreeUp = 1,
-        ReferenceFocus = 2,
-        Difference = 3,
-        AnalysisGrid = 4,
-        Wipe = 5,
-        Single = 6,
+        SideBySide = static_cast<int>(presentation::ViewMode::SideBySide),
+        ThreeUp = static_cast<int>(presentation::ViewMode::ThreeUp),
+        ReferenceFocus = static_cast<int>(presentation::ViewMode::ReferenceFocus),
+        Difference = static_cast<int>(presentation::ViewMode::Difference),
+        AnalysisGrid = static_cast<int>(presentation::ViewMode::AnalysisGrid),
+        Wipe = static_cast<int>(presentation::ViewMode::Wipe),
+        Single = static_cast<int>(presentation::ViewMode::Single),
     };
     Q_ENUM(ViewMode)
 
     enum DifferenceMetric {
-        RgbAbsolute,
-        Luma,
-        Chroma,
-        Heatmap,
-        ExactPlanes,
+        RgbAbsolute = static_cast<int>(presentation::DifferenceMetric::RgbAbsolute),
+        Luma = static_cast<int>(presentation::DifferenceMetric::Luma),
+        Chroma = static_cast<int>(presentation::DifferenceMetric::Chroma),
+        Heatmap = static_cast<int>(presentation::DifferenceMetric::Heatmap),
+        ExactPlanes = static_cast<int>(presentation::DifferenceMetric::ExactPlanes),
     };
     Q_ENUM(DifferenceMetric)
 
     enum DifferenceGain {
-        Gain1x,
-        Gain2x,
-        Gain4x,
-        Gain8x,
-        Gain16x,
+        Gain1x = static_cast<int>(presentation::DifferenceGain::Gain1x),
+        Gain2x = static_cast<int>(presentation::DifferenceGain::Gain2x),
+        Gain4x = static_cast<int>(presentation::DifferenceGain::Gain4x),
+        Gain8x = static_cast<int>(presentation::DifferenceGain::Gain8x),
+        Gain16x = static_cast<int>(presentation::DifferenceGain::Gain16x),
     };
     Q_ENUM(DifferenceGain)
 
     // Selects which two source slots the difference view compares (slot order = session
     // source order).
     enum DifferenceEdge {
-        Edge0And1,
-        Edge0And2,
-        Edge1And2,
+        Edge0And1 = static_cast<int>(presentation::DifferenceEdge::Edge0And1),
+        Edge0And2 = static_cast<int>(presentation::DifferenceEdge::Edge0And2),
+        Edge1And2 = static_cast<int>(presentation::DifferenceEdge::Edge1And2),
     };
     Q_ENUM(DifferenceEdge)
 
     enum DifferenceFilter {
-        Nearest,
-        Bilinear,
-        Bicubic,
+        Nearest = static_cast<int>(presentation::DifferenceFilter::Nearest),
+        Bilinear = static_cast<int>(presentation::DifferenceFilter::Bilinear),
+        Bicubic = static_cast<int>(presentation::DifferenceFilter::Bicubic),
     };
     Q_ENUM(DifferenceFilter)
 
     enum ThresholdPolicy {
-        ThresholdLumaOnly,
-        ThresholdAnyChannel,
-        ThresholdAllChannels,
+        ThresholdLumaOnly = static_cast<int>(presentation::ThresholdPolicy::LumaOnly),
+        ThresholdAnyChannel = static_cast<int>(presentation::ThresholdPolicy::AnyChannel),
+        ThresholdAllChannels = static_cast<int>(presentation::ThresholdPolicy::AllChannels),
     };
     Q_ENUM(ThresholdPolicy)
 

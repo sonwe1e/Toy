@@ -28,8 +28,8 @@ TEST(SourceIdentityTests, ComposeMatchesLiveCanonicalIdentity) {
     if (normalized.isEmpty()) {
         normalized = info.absoluteFilePath();
     }
-    const QString composed = composeSourceIdentity(
-        normalized, info.size(), info.lastModified().toMSecsSinceEpoch());
+    const QString composed =
+        composeSourceIdentity(normalized, info.size(), info.lastModified().toMSecsSinceEpoch());
     EXPECT_EQ(composed, canonicalSourceIdentity(QUrl::fromLocalFile(path)));
 }
 

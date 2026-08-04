@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
 
 Item {
     id: control
@@ -34,36 +33,13 @@ Item {
             focusTarget.forceActiveFocus();
     }
 
-    component TransportButton: Button {
+    component TransportButton: VcsToolButton {
         id: button
-
-        required property url iconSource
-        required property string helpText
 
         implicitWidth: control.compact ? 38 : 48
         implicitHeight: control.compact ? 34 : 42
-        activeFocusOnTab: true
-        Accessible.name: helpText.split("\n")[0]
-        Accessible.description: helpText
-
-        contentItem: Image {
-            source: button.iconSource
-            sourceSize.width: control.compact ? 20 : 24
-            sourceSize.height: control.compact ? 20 : 24
-            fillMode: Image.PreserveAspectFit
-            opacity: button.enabled ? 1.0 : 0.35
-        }
-
-        background: Rectangle {
-            radius: 6
-            color: !button.enabled ? "#ff202938" : (button.down ? "#ff285da9" : (button.hovered ? "#ff2d69bf" : "#ff253247"))
-            border.width: button.activeFocus ? 2 : 1
-            border.color: button.activeFocus ? "#ff4b8df8" : (button.enabled ? "#ff3b4d67" : "#ff2a3444")
-        }
-
-        ToolTip.visible: hovered
-        ToolTip.delay: 650
-        ToolTip.text: helpText
+        iconExtent: control.compact ? 20 : 24
+        toolTipDelay: 650
     }
 
     Row {

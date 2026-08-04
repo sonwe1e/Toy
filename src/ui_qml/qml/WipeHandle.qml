@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import "VcsTheme.js" as Theme
 
 Item {
     id: control
@@ -33,7 +34,7 @@ Item {
         objectName: "wipeRail"
         width: 3
         height: parent.height
-        color: "#ffffffff"
+        color: Theme.inverseText
         anchors.centerIn: parent
     }
 
@@ -45,7 +46,7 @@ Item {
         scale: drag.active ? 1.08 : 1.0
         color: hover.hovered ? "#ff31445d" : "#ff233246"
         border.width: 2
-        border.color: "#ffffffff"
+        border.color: Theme.inverseText
         anchors.centerIn: parent
 
         Behavior on scale {
@@ -65,7 +66,7 @@ Item {
                     width: 4
                     height: 4
                     radius: 2
-                    color: "#ffffffff"
+                    color: Theme.inverseText
                 }
             }
         }

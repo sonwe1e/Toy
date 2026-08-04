@@ -92,27 +92,27 @@ VcsMenuBar {
             }
         }
 
-        VcsMenuItem {
+        VcsRadioMenuItem {
+            objectName: "sideBySideMenuItem"
             text: qsTr("Side by side")
-            checkable: true
             checked: control.currentViewMode === 0
             onTriggered: {
                 control.preferences.viewMode = 0;
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
+            objectName: "wipeMenuItem"
             text: qsTr("Wipe")
-            checkable: true
             checked: control.currentViewMode === 5
             onTriggered: {
                 control.preferences.viewMode = 5;
                 control.returnViewerFocusAfterClose = true;
             }
         }
-        VcsMenuItem {
+        VcsRadioMenuItem {
+            objectName: "differenceMenuItem"
             text: qsTr("Difference")
-            checkable: true
             checked: control.currentViewMode === 3
             onTriggered: {
                 control.preferences.viewMode = 3;
@@ -120,7 +120,7 @@ VcsMenuBar {
             }
         }
         VcsMenuSeparator {
-            visible: control.sourceCount === 3
+            objectName: "compareModeSeparator"
         }
         VcsMenu {
             id: layoutMenu
@@ -130,29 +130,26 @@ VcsMenuBar {
             menuItemVisible: control.sourceCount === 3
             menuItemEnabled: control.sourceCount === 3
 
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 objectName: "threeUpMenuItem"
                 text: qsTr("Three up")
-                checkable: true
                 checked: control.currentViewMode === 1
                 onTriggered: {
                     control.preferences.viewMode = 1;
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Reference focus")
-                checkable: true
                 checked: control.currentViewMode === 2
                 onTriggered: {
                     control.preferences.viewMode = 2;
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 objectName: "analysisGridMenuItem"
                 text: qsTr("Analysis grid")
-                checkable: true
                 checked: control.currentViewMode === 4
                 enabled: control.sourceCount === 3
                 onTriggered: {
@@ -160,9 +157,6 @@ VcsMenuBar {
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-        }
-        VcsMenuSeparator {
-            visible: control.sourceCount === 3
         }
         VcsMenu {
             id: pairMenu
@@ -172,27 +166,24 @@ VcsMenuBar {
             menuItemVisible: control.sourceCount === 3
             menuItemEnabled: control.sourceCount === 3
 
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("A / B")
-                checkable: true
                 checked: Number(control.preferences.differenceEdge) === 0
                 onTriggered: {
                     control.preferences.differenceEdge = 0;
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("A / C")
-                checkable: true
                 checked: Number(control.preferences.differenceEdge) === 1
                 onTriggered: {
                     control.preferences.differenceEdge = 1;
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("B / C")
-                checkable: true
                 checked: Number(control.preferences.differenceEdge) === 2
                 onTriggered: {
                     control.preferences.differenceEdge = 2;
@@ -207,28 +198,25 @@ VcsMenuBar {
             title: qsTr("Reference")
             enabled: control.sourceCount > 1
 
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Video A")
-                checkable: true
                 checked: control.canonicalSourceIndex === 0
                 onTriggered: {
                     control.changeReferenceByIndex(0);
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Video B")
-                checkable: true
                 checked: control.canonicalSourceIndex === 1
                 onTriggered: {
                     control.changeReferenceByIndex(1);
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Video C")
                 visible: control.sourceCount > 2
-                checkable: true
                 checked: control.canonicalSourceIndex === 2
                 onTriggered: {
                     control.changeReferenceByIndex(2);
@@ -236,8 +224,11 @@ VcsMenuBar {
                 }
             }
         }
-        VcsMenuSeparator {}
+        VcsMenuSeparator {
+            objectName: "compareInspectorSeparator"
+        }
         VcsMenuItem {
+            objectName: "compareInspectorMenuItem"
             text: control.inspectorOpen ? qsTr("Hide Inspector") : qsTr("Show Inspector")
             onTriggered: {
                 control.session.inspectorVisible = !control.inspectorOpen;
@@ -309,18 +300,16 @@ VcsMenuBar {
             objectName: "shortcutPresetMenu"
             title: qsTr("Shortcut preset")
 
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Frame review")
-                checkable: true
                 checked: control.shortcutPreset === 0
                 onTriggered: {
                     control.preferences.shortcutPreset = 0;
                     control.returnViewerFocusAfterClose = true;
                 }
             }
-            VcsMenuItem {
+            VcsRadioMenuItem {
                 text: qsTr("Player")
-                checkable: true
                 checked: control.shortcutPreset === 1
                 onTriggered: {
                     control.preferences.shortcutPreset = 1;
