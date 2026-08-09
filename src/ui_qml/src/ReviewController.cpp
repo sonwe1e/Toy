@@ -1315,8 +1315,15 @@ private:
         next.canFirst = canNavigate;
         next.canLast = canNavigate;
         next.canPrevious = canNavigate && next.currentFrame > 0;
-        next.canNext = canNavigate && next.currentFrame >= 0 &&
-                       static_cast<qulonglong>(next.currentFrame) + 1U < next.totalFrames;
+        // Navigation is allowed up to the newest requested target, not only the last displayed
+        // frame, so a burst of +1 presses that has been queued but not yet presented does not
+        // repeatedly submit boundary commands once the displayed frame nears the end (USERPLAN 3.1).
+        const std::optional<domain::FrameId> navigationTarget =
+            snapshot_->requestedFrame.has_value() ? snapshot_->requestedFrame
+                                                  : snapshot_->displayedFrame;
+        const qint64 navigationBase = navigationTarget.has_value() ? navigationTarget->value() : -1;
+        next.canNext = canNavigate && navigationBase >= 0 &&
+                       static_cast<qulonglong>(navigationBase) + 1U < next.totalFrames;
         next.canPlay = next.graphicsReady && !next.busy && !playbackBlocksCommands &&
                        next.displayState == ReviewDisplayState::Ready && next.currentFrame >= 0 &&
                        next.totalFrames > 1U;

@@ -49,6 +49,12 @@ constexpr auto kPlaybackProjectionInterval = 33ms;
 // a review tool exists to inspect. Only a stall beyond this tolerance skips complete FrameSets to
 // recover the wall-clock anchor; a sustained shortfall still accumulates past it and is caught.
 constexpr auto kPlaybackCatchUpTolerance = 2000ms;
+// A held forward step presents every intermediate frame, so the user input target may lead the
+// displayed frame by this many frames before the stream reports Busy. This is an input lookahead
+// bound, not a decoder cache size: the provider still keeps 1 current + 1 prepared in flight and
+// read-aheads internally. Bounding the input prevents an OS auto-repeat from queuing a long tail
+// of work that outlives the key release.
+constexpr auto kInteractiveStepInputLookahead = 3U;
 enum class PendingPhase {
     kOpeningProvider,
     kOpeningFirstFrame,
@@ -393,6 +399,36 @@ private:
         std::optional<PendingPlaybackFrame> preparedFrame;
         bool restartFromEnd = false;
         bool pauseRequested = false;
+    };
+
+    // A forward step stream: consecutive +1 steps that reuse the provider's Sequential decode path so
+    // a held key presents every intermediate frame without the Exact-seek cancel/generation storm the
+    // old beginStep()->beginSeek() path produced. Deliberately separate from PlaybackRun: realtime
+    // playback may catch up to the wall clock and skip whole FrameSets; interactive stepping must
+    // present every atomic frame and never skip, and it must not inherit PlaybackRun's catch-up,
+    // cadence, or Play/Pause semantics.
+    struct PendingInteractiveStep final {
+        CommandContext command;
+        PendingPlaybackFrame frame;
+    };
+
+    struct InteractiveStepRun final {
+        // Stable for the whole run. All frames in one run share this generation, so the provider's
+        // Sequential cursor and read-ahead cache survive frame to frame.
+        PlaybackRequestContext providerContext;
+
+        // The frame currently committed to the renderer / waiting on provider + presentation.
+        std::optional<PendingInteractiveStep> frame;
+
+        // The successor frame already requested from the renderer but not yet current.
+        std::optional<PendingInteractiveStep> preparedFrame;
+
+        // Commands whose targets are beyond the prepared slot, accepted but not yet in the pipeline.
+        std::deque<CommandContext> queuedCommands;
+
+        // The newest target the user input has been allowed to request. requestedFrame is projected
+        // from this so the UI "frame pending" indicator stays correct across the stream.
+        domain::FrameId lastQueuedTarget;
     };
 
     using WorkItem = std::variant<PlaybackCommand, ApplicationEvent>;
@@ -875,6 +911,393 @@ private:
         if (publish) {
             publishSnapshot();
         }
+    }
+
+    // --- Interactive forward step stream -------------------------------------------------
+    // Consecutive +1 steps share one provider generation so the Sequential decode cursor and the
+    // read-ahead cache survive frame to frame. The state machine mirrors PlaybackRun's per-frame
+    // lifecycle (arm presentation, submit Sequential request, wait on FrameSetReady + presentation
+    // ACK, commit, advance) but never catches up to the wall clock and never skips a frame.
+
+    [[nodiscard]] bool matchesInteractiveStepFrame(const EventContext& context) const noexcept {
+        return interactiveStepRun_.has_value() && interactiveStepRun_->frame.has_value() &&
+               matchesContext(context, interactiveStepRun_->frame->frame.context);
+    }
+
+    [[nodiscard]] bool matchesInteractiveStepPreparedFrame(const EventContext& context) const noexcept {
+        return interactiveStepRun_.has_value() && interactiveStepRun_->preparedFrame.has_value() &&
+               matchesContext(context, interactiveStepRun_->preparedFrame->frame.context);
+    }
+
+    [[nodiscard]] PendingPlaybackFrame makeInteractiveStepFrame(const domain::FrameId target) {
+        return PendingPlaybackFrame{
+            .context =
+                FrameRequestContext{
+                    .playback = makePlaybackContext(),
+                    .deviceGeneration = state_.deviceGeneration,
+                },
+            .expectedFrame = target,
+        };
+    }
+
+    [[nodiscard]] PortSubmitResult
+    submitInteractiveStepRequest(PendingPlaybackFrame& frame) {
+        const FrameRequest request{
+            .context = frame.context,
+            .frameId = frame.expectedFrame,
+            .priority = FrameRequestPriority::Sequential,
+            .sourceOffsets = sourceMappingsFor(frame.expectedFrame),
+            .alignmentRevision = state_.alignmentRevision,
+        };
+        return dependencies_.directFrameProvider->submit(request, eventSink_);
+    }
+
+    // Arms the presentation deadline for the current interactive frame. Unlike playback there is no
+    // cadence clock: the frame renders as soon as the provider publishes the set, and the deadline
+    // only bounds how long we wait for the render ACK before failing.
+    [[nodiscard]] bool armInteractiveStepPresentation(PendingInteractiveStep& step) {
+        PendingPlaybackFrame& frame = step.frame;
+        if (frame.presentationRequested) {
+            return true;
+        }
+        const std::uint64_t timerId = nextTimerId_++;
+        const DeadlineRequest deadline{
+            .context = frame.context.playback,
+            .timerId = timerId,
+            .due = dependencies_.clock->now() + kExactFrameDeadline,
+        };
+        const PortSubmitResult deadlineResult =
+            dependencies_.deadlineScheduler->schedule(deadline, eventSink_);
+        if (deadlineResult != PortSubmitResult::Accepted) {
+            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                    "The interactive step presentation deadline could "
+                                                    "not be scheduled."));
+            return false;
+        }
+        frame.presentationTimerId = timerId;
+        frame.presentationRequested = true;
+        state_.playbackState = domain::PlaybackState::kSeeking;
+        return true;
+    }
+
+    // Promotes the next queued command to the prepared slot and submits its Sequential request, so
+    // the provider is already decoding the successor while the current frame is presenting. The
+    // command is only popped once the request is accepted, so a rejected request leaves it queued.
+    void submitInteractiveStepSuccessor() {
+        if (!interactiveStepRun_.has_value() || !interactiveStepRun_->frame.has_value()) {
+            return;
+        }
+        if (interactiveStepRun_->preparedFrame.has_value() ||
+            interactiveStepRun_->queuedCommands.empty()) {
+            return;
+        }
+        const domain::FrameId target{interactiveStepRun_->frame->frame.expectedFrame.value() + 1};
+        PendingPlaybackFrame frame = makeInteractiveStepFrame(target);
+        if (submitInteractiveStepRequest(frame) != PortSubmitResult::Accepted) {
+            return;
+        }
+        interactiveStepRun_->preparedFrame = PendingInteractiveStep{
+            .command = interactiveStepRun_->queuedCommands.front(),
+            .frame = std::move(frame),
+        };
+        interactiveStepRun_->queuedCommands.pop_front();
+    }
+
+    void publishInteractiveStepFrameIfReady() {
+        if (!interactiveStepRun_.has_value() || !interactiveStepRun_->frame.has_value()) {
+            return;
+        }
+        PendingPlaybackFrame& frame = interactiveStepRun_->frame->frame;
+        if (!frame.presentationRequested || !frame.set.has_value() || frame.framePublished) {
+            return;
+        }
+        if (dependencies_.renderChannel->publish(frame.context, *frame.set) ==
+            RenderPublishResult::Closed) {
+            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                    "The render channel closed before it accepted the "
+                                                    "interactive step frame set."));
+            return;
+        }
+        frame.framePublished = true;
+        commitInteractiveStepFrameIfComplete();
+    }
+
+    void publishInteractiveSnapshot() {
+        const auto now = dependencies_.clock->now();
+        const bool notify = !lastInteractiveProjectionAt_.has_value() ||
+                            now - *lastInteractiveProjectionAt_ >= kPlaybackProjectionInterval;
+        publishSnapshot(notify);
+        if (notify) {
+            lastInteractiveProjectionAt_ = now;
+        }
+    }
+
+    // Commits the current interactive frame once it has a set, has rendered, the provider has
+    // succeeded, and the render ACK has returned. Advances the pipeline (prepared -> current), binds
+    // the next queued command as the new prepared, and completes the just-presented command. On a
+    // clean drain (no current, no prepared, no queued commands) the stream ends without touching
+    // the generation, leaving the provider's Sequential cursor warm for the next +1.
+    void commitInteractiveStepFrameIfComplete() {
+        if (!interactiveStepRun_.has_value() || !interactiveStepRun_->frame.has_value()) {
+            return;
+        }
+        PendingInteractiveStep& step = *interactiveStepRun_->frame;
+        PendingPlaybackFrame& frame = step.frame;
+        if (!frame.set.has_value() || !frame.framePublished || !frame.providerSucceeded ||
+            !frame.framePresented || !frame.presentationTimerId.has_value()) {
+            return;
+        }
+
+        static_cast<void>(dependencies_.deadlineScheduler->cancel(*frame.presentationTimerId));
+        const CommandContext command = step.command;
+        const domain::FrameId displayedFrame = frame.expectedFrame;
+
+        // Capture the presented sources from the frame being committed BEFORE promoting the prepared
+        // frame into the current slot: the move-assignment below destroys the current frame's
+        // PendingInteractiveStep, which `step`/`frame` reference.
+        std::vector<PresentedSourceState> presentedSources;
+        presentedSources.reserve(frame.set->sources().size());
+        for (const MappedSourceFrame& source : frame.set->sources()) {
+            presentedSources.push_back(PresentedSourceState{
+                .sourceId = source.sourceId,
+                .sourceFrameId = source.sourceFrameId,
+                .matchKind = source.matchKind,
+                .alignmentConfidence = source.alignmentConfidence,
+                .missingReason = source.missingReason,
+            });
+        }
+
+        interactiveStepRun_->frame = std::move(interactiveStepRun_->preparedFrame);
+        interactiveStepRun_->preparedFrame.reset();
+
+        state_.presentedSources = std::move(presentedSources);
+        state_.sessionState = domain::SessionState::kReady;
+        state_.displayedFrame = displayedFrame;
+        state_.lastError.reset();
+        publishInteractiveSnapshot();
+        completeCommand(command, CommandOutcome::Succeeded);
+
+        if (interactiveStepRun_->frame.has_value()) {
+            // The promoted successor becomes the new current frame: arm its presentation and render
+            // it (its set and provider success already arrived while it was prepared), then top up the
+            // prepared slot from the queue.
+            if (!armInteractiveStepPresentation(*interactiveStepRun_->frame)) {
+                return;
+            }
+            publishInteractiveStepFrameIfReady();
+            submitInteractiveStepSuccessor();
+            state_.requestedFrame = interactiveStepRun_->lastQueuedTarget;
+            publishInteractiveSnapshot();
+            return;
+        }
+
+        // No successor became current. If commands are still queued, the prepared slot had been
+        // empty (its request was rejected earlier); submit the next queued target as the current frame.
+        if (!interactiveStepRun_->queuedCommands.empty()) {
+            const domain::FrameId target{displayedFrame.value() + 1};
+            PendingInteractiveStep next{
+                .command = interactiveStepRun_->queuedCommands.front(),
+                .frame = makeInteractiveStepFrame(target),
+            };
+            interactiveStepRun_->queuedCommands.pop_front();
+            interactiveStepRun_->frame = std::move(next);
+            if (!armInteractiveStepPresentation(*interactiveStepRun_->frame)) {
+                return;
+            }
+            if (submitInteractiveStepRequest(interactiveStepRun_->frame->frame) !=
+                PortSubmitResult::Accepted) {
+                // The provider rejected the request: the just-popped command would be lost if we
+                // only reset the frame. Tear the run down so every not-yet-presented command (this
+                // one plus the rest of the queue) receives a terminal, mirroring the first-frame
+                // failure path in beginInteractiveForwardStep.
+                stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                        "The frame provider did not accept the "
+                                                        "interactive step frame request."));
+                return;
+            }
+            state_.requestedFrame = interactiveStepRun_->lastQueuedTarget;
+            publishInteractiveSnapshot();
+            return;
+        }
+
+        // Clean drain: nothing left to present. Keep the provider generation warm (do not increment
+        // it) so the next +1 reuses the Sequential cursor and read-ahead cache.
+        interactiveStepRun_.reset();
+        lastInteractiveProjectionAt_.reset();
+        state_.playbackState = domain::PlaybackState::kPaused;
+        state_.requestedFrame.reset();
+        publishInteractiveSnapshot();
+    }
+
+    // Tears down an active interactive run on a discontinuity (backward step, seek, play, device
+    // loss, provider failure, shutdown). Advances the generation so any in-flight Sequential results
+    // from this run cannot commit, and completes every not-yet-presented command as canceled/closed.
+    void stopInteractiveStepRun(const domain::MediaError& error) {
+        if (!interactiveStepRun_.has_value()) {
+            return;
+        }
+        InteractiveStepRun stopped = std::move(*interactiveStepRun_);
+        interactiveStepRun_.reset();
+        lastInteractiveProjectionAt_.reset();
+
+        if (stopped.frame.has_value() && stopped.frame->frame.presentationTimerId.has_value()) {
+            static_cast<void>(
+                dependencies_.deadlineScheduler->cancel(*stopped.frame->frame.presentationTimerId));
+        }
+        if (stopped.preparedFrame.has_value() &&
+            stopped.preparedFrame->frame.presentationTimerId.has_value()) {
+            static_cast<void>(dependencies_.deadlineScheduler->cancel(
+                *stopped.preparedFrame->frame.presentationTimerId));
+        }
+        dependencies_.directFrameProvider->cancel(stopped.providerContext);
+        if (stopped.frame.has_value() && stopped.frame->frame.framePublished) {
+            dependencies_.renderChannel->clear(stopped.providerContext);
+        }
+
+        const CommandOutcome outcome = error.recoverable ? CommandOutcome::Canceled : CommandOutcome::Failed;
+        const auto completePending = [this, outcome, &error](const CommandContext& context) {
+            completeCommand(context, outcome, error);
+        };
+        for (const CommandContext& queued : stopped.queuedCommands) {
+            completePending(queued);
+        }
+        if (stopped.preparedFrame.has_value()) {
+            completePending(stopped.preparedFrame->command);
+        }
+        // Complete the current frame's command unconditionally. Commit always reassigns the
+        // frame slot (commitInteractiveStepFrameIfComplete) right after completing its command,
+        // so a still-current frame.command is guaranteed never to have been completed already —
+        // gating on framePresented would instead drop the command of a frame that was rendered
+        // (render ACK) but whose provider-success event had not yet committed it.
+        if (stopped.frame.has_value()) {
+            completePending(stopped.frame->command);
+        }
+
+        state_.playbackGeneration = increment(state_.playbackGeneration);
+        state_.playbackState = domain::PlaybackState::kPaused;
+        state_.requestedFrame.reset();
+        // Note: lastError is intentionally not set here. A backward step, seek, or play that
+        // interrupts the stream is a normal navigation event, not a coordinator error; the not-yet-
+        // presented step commands are completed as Canceled above with the supersede detail.
+        publishSnapshot();
+    }
+
+    // Begins a fresh interactive forward-step stream for the first +1. Stops any active playback,
+    // supersedes an in-flight exact seek, advances the generation once, and submits the first frame.
+    void beginInteractiveForwardStep(const StepFramesCommand& command) {
+        if (!sources_.has_value() || state_.sessionState != domain::SessionState::kReady) {
+            rejectCommand(command.context, CommandOutcome::Failed,
+                          coordinatorError(domain::MediaErrorCode::kInvalidArgument,
+                                           "A frame step requires a ready comparison set.", false));
+            return;
+        }
+        // Note: unlike beginPlay, forward stepping does not gate on graphicsReady. The old step
+        // path did not either, and the render channel will reject a frame publish if graphics are
+        // unavailable, failing the step through the normal terminal path.
+        const domain::FrameId displayed =
+            state_.displayedFrame.value_or(state_.requestedFrame.value_or(domain::FrameId{0}));
+        if (!displayed.isValid() ||
+            static_cast<std::uint64_t>(displayed.value()) + 1U >= state_.canonicalFrameCount) {
+            // At the canonical boundary there is no next frame; report Busy (the UI's canNext gate
+            // normally prevents this) rather than performing a no-op seek to the current frame.
+            completeCommand(command.context, CommandOutcome::Busy);
+            return;
+        }
+        const domain::FrameId target{displayed.value() + 1};
+
+        // Exactly one generation advance for the whole run: this is the largest single contributor
+        // to eliminating the per-frame generation storm the old Exact-seek path produced.
+        dependencies_.directFrameProvider->cancel(currentPlaybackScope());
+        state_.playbackGeneration = increment(state_.playbackGeneration);
+
+        const PlaybackRequestContext providerContext = currentPlaybackScope();
+        PendingInteractiveStep firstStep{
+            .command = command.context,
+            .frame = makeInteractiveStepFrame(target),
+        };
+        interactiveStepRun_ = InteractiveStepRun{
+            .providerContext = providerContext,
+            .frame = std::move(firstStep),
+            .lastQueuedTarget = target,
+        };
+
+        if (!armInteractiveStepPresentation(*interactiveStepRun_->frame)) {
+            return;
+        }
+        if (submitInteractiveStepRequest(interactiveStepRun_->frame->frame) !=
+            PortSubmitResult::Accepted) {
+            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                    "The frame provider did not accept the first "
+                                                    "interactive step frame request."));
+            return;
+        }
+        submitInteractiveStepSuccessor();
+        state_.requestedFrame = target;
+        publishInteractiveSnapshot();
+    }
+
+    // Enqueues a subsequent +1 onto an active interactive stream. Honors the input lookahead bound:
+    // once the queued target leads the displayed frame by more than kInteractiveStepInputLookahead,
+    // the command is reported Busy (the next keyboard repeat will retry) instead of queuing work
+    // that outlives the key release.
+    void enqueueInteractiveForwardStep(const StepFramesCommand& command) {
+        if (!interactiveStepRun_.has_value()) {
+            beginInteractiveForwardStep(command);
+            return;
+        }
+        const domain::FrameId displayed =
+            state_.displayedFrame.value_or(state_.requestedFrame.value_or(domain::FrameId{0}));
+        const domain::FrameId nextTarget{interactiveStepRun_->lastQueuedTarget.value() + 1};
+        if (static_cast<std::uint64_t>(nextTarget.value()) >= state_.canonicalFrameCount) {
+            // The queued target would step past the last frame; report Busy instead of queuing work
+            // that can never be presented.
+            completeCommand(command.context, CommandOutcome::Busy);
+            return;
+        }
+        if (nextTarget.value() - displayed.value() >
+            static_cast<std::int64_t>(kInteractiveStepInputLookahead)) {
+            completeCommand(command.context, CommandOutcome::Busy);
+            return;
+        }
+        interactiveStepRun_->lastQueuedTarget = nextTarget;
+        interactiveStepRun_->queuedCommands.push_back(command.context);
+        state_.requestedFrame = nextTarget;
+        submitInteractiveStepSuccessor();
+        publishInteractiveSnapshot();
+    }
+
+    // Handles a provider terminal for the interactive run's current or prepared frame. A canceled
+    // prepared frame is dropped and its command re-queued so it is submitted later; any failure ends
+    // the run. Returns true if the terminal belonged to the interactive run.
+    [[nodiscard]] bool handleInteractiveStepTerminal(const RequestTerminal& terminal) {
+        const EventContext& terminalContext = std::visit(
+            [](const auto& value) -> const EventContext& { return value.context; }, terminal);
+        if (matchesInteractiveStepFrame(terminalContext)) {
+            if (std::holds_alternative<RequestSucceeded>(terminal)) {
+                interactiveStepRun_->frame->frame.providerSucceeded = true;
+            } else if (const auto* const failed = std::get_if<RequestFailed>(&terminal)) {
+                stopInteractiveStepRun(failed->error);
+            } else {
+                stopInteractiveStepRun(
+                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                     "The interactive step frame request was canceled."));
+            }
+            commitInteractiveStepFrameIfComplete();
+            return true;
+        }
+        if (matchesInteractiveStepPreparedFrame(terminalContext)) {
+            if (std::holds_alternative<RequestSucceeded>(terminal)) {
+                interactiveStepRun_->preparedFrame->frame.providerSucceeded = true;
+            } else {
+                // Drop a failed/canceled prepared frame and re-queue its command so it is re-submitted
+                // when the pipeline advances, rather than lost.
+                CommandContext dropped = interactiveStepRun_->preparedFrame->command;
+                interactiveStepRun_->preparedFrame.reset();
+                interactiveStepRun_->queuedCommands.push_front(std::move(dropped));
+            }
+            return true;
+        }
+        return false;
     }
 
     [[nodiscard]] bool armPlaybackPresentation(PendingPlaybackFrame& frame) {
@@ -1653,6 +2076,14 @@ private:
                                            false));
             return;
         }
+        // Forward +1 steps run on the interactive step stream: they keep one generation across the
+        // whole run and reuse the provider's Sequential decode path instead of canceling and
+        // re-seeking on every repeat. The first +1 begins the stream; later ones enqueue onto it.
+        // Non-forward steps (backward, multi-frame jumps) keep the old Exact-seek path.
+        if (command.delta == 1) {
+            enqueueInteractiveForwardStep(command);
+            return;
+        }
         if (!sources_.has_value() || state_.canonicalFrameCount == 0U) {
             beginSeek(command.context, domain::FrameId{0});
             return;
@@ -2113,6 +2544,17 @@ private:
                 }
             }
         }
+        // A forward +1 step extends an active interactive stream (handled in beginStep); any other
+        // navigation command is a discontinuity that invalidates the warm Sequential cursor, so the
+        // stream is torn down before the new exact navigation proceeds.
+        const bool isForwardStepPlusOne =
+            std::holds_alternative<StepFramesCommand>(command) &&
+            std::get<StepFramesCommand>(command).delta == 1;
+        if (interactiveStepRun_.has_value() && !isForwardStepPlusOne) {
+            stopInteractiveStepRun(coordinatorError(
+                domain::MediaErrorCode::kMediaDecodeFailed,
+                "The interactive step stream was interrupted by another navigation operation."));
+        }
         if (pending_.has_value() || pendingProbe_.has_value() || playbackRun_.has_value()) {
             completeCommand(context, CommandOutcome::Busy);
             return;
@@ -2433,6 +2875,10 @@ private:
             return;
         }
 
+        if (handleInteractiveStepTerminal(terminal)) {
+            return;
+        }
+
         const auto matches = std::visit(
             [this](const auto& value) { return matchesPending(value.context); }, terminal);
         if (!matches) {
@@ -2526,6 +2972,36 @@ private:
     }
 
     void handleFrameSet(const FrameSetReady& ready) {
+        if (matchesInteractiveStepFrame(ready.context)) {
+            PendingPlaybackFrame& frame = interactiveStepRun_->frame->frame;
+            if (ready.set.canonicalFrameId() != frame.expectedFrame) {
+                stopInteractiveStepRun(coordinatorError(
+                    domain::MediaErrorCode::kMediaDecodeFailed,
+                    "The provider published a mismatched interactive step frame set."));
+                return;
+            }
+            if (frame.framePublished) {
+                return;
+            }
+            frame.set = ready.set;
+            publishInteractiveStepFrameIfReady();
+            return;
+        }
+        if (matchesInteractiveStepPreparedFrame(ready.context)) {
+            PendingPlaybackFrame& frame = interactiveStepRun_->preparedFrame->frame;
+            if (ready.set.canonicalFrameId() != frame.expectedFrame) {
+                // A mismatched prepared frame cannot become the current frame; drop it and re-queue
+                // its command so it is re-submitted once the pipeline advances.
+                CommandContext dropped = interactiveStepRun_->preparedFrame->command;
+                interactiveStepRun_->preparedFrame.reset();
+                interactiveStepRun_->queuedCommands.push_front(std::move(dropped));
+                return;
+            }
+            if (!frame.set.has_value()) {
+                frame.set = ready.set;
+            }
+            return;
+        }
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             ready.context == playbackRun_->frame->context) {
             PendingPlaybackFrame& frame = *playbackRun_->frame;
@@ -3010,6 +3486,13 @@ private:
     }
 
     void handleFramePresented(const FrameSetPresented& presented) {
+        if (matchesInteractiveStepFrame(presented.context) &&
+            interactiveStepRun_->frame->frame.framePublished &&
+            presented.frameId == interactiveStepRun_->frame->frame.expectedFrame) {
+            interactiveStepRun_->frame->frame.framePresented = true;
+            commitInteractiveStepFrameIfComplete();
+            return;
+        }
         if (playbackRun_.has_value() && playbackRun_->frame.has_value() &&
             playbackRun_->frame->framePublished &&
             presented.context == playbackRun_->frame->context &&
@@ -3051,6 +3534,14 @@ private:
                 presentationError("The playback frame was not presented within five seconds."));
             return;
         }
+        if (interactiveStepRun_.has_value() && interactiveStepRun_->frame.has_value() &&
+            interactiveStepRun_->frame->frame.presentationTimerId.has_value() &&
+            elapsed.context == interactiveStepRun_->frame->frame.context.playback &&
+            elapsed.timerId == *interactiveStepRun_->frame->frame.presentationTimerId) {
+            stopInteractiveStepRun(
+                presentationError("The interactive step frame was not presented within five seconds."));
+            return;
+        }
         if (!pending_.has_value() || !pending_->frameContext.has_value() ||
             !pending_->presentationTimerId.has_value() ||
             elapsed.context != pending_->frameContext->playback ||
@@ -3085,6 +3576,9 @@ private:
         }
         if (pending_.has_value()) {
             failPending(error, CommandOutcome::Failed);
+        }
+        if (interactiveStepRun_.has_value()) {
+            stopInteractiveStepRun(error);
         }
         if (playbackRun_.has_value()) {
             stopPlayback(error, false);
@@ -3213,6 +3707,38 @@ private:
         if (playbackRun_.has_value()) {
             stopPlayback(std::nullopt, false);
         }
+        if (interactiveStepRun_.has_value()) {
+            InteractiveStepRun stopped = std::move(*interactiveStepRun_);
+            interactiveStepRun_.reset();
+            lastInteractiveProjectionAt_.reset();
+            if (stopped.frame.has_value() && stopped.frame->frame.presentationTimerId.has_value()) {
+                static_cast<void>(
+                    dependencies_.deadlineScheduler->cancel(*stopped.frame->frame.presentationTimerId));
+            }
+            if (stopped.preparedFrame.has_value() &&
+                stopped.preparedFrame->frame.presentationTimerId.has_value()) {
+                static_cast<void>(dependencies_.deadlineScheduler->cancel(
+                    *stopped.preparedFrame->frame.presentationTimerId));
+            }
+            dependencies_.directFrameProvider->cancel(stopped.providerContext);
+            if (stopped.frame.has_value() && stopped.frame->frame.framePublished) {
+                dependencies_.renderChannel->clear(stopped.providerContext);
+            }
+            // Drain every not-yet-presented step command as Closed so shutdown stays bounded and the
+            // UI does not retain a dangling frame-pending indicator.
+            const auto closePending = [this](const CommandContext& context) {
+                completeCommand(context, CommandOutcome::Closed);
+            };
+            for (const CommandContext& queued : stopped.queuedCommands) {
+                closePending(queued);
+            }
+            if (stopped.preparedFrame.has_value()) {
+                closePending(stopped.preparedFrame->command);
+            }
+            if (stopped.frame.has_value()) {
+                closePending(stopped.frame->command);
+            }
+        }
     }
 
     Dependencies dependencies_;
@@ -3227,7 +3753,9 @@ private:
     std::optional<ReadySessionBackup> openRollback_;
     std::optional<PendingProbe> pendingProbe_;
     std::optional<PlaybackRun> playbackRun_;
+    std::optional<InteractiveStepRun> interactiveStepRun_;
     std::optional<std::chrono::steady_clock::time_point> lastPlaybackProjectionAt_;
+    std::optional<std::chrono::steady_clock::time_point> lastInteractiveProjectionAt_;
     std::optional<BackgroundAnalysis> analysisJob_;
     std::optional<AutomaticAlignmentProposal> automaticAlignmentProposal_;
     std::optional<AutomaticAlignmentUndoState> automaticAlignmentUndo_;

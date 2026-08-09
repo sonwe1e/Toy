@@ -278,6 +278,10 @@ public:
         }
         {
             std::scoped_lock lock(mutex_);
+            if (std::find(rejectedFrameIds_.begin(), rejectedFrameIds_.end(), request.frameId)
+                != rejectedFrameIds_.end()) {
+                return PortSubmitResult::Closed;
+            }
             if (request.priority == FrameRequestPriority::Prefetch) {
                 prefetchRequests_.push_back(request);
             } else {
@@ -309,6 +313,17 @@ public:
             canceledContexts_.push_back(context);
         }
         condition_.notify_all();
+    }
+
+    // Test seam: any frame request whose frameId is in rejectedFrameIds_ is refused with Closed
+    // instead of Accepted, simulating a transient provider rejection / backpressure. Returns the
+    // previous set so a test can restore it.
+    std::vector<domain::FrameId>
+    setRejectedFrameIds(std::vector<domain::FrameId> frameIds) {
+        std::scoped_lock lock(mutex_);
+        std::vector<domain::FrameId> previous = std::move(rejectedFrameIds_);
+        rejectedFrameIds_ = std::move(frameIds);
+        return previous;
     }
 
     [[nodiscard]] bool waitForOpenRequestCount(const std::size_t count) {
@@ -456,6 +471,7 @@ private:
     std::vector<FrameRequest> prefetchRequests_;
     std::vector<FrameProviderCloseRequest> closeRequests_;
     std::vector<PlaybackRequestContext> canceledContexts_;
+    std::vector<domain::FrameId> rejectedFrameIds_;
 };
 
 class FakeAlignmentAnalysisService final : public IAlignmentAnalysisService {
@@ -3382,17 +3398,19 @@ TEST(PlaybackCoordinatorTests, ClampsAllEndpointCommandsForAOneFrameComparisonSe
             .delta = -1,
         },
         1U);
-    completeEndpoint(
-        StepFramesCommand{
-            .context =
-                CommandContext{
-                    .sessionId = ready->sessionId,
-                    .sessionEpoch = ready->sessionEpoch,
-                    .commandId = domain::CommandId{3},
-                },
-            .delta = 1,
-        },
-        2U);
+    // A +1 step on a one-frame set is at the canonical boundary: it must report Busy rather than
+    // clamping to a no-op seek to the current frame (v1.5 interactive-step semantics). It completes
+    // as Busy and, unlike the old clamp, submits no frame request.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    const auto boundaryBusy = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(boundaryBusy.size(), 1U);
+    EXPECT_EQ(boundaryBusy.front().context.commandId, domain::CommandId{3});
+    EXPECT_EQ(boundaryBusy.front().outcome, CommandOutcome::Busy);
+    EXPECT_EQ(provider->frameRequestCount(), 2U);
     completeEndpoint(
         FirstFrameCommand{
             .context =
@@ -3402,7 +3420,7 @@ TEST(PlaybackCoordinatorTests, ClampsAllEndpointCommandsForAOneFrameComparisonSe
                     .commandId = domain::CommandId{4},
                 },
         },
-        3U);
+        2U);
     completeEndpoint(
         LastFrameCommand{
             .context =
@@ -3412,7 +3430,7 @@ TEST(PlaybackCoordinatorTests, ClampsAllEndpointCommandsForAOneFrameComparisonSe
                     .commandId = domain::CommandId{5},
                 },
         },
-        4U);
+        3U);
 
     markGraphicsReady(coordinator);
     ASSERT_EQ(coordinator->submit(PlayCommand{
@@ -3424,7 +3442,7 @@ TEST(PlaybackCoordinatorTests, ClampsAllEndpointCommandsForAOneFrameComparisonSe
     EXPECT_EQ(rejectedPlay.front().outcome, CommandOutcome::Failed);
     ASSERT_TRUE(rejectedPlay.front().error.has_value());
     EXPECT_EQ(rejectedPlay.front().error->code, domain::MediaErrorCode::kInvalidArgument);
-    EXPECT_EQ(provider->frameRequestCount(), 5U);
+    EXPECT_EQ(provider->frameRequestCount(), 4U);
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPaused);
 }
 
@@ -3563,15 +3581,17 @@ TEST(PlaybackCoordinatorTests, SeekAdvancesGenerationCancelsOldScopeAndPublishes
     EXPECT_EQ(afterSeek->playbackGeneration, domain::PlaybackGeneration{2});
 }
 
-TEST(PlaybackCoordinatorTests, RapidStepsChainOntoNewestTargetsAndSupersedeThePriorSeek) {
+TEST(PlaybackCoordinatorTests, RapidForwardStepsEnqueueAndPresentEveryFrame) {
     const auto provider = std::make_shared<FakeFrameProvider>();
     const auto render = std::make_shared<FakeRenderChannel>();
     const auto coordinator = makeCoordinator(provider, render);
     ASSERT_NE(coordinator, nullptr);
     openReady(coordinator, provider, render);
+    const domain::PlaybackGeneration generationAtStart = coordinator->snapshot()->playbackGeneration;
 
-    // Two steps while the first seek is still in flight: targets must chain 0 -> 1 -> 2 and the
-    // first seek must be superseded (canceled) instead of bouncing off a Busy gate.
+    // Two +1 steps in flight: the stream must present every intermediate frame (0 -> 1 -> 2)
+    // instead of superseding the first seek, and advance the generation exactly once for the whole
+    // run (v1.5: no per-frame generation storm).
     ASSERT_EQ(coordinator->submit(StepFramesCommand{
                   .context = commandContext(coordinator, domain::CommandId{2}),
                   .delta = 1,
@@ -3585,19 +3605,30 @@ TEST(PlaybackCoordinatorTests, RapidStepsChainOntoNewestTargetsAndSupersedeThePr
               PortSubmitResult::Accepted);
 
     ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
-    const std::optional<FrameRequest> newest = provider->frameRequest(2U);
-    ASSERT_TRUE(newest.has_value());
-    EXPECT_EQ(newest->frameId, domain::FrameId{2});
+    const std::optional<FrameRequest> first = provider->frameRequest(1U);
+    ASSERT_TRUE(first.has_value());
+    ASSERT_EQ(first->priority, FrameRequestPriority::Sequential);
+    const std::optional<FrameRequest> prepared = provider->frameRequest(2U);
+    ASSERT_TRUE(prepared.has_value());
+    EXPECT_EQ(prepared->frameId, domain::FrameId{2});
+
+    // Present frame 1: the first step's command succeeds and the prepared frame 2 is promoted.
+    ASSERT_TRUE(provider->postFrameReady(*first, makeFrameSet(first->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*first));
+    presentPublished(coordinator, render, 1U);
 
     std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
     ASSERT_EQ(terminals.size(), 1U);
     EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
-    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Canceled);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+    EXPECT_EQ(coordinator->snapshot()->displayedFrame, domain::FrameId{1});
 
-    ASSERT_TRUE(provider->postFrameReady(*newest, makeFrameSet(newest->frameId)));
-    ASSERT_TRUE(render->waitForPublishedCount(2U));
-    ASSERT_TRUE(provider->postFrameSucceeded(*newest));
-    presentPublished(coordinator, render, 1U);
+    // Present frame 2: the second step's command succeeds. Both intermediate frames were shown.
+    ASSERT_TRUE(provider->postFrameReady(*prepared, makeFrameSet(prepared->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(3U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*prepared));
+    presentPublished(coordinator, render, 2U);
 
     terminals = waitForTerminals(coordinator, 1U);
     ASSERT_EQ(terminals.size(), 1U);
@@ -3607,6 +3638,9 @@ TEST(PlaybackCoordinatorTests, RapidStepsChainOntoNewestTargetsAndSupersedeThePr
     ASSERT_NE(after, nullptr);
     EXPECT_TRUE(after->isConsistent());
     EXPECT_EQ(after->displayedFrame, domain::FrameId{2});
+    EXPECT_EQ(after->requestedFrame, std::nullopt);
+    // The whole two-step run advanced the generation exactly once.
+    EXPECT_EQ(after->playbackGeneration.value() - generationAtStart.value(), 1U);
 }
 
 TEST(PlaybackCoordinatorTests, StepDuringPlaybackPausesBeforeSeekingTheTarget) {
@@ -4082,6 +4116,738 @@ TEST(PlaybackCoordinatorTests,
     ASSERT_TRUE(waitUntil(
         [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{3}; }));
     EXPECT_EQ(coordinator->snapshot()->playbackState, domain::PlaybackState::kPaused);
+}
+
+// ---------------------------------------------------------------------------
+// v1.5 interactive forward-step stream tests (plan section 16, application unit)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Drives one interactive step frame to the render ACK on the worker thread: FrameSetReady, render
+// publish, provider success, and render ACK. `renderIndex` is the render-published-set index to
+// ACK. Returns once the render ACK has been posted; the caller verifies the command terminal
+// separately (the terminal is emitted after the ACK commits the frame).
+void presentInteractiveStep(const std::shared_ptr<PlaybackCoordinator>& coordinator,
+                           const std::shared_ptr<FakeFrameProvider>& provider,
+                           const std::shared_ptr<FakeRenderChannel>& render,
+                           const std::optional<FrameRequest>& request,
+                           const std::size_t renderIndex) {
+    ASSERT_TRUE(request.has_value());
+    ASSERT_TRUE(provider->postFrameReady(*request, makeFrameSet(request->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(renderIndex + 1U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*request));
+    presentPublished(coordinator, render, renderIndex);
+}
+
+} // namespace
+
+TEST(PlaybackCoordinatorTests, ForwardStepUsesOneGenerationAcrossAdjacentCommands) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+    const domain::PlaybackGeneration generationAtStart = coordinator->snapshot()->playbackGeneration;
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // Both in-flight frames (current + prepared) must carry the single-advanced generation.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    for (std::size_t index = 1U; index < 3U; ++index) {
+        const std::optional<FrameRequest> request = provider->frameRequest(index);
+        ASSERT_TRUE(request.has_value());
+        EXPECT_EQ(request->context.playback.playbackGeneration,
+                  domain::PlaybackGeneration{generationAtStart.value() + 1U});
+    }
+}
+
+TEST(PlaybackCoordinatorTests, ForwardStepDoesNotSupersedeInFlightSequentialFrame) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // The first command must not be canceled (no supersede), and the provider scope must not have
+    // been canceled for the first frame.
+    std::vector<CommandTerminal> terminals = coordinator->takeCompletedCommands();
+    for (const auto& terminal : terminals) {
+        EXPECT_NE(terminal.outcome, CommandOutcome::Canceled);
+    }
+    // At most one provider-context cancellation may have occurred (the stream-start generation
+    // bump), not a per-frame cancel/reseek storm.
+    EXPECT_LE(provider->canceledContexts().size(), 1U);
+
+    // The second step's target (frame 2) must have been submitted as a prepared Sequential frame.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> prepared = provider->frameRequest(2U);
+    ASSERT_TRUE(prepared.has_value());
+    EXPECT_EQ(prepared->frameId, domain::FrameId{2});
+    EXPECT_EQ(prepared->priority, FrameRequestPriority::Sequential);
+}
+
+TEST(PlaybackCoordinatorTests, ForwardStepQueuesBoundedLookahead) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // Submit +1 steps until one reports Busy. The lookahead bound is 3 frames ahead of the
+    // displayed frame (0): targets 1, 2, 3 queue; target 4 is Busy.
+    bool sawBusy = false;
+    domain::CommandId id{2};
+    for (int i = 0; i < 10 && !sawBusy; ++i) {
+        ASSERT_EQ(coordinator->submit(
+                      StepFramesCommand{.context = commandContext(coordinator, id), .delta = 1}),
+                  PortSubmitResult::Accepted);
+        const std::vector<CommandTerminal> terminals = coordinator->takeCompletedCommands();
+        for (const auto& terminal : terminals) {
+            if (terminal.outcome == CommandOutcome::Busy) {
+                sawBusy = true;
+            }
+        }
+        id = domain::CommandId{id.value() + 1U};
+        std::this_thread::yield();
+        std::this_thread::sleep_for(1ms);
+    }
+    EXPECT_TRUE(sawBusy);
+}
+
+// Every intermediate frame must be presented, never skipped.
+TEST(PlaybackCoordinatorTests, ForwardStepPresentsEveryIntermediateFrame) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    constexpr std::size_t stepCount = 5U;
+    // Submit and present incrementally: the input lookahead bound only allows a limited lead over
+    // the displayed frame, so each +1 is submitted as the previous frame presents and the window
+    // slides forward. Every intermediate frame must be presented, never skipped.
+    std::vector<domain::FrameId> presentedIds;
+    for (std::size_t i = 0U; i < stepCount; ++i) {
+        const domain::FrameId target{static_cast<std::int64_t>(1 + i)};
+        ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                      .context = commandContext(coordinator, domain::CommandId{2 + i}),
+                      .delta = 1,
+                  }),
+                  PortSubmitResult::Accepted);
+        std::size_t foundIndex = 0U;
+        ASSERT_TRUE(waitUntil([&provider, target, &foundIndex] {
+            const std::size_t count = provider->frameRequestCount();
+            for (std::size_t index = count; index-- > 0U;) {
+                const auto r = provider->frameRequest(index);
+                if (r.has_value() && r->frameId == target) {
+                    foundIndex = index;
+                    return true;
+                }
+            }
+            return false;
+        }));
+        const std::optional<FrameRequest> request = provider->frameRequest(foundIndex);
+        ASSERT_TRUE(request.has_value());
+        presentInteractiveStep(coordinator, provider, render, request, foundIndex);
+        EXPECT_TRUE(waitUntil([&coordinator, target] {
+            return coordinator->snapshot()->displayedFrame == target;
+        }));
+        presentedIds.push_back(coordinator->snapshot()->displayedFrame.value());
+    }
+    const std::vector<domain::FrameId> expected{domain::FrameId{1}, domain::FrameId{2},
+                                                domain::FrameId{3}, domain::FrameId{4},
+                                                domain::FrameId{5}};
+    EXPECT_EQ(presentedIds, expected);
+}
+
+// Each step command completes with Succeeded only after its frame is actually presented.
+TEST(PlaybackCoordinatorTests, ForwardStepCompletesEachCommandAfterPresentation) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // Before any presentation, neither command may have succeeded.
+    for (const auto& terminal : coordinator->takeCompletedCommands()) {
+        EXPECT_NE(terminal.outcome, CommandOutcome::Succeeded);
+    }
+
+    // Wait for the two step frames to be submitted (current + prepared), then present them.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> first = provider->frameRequest(1U);
+    ASSERT_TRUE(first.has_value());
+    presentInteractiveStep(coordinator, provider, render, first, 1U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{1}; }));
+
+    std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+
+    // After frame 1 commits, frame 2 (the prepared frame) is promoted to current and re-presented.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> second = provider->frameRequest(2U);
+    ASSERT_TRUE(second.has_value());
+    presentInteractiveStep(coordinator, provider, render, second, 2U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{2}; }));
+
+    terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{3});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+}
+
+// A backward step while the forward stream is active tears the stream down and performs an exact -1.
+TEST(PlaybackCoordinatorTests, BackwardStepStopsForwardStreamAndUsesExact) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+
+    // A backward step discontinues the forward stream and is carried out as an Exact seek.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = -1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kSeeking;
+    }));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> backward = provider->frameRequest(2U);
+    ASSERT_TRUE(backward.has_value());
+    EXPECT_EQ(backward->frameId, domain::FrameId{0});
+    EXPECT_EQ(backward->priority, FrameRequestPriority::Exact);
+
+    presentInteractiveStep(coordinator, provider, render, backward, 1U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{0}; }));
+}
+
+// A random seek discontinues the forward stream.
+TEST(PlaybackCoordinatorTests, RandomSeekStopsForwardStream) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+
+    ASSERT_EQ(coordinator->submit(SeekFrameCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .frameId = domain::FrameId{4},
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kSeeking;
+    }));
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> seek = provider->frameRequest(2U);
+    ASSERT_TRUE(seek.has_value());
+    EXPECT_EQ(seek->frameId, domain::FrameId{4});
+    EXPECT_EQ(seek->priority, FrameRequestPriority::Exact);
+
+    presentInteractiveStep(coordinator, provider, render, seek, 1U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{4}; }));
+}
+
+// Play discontinues the forward stream.
+TEST(PlaybackCoordinatorTests, PlayStopsForwardStepStream) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    markGraphicsReady(coordinator);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const domain::PlaybackGeneration generationAfterStep = coordinator->snapshot()->playbackGeneration;
+
+    ASSERT_EQ(coordinator->submit(
+                  PlayCommand{.context = commandContext(coordinator, domain::CommandId{3})}),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPlaying;
+    }));
+    // Play supersedes the interactive stream and advances the generation.
+    EXPECT_GT(coordinator->snapshot()->playbackGeneration.value(), generationAfterStep.value());
+}
+
+// At the canonical end boundary, a +1 reports Busy and submits no frame past the last frame.
+TEST(PlaybackCoordinatorTests, ForwardStepAtEndDoesNotQueuePastBoundary) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // Step all the way to the final frame (openReady uses 12 frames; displayed is 0).
+    for (std::size_t i = 0U; i < 11U; ++i) {
+        ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                      .context = commandContext(coordinator, domain::CommandId{2 + i}),
+                      .delta = 1,
+                  }),
+                  PortSubmitResult::Accepted);
+        ASSERT_TRUE(provider->waitForFrameRequestCount(2U + i));
+        const std::optional<FrameRequest> request = provider->frameRequest(1U + i);
+        ASSERT_TRUE(request.has_value());
+        presentInteractiveStep(coordinator, provider, render, request, 1U + i);
+    }
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{11}; }));
+
+    // One more +1 is at the boundary: it must report Busy and not submit a 12th frame.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{100}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    // Drain any outstanding terminals from the 11 successful steps, then wait for the boundary
+    // command's Busy terminal.
+    std::vector<CommandTerminal> drained = coordinator->takeCompletedCommands();
+    ASSERT_TRUE(waitUntil([&coordinator, &drained] {
+        for (const auto& t : coordinator->takeCompletedCommands()) {
+            drained.push_back(t);
+        }
+        return std::any_of(drained.begin(), drained.end(), [](const CommandTerminal& t) {
+            return t.context.commandId == domain::CommandId{100};
+        });
+    }));
+    const auto it = std::find_if(drained.begin(), drained.end(),
+                                 [](const CommandTerminal& t) {
+                                     return t.context.commandId == domain::CommandId{100};
+                                 });
+    ASSERT_NE(it, drained.end());
+    EXPECT_EQ(it->outcome, CommandOutcome::Busy);
+    // Open frame (1) plus the 11 step frames that were submitted and presented: no 12th frame is
+    // queued past the boundary.
+    EXPECT_EQ(provider->frameRequestCount(), 12U);
+}
+
+// A provider failure while the stream is active ends the stream and fails pending commands.
+TEST(PlaybackCoordinatorTests, ProviderFailureFailsPendingStepCommands) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> current = provider->frameRequest(1U);
+    ASSERT_TRUE(current.has_value());
+
+    // Fail the current frame's provider request.
+    ASSERT_TRUE(provider->postFrameFailed(*current,
+                                          domain::makeMediaError(
+                                              domain::MediaErrorCode::kMediaDecodeFailed,
+                                              domain::MediaOperation::kMediaDecode, std::nullopt,
+                                              false, "test decode failure.")));
+
+    std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 2U);
+    ASSERT_EQ(terminals.size(), 2U);
+    for (const auto& terminal : terminals) {
+        EXPECT_EQ(terminal.outcome, CommandOutcome::Failed);
+    }
+    EXPECT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+    }));
+}
+
+// Device loss invalidates the forward stream.
+TEST(PlaybackCoordinatorTests, DeviceLossInvalidatesForwardStepStream) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    markGraphicsReady(coordinator);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+
+    const domain::MediaError deviceLost =
+        domain::makeMediaError(domain::MediaErrorCode::kGraphicsDeviceLost,
+                               domain::MediaOperation::kGraphicsInitialization, std::nullopt,
+                               false, "device lost");
+    ASSERT_EQ(coordinator->postCritical(ApplicationEvent{GraphicsDeviceLost{
+                  .context = GraphicsEventContext{.deviceGeneration = domain::DeviceGeneration{3}},
+                  .error = deviceLost,
+              }}),
+              EventPostResult::Accepted);
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        return !coordinator->snapshot()->graphicsReady &&
+               coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+    }));
+    EXPECT_EQ(coordinator->snapshot()->deviceGeneration, domain::DeviceGeneration{3});
+}
+
+// Shutdown cancels the forward stream boundedly, completing pending commands as Closed.
+// Regression test for the "no successor became current, but commands are still queued" path in
+// commitInteractiveStepFrameIfComplete: when the current frame commits with no prepared successor
+// and the next queued frame's submit is rejected by the provider, the queued step command must be
+// completed (Canceled) — never silently dropped, which would leave the UI's frame-pending indicator
+// dangling and strand the run.
+TEST(PlaybackCoordinatorTests, ForwardStepNoSuccessorSubmitRejectionCompletesQueuedCommand) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // Refuse every submit for frame 2: the prepared slot can never fill, so when frame 1 commits
+    // the stream must re-submit frame 2 from the queued-commands branch — and that re-submit is the
+    // one that gets rejected here.
+    provider->setRejectedFrameIds({domain::FrameId{2}});
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{4}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // Frame 0 (open) and frame 1 (the first step) are submitted; frame 2 is refused, so the count
+    // holds at 2. Wait until both enqueues have been processed (their frame-2 submits rejected) so
+    // the prepared slot is empty but the queue holds commands 3 and 4 when frame 1 commits.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    ASSERT_TRUE(waitUntil([&coordinator] {
+        const auto snapshot = coordinator->snapshot();
+        return snapshot->requestedFrame == domain::FrameId{3};
+    }));
+    const std::optional<FrameRequest> firstStep = provider->frameRequest(1U);
+    ASSERT_TRUE(firstStep.has_value());
+    ASSERT_EQ(firstStep->frameId, domain::FrameId{1});
+
+    // Present frame 1: it commits, there is no prepared successor, and the branch re-submits
+    // frame 2 — which the provider rejects.
+    ASSERT_TRUE(provider->postFrameReady(*firstStep, makeFrameSet(firstStep->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*firstStep));
+    presentPublished(coordinator, render, 1U);
+
+    // Command 2 (frame 1) succeeds; commands 3 and 4 (queued, then re-subjected to the rejection)
+    // must both be completed as Canceled — not lost.
+    std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 3U);
+    ASSERT_EQ(terminals.size(), 3U);
+    std::map<domain::CommandId, CommandOutcome> outcomes;
+    for (const auto& terminal : terminals) {
+        outcomes.emplace(terminal.context.commandId, terminal.outcome);
+    }
+    ASSERT_EQ(outcomes[domain::CommandId{2}], CommandOutcome::Succeeded);
+    ASSERT_EQ(outcomes[domain::CommandId{3}], CommandOutcome::Canceled);
+    ASSERT_EQ(outcomes[domain::CommandId{4}], CommandOutcome::Canceled);
+    EXPECT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+    }));
+    EXPECT_EQ(coordinator->snapshot()->requestedFrame, std::nullopt);
+}
+
+// A frame can be presented (render ACK) before the provider-success event arrives, so
+// framePresented is true while the command is not yet committed (commit also needs
+// providerSucceeded). A discontinuity in that window tears the stream down; the not-yet-
+// presented guard in stopInteractiveStepRun must not silently drop that command — it must still
+// receive a terminal (Canceled) so the UI's frame-pending indicator clears.
+TEST(PlaybackCoordinatorTests, ForwardStepPresentedThenInterruptedCompletesCommand) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // +1 → frame 1 current.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U)); // open frame 0 + step frame 1
+    const std::optional<FrameRequest> step = provider->frameRequest(1U);
+    ASSERT_TRUE(step.has_value());
+    ASSERT_EQ(step->frameId, domain::FrameId{1});
+
+    // Make frame 1's set ready and render-publish it, then ACK the render (framePresented=true)
+    // WITHOUT posting provider success: the frame is presented but the command is not committed.
+    ASSERT_TRUE(provider->postFrameReady(*step, makeFrameSet(step->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U)); // open frame 0 + step frame 1
+    presentPublished(coordinator, render, 1U);
+
+    // A backward step is a discontinuity that tears the stream down while frame 1 is presented
+    // but uncommitted. The step command (cmd 2) must still receive a terminal, not be dropped.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = -1,
+              }),
+              PortSubmitResult::Accepted);
+
+    bool sawStepCommand = false;
+    const bool completed = waitUntil([&coordinator, &sawStepCommand] {
+        for (const auto& terminal : coordinator->takeCompletedCommands()) {
+            if (terminal.context.commandId == domain::CommandId{2}) {
+                sawStepCommand = true;
+                EXPECT_EQ(terminal.outcome, CommandOutcome::Canceled);
+            }
+        }
+        return sawStepCommand;
+    });
+    ASSERT_TRUE(completed);
+    EXPECT_TRUE(sawStepCommand);
+}
+
+TEST(PlaybackCoordinatorTests, ShutdownCancelsForwardStepStreamBoundedly) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+
+    coordinator->shutdown();
+    // Both pending step commands must be completed as Closed after shutdown drains.
+    std::vector<CommandTerminal> terminals;
+    ASSERT_TRUE(waitUntil([&coordinator, &terminals] {
+        terminals = coordinator->takeCompletedCommands();
+        return !terminals.empty();
+    }));
+    for (const auto& terminal : terminals) {
+        EXPECT_EQ(terminal.outcome, CommandOutcome::Closed);
+    }
+}
+
+// Plan section 6: a +1 step may always use Sequential priority, because the provider falls back to
+// an Exact decode whenever continuity is unavailable. The very first +1 step runs with cold
+// continuity (no warm decoder cursor yet), so it exercises that fallback end-to-end: the
+// coordinator must submit a Sequential request and still present the exact target frame.
+TEST(PlaybackCoordinatorTests, ForwardStepFallsBackToExactAtDiscontinuity) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    // A single +1 step from a cold start: no warm sequential cursor exists yet.
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // The cold-start step must request Sequential priority (continuity is not a prerequisite), and
+    // the provider's internal Exact fallback must still yield the exact frame.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U)); // open frame 0 + step frame 1
+    const std::optional<FrameRequest> step = provider->frameRequest(1U);
+    ASSERT_TRUE(step.has_value());
+    EXPECT_EQ(step->priority, FrameRequestPriority::Sequential);
+    EXPECT_EQ(step->frameId, domain::FrameId{1});
+
+    presentInteractiveStep(coordinator, provider, render, step, 1U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{1}; }));
+
+    const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Succeeded);
+}
+
+// The presentation deadline guards an interactive step frame: if the render ACK never arrives
+// before the deadline elapses, the stream must tear down and the pending step command must fail
+// (plan section 14.1, decode-failure semantics). The FakeDeadlineScheduler.fire seam drives the
+// untested handleElapsedDeadline branch for the interactive run.
+TEST(PlaybackCoordinatorTests, ForwardStepPresentationTimeoutFailsStream) {
+    const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider,
+                                             render,
+                                             std::make_shared<FakeMediaProbe>(),
+                                             scheduler,
+                                             std::make_shared<FakeSteadyClock>());
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // Wait for the step frame's presentation deadline to be scheduled. The open frame armed one
+    // during openReady; the step frame's is the most recently scheduled.
+    ASSERT_TRUE(waitUntil([&scheduler] { return scheduler->scheduleCount() >= 2U; }));
+    ASSERT_TRUE(scheduler->fire(scheduler->scheduleCount() - 1U));
+
+    // The recoverable presentation-timeout error tears the stream down and completes the step
+    // command as Canceled (not Failed) and leaves the coordinator paused.
+    EXPECT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+    }));
+    const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Canceled);
+    ASSERT_TRUE(terminals.front().error.has_value());
+    EXPECT_EQ(terminals.front().error->code, domain::MediaErrorCode::kFramePresentationTimedOut);
+}
+
+// A prepared successor frame whose FrameSetReady carries the wrong canonical frame id cannot become
+// the current frame. The branch must drop it and re-queue its command (rather than silently losing
+// it) so the frame is re-submitted once the pipeline advances (plan section 4.3). This drives the
+// untested prepared-frame mismatch path in handleFrameSet.
+TEST(PlaybackCoordinatorTests, ForwardStepPreparedFrameMismatchRequeuesCommand) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // open frame 0 + step frame 1 (current) + step frame 2 (prepared).
+    ASSERT_TRUE(provider->waitForFrameRequestCount(3U));
+    const std::optional<FrameRequest> current = provider->frameRequest(1U);
+    ASSERT_TRUE(current.has_value());
+    const std::optional<FrameRequest> prepared = provider->frameRequest(2U);
+    ASSERT_TRUE(prepared.has_value());
+    EXPECT_EQ(prepared->frameId, domain::FrameId{2});
+
+    // The prepared frame's set arrives with a mismatched canonical frame id: it must be dropped and
+    // its command re-queued, not presented.
+    ASSERT_TRUE(provider->postFrameReady(*prepared, makeFrameSet(domain::FrameId{99})));
+
+    // Present the current frame 1; committing it promotes the re-queued command and re-submits
+    // frame 2 as the new current frame (the prepared slot was dropped).
+    presentInteractiveStep(coordinator, provider, render, current, 1U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{1}; }));
+
+    // The re-submitted frame 2 request must carry Sequential priority and the correct frame id.
+    ASSERT_TRUE(provider->waitForFrameRequestCount(4U));
+    const std::optional<FrameRequest> resubmitted = provider->frameRequest(3U);
+    ASSERT_TRUE(resubmitted.has_value());
+    EXPECT_EQ(resubmitted->frameId, domain::FrameId{2});
+    EXPECT_EQ(resubmitted->priority, FrameRequestPriority::Sequential);
+
+    // The resubmitted frame 2 renders at index 2 (open frame 0, frame 1, frame 2).
+    presentInteractiveStep(coordinator, provider, render, resubmitted, 2U);
+    EXPECT_TRUE(waitUntil(
+        [&coordinator] { return coordinator->snapshot()->displayedFrame == domain::FrameId{2}; }));
+
+    // Both step commands must have succeeded: cmd 2 (frame 1) and the re-queued cmd 3 (frame 2).
+    // Collect all terminals rather than assuming an order/count, then assert each outcome.
+    std::vector<CommandTerminal> terminals;
+    ASSERT_TRUE(waitUntil([&coordinator, &terminals] {
+        for (const auto& terminal : coordinator->takeCompletedCommands()) {
+            terminals.push_back(terminal);
+        }
+        return std::any_of(terminals.begin(), terminals.end(),
+                           [](const CommandTerminal& t) {
+                               return t.context.commandId == domain::CommandId{3};
+                           });
+    }));
+    std::map<domain::CommandId, CommandOutcome> outcomes;
+    for (const auto& terminal : terminals) {
+        outcomes.emplace(terminal.context.commandId, terminal.outcome);
+    }
+    ASSERT_EQ(outcomes[domain::CommandId{2}], CommandOutcome::Succeeded);
+    ASSERT_EQ(outcomes[domain::CommandId{3}], CommandOutcome::Succeeded);
 }
 
 } // namespace
