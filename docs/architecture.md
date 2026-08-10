@@ -11,7 +11,7 @@ multi-source decode/render pipeline, three-up/reference-focus layouts, selectabl
 difference edges, confidence-gated global/sequence alignment, manual anchors, and
 timeline diagnostics are in the codebase today. The GUI project open/save/relink loop and
 schema v4 were removed — VCStation manages only the current open 1–3 video session and does
-not persist projects (see USERPLAN.md). The review surface includes synchronized pan/zoom, ROI,
+not persist projects. The review surface includes synchronized pan/zoom, ROI,
 threshold masks, the four-panel analysis grid, exact-plane difference with a persistent
 exactness classification, P010/10-bit software decode, broader YUV/RGB normalization,
 transfer metadata, rotation, SAR, and shared-device D3D11VA decode. Decoder-owned NV12/P010
@@ -128,7 +128,7 @@ cache-cursor move. Playing → first frame-step pauses, then seeks.
 The inward-only dependency allow-list stays: `domain` depends on nothing,
 `application` only on `domain`, adapters (`media_ffmpeg`, `platform_windows`,
 `persistence_json`, `ui_qml`) implement application ports, `app` composes. New target
-modules from USERPLAN §10 are introduced by capability rather than leaking adapter
+modules are introduced by capability rather than leaking adapter
 types into the core: offset estimation, banded sequence alignment, and manual-anchor
 mapping now live in `application`; split TimelineIndexer/FrameCache work remains for
 later media/performance phases. `jobs_ffmpeg` was removed in Phase 1.

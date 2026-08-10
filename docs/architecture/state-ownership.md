@@ -1,5 +1,9 @@
 # Review state ownership
 
+> **Status note.** The per-area view-model classes are not yet split out. The capability names in
+> the table are exposed by `ReviewSessionFacade`, which currently backs each with an existing
+> controller; see the migration note at the end of this page.
+
 VCStation keeps one immutable `SessionSnapshot` as media truth. UI objects project that snapshot;
 they do not query decoder or renderer workers directly.
 

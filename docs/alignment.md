@@ -1,6 +1,6 @@
 # Time Alignment
 
-Status: **implemented** (USERPLAN phase 4). Strict index, explicit manual global
+Status: **implemented** (shipped in v1.6.0). Strict index, explicit manual global
 offsets, confidence-gated automatic global offsets, bounded full-sequence mapping,
 manual anchors, and timeline diagnostics are available.
 

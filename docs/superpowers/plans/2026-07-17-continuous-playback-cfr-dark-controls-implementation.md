@@ -1,3 +1,5 @@
+> **Status: executed.** Implemented and shipped. Retained for design-history context.
+
 # Continuous Playback, CFR Verification, and Dark Controls Implementation Plan
 
 **Date:** 2026-07-17

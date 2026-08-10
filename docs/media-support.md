@@ -1,6 +1,6 @@
 # Media Support
 
-Status: **current 1.4 contract**. VP9, AV1, HDR/tone mapping, audio, and additional video
+Status: **current 1.6 contract** — all three stages (software correctness, format compatibility, D3D11VA hardware decode) are implemented. VP9, AV1, HDR/tone mapping, audio, and additional video
 encoding work are intentionally outside this release.
 
 ## What opens today
@@ -58,14 +58,14 @@ stated in the UI (`Resampled comparison — not pixel-exact`).
 
 ## Stages
 
-- **Stage 1 — correctness first (phase 6a, complete):** keep software decode; formally cover
+- **Stage 1 — correctness first (implemented):** keep software decode; formally cover
   H.264/HEVC/MPEG-4 Part 2, 8-bit YUV420, CFR/VFR, non-zero start PTS, B-frame
   ordering, MP4/MOV/MKV/AVI, rotation and SAR metadata, and differing resolutions.
-- **Stage 2 — compatibility (phase 6b, implemented for current software profiles):**
+- **Stage 2 — compatibility (implemented):**
   P010/10-bit, 4:2:2/4:4:4, RGB input, transfer metadata, rotation, and SAR are covered by
   real fixtures and WARP pixel-readback tests. A native BGRA storage/render path remains
   optional because RGB input already has a deterministic visual normalization path.
-- **Stage 3 — hardware decode (phase 6c, implemented):** FFmpeg D3D11VA with one decode context
+- **Stage 3 — hardware decode (implemented):** FFmpeg D3D11VA with one decode context
   per source sharing a single D3D11 device, NV12/P010 textures going straight to the
   renderer (no GPU→CPU→GPU), device-generation rejection, and software fallback with a
   queryable backend/fallback reason. H.264 NV12, HEVC Main10 P010, direct array-slice

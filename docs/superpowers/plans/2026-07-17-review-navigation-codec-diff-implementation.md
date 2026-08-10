@@ -1,7 +1,6 @@
-# Review Navigation, Codec, and Diff Implementation Plan
+> **Status: executed.** Implemented and shipped. Retained for design-history context.
 
-> Status: approved for execution. Keep every checkpoint buildable and preserve atomic A/B
-> presentation acknowledgement.
+# Review Navigation, Codec, and Diff Implementation Plan
 
 ## Baseline and Test Loop
 

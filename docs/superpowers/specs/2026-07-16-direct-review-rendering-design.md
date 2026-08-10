@@ -1,8 +1,8 @@
+> **Status: implemented.** Superseded by the production implementation. Retained for design-history context.
+
 # Direct Review and D3D11 Rendering Design
 
 **Date:** 2026-07-16
-
-**Status:** Approved for implementation planning
 
 **Target:** `DualVideoStudio` direct-review vertical slice
 

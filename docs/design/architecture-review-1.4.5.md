@@ -1,3 +1,5 @@
+> **Status: historical.** This architecture review was the basis for the 1.4.5/1.5 refactoring direction. Some recommendations were implemented (presentation_contract, dependency-rules, state-ownership, feature-change-impact); others remain target state. The current architecture lives in [../architecture.md](../architecture.md).
+
 # 核心结论
 
 **有必要重构，但不应该推翻现有架构重写。**

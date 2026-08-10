@@ -1,6 +1,6 @@
-# Direct Review and D3D11 Rendering Implementation Plan
+> **Status: executed.** Implemented and shipped. Retained for design-history context.
 
-> Status: ready for execution. Implement each task test-first and keep every commit buildable.
+# Direct Review and D3D11 Rendering Implementation Plan
 
 ## Objective
 

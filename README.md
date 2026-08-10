@@ -4,7 +4,7 @@ VCStation 是面向 Windows 的 1～3 路逐帧视频工作站，使用 C++20、
 FFmpeg 动态库和 D3D11。单个视频可直接播放和逐帧审查；多路素材会被放在同一个
 canonical frame position 上，支持任意两路 Wipe/Diff、显式对齐以及缺帧和重复帧诊断。
 
-当前产品计划和验收范围以 [USERPLAN.md](USERPLAN.md) 为准。`legacy/` 只保存历史实现作为行为参考，
+当前产品计划和验收范围以 [docs/architecture.md](docs/architecture.md) 和 [docs/releases/](docs/releases/) 为准。`legacy/` 只保存历史实现作为行为参考，
 不参与构建。
 
 ---
@@ -101,13 +101,10 @@ ctest --preset hardware-d3d11 --output-on-failure
 ctest --preset performance-d3d11 --output-on-failure
 ```
 
-`v1.4.5` 标签触发的 Release workflow 生成明确标注为未签名的 ZIP、MSI、EXE、CLI 和
-`VCStationShell-1.4.dll`，再执行真实安装、1.2.0→1.4.5 升级、有效 A/B Pair 设置回归
-与 shutdown soak 门禁。
-MSI 为五种受支持的视频扩展名注册 VCStation 命令；Shell DLL 接受 1～3 个本地视频，
-分别显示“Open in VCStation”“Compare with VCStation”或“Compare 3 videos with VCStation”，
-并通过 Unicode `CreateProcessW` 启动应用。SHA-256 只用于校验完整性，不代表发布者身份；
-Windows 可能显示 Unknown Publisher 或 SmartScreen 提示。
+Release workflow 生成明确标注为未签名的 ZIP、MSI、EXE、CLI 与 Shell DLL，并执行真实
+安装、升级、A/B Pair 设置回归与 shutdown soak 门禁；SHA-256 只用于校验完整性，不代表
+发布者身份。runner 标签、素材清单与发布合同详见
+[docs/self-hosted-runner.md](docs/self-hosted-runner.md)。
 
 ---
 

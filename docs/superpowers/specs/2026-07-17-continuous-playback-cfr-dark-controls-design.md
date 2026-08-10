@@ -1,8 +1,8 @@
+> **Status: implemented.** Superseded by the production implementation. Retained for design-history context.
+
 # Continuous Playback, CFR Verification, and Dark Controls Design
 
 **Date:** 2026-07-17
-
-**Status:** Approved for implementation planning
 
 **Target:** DualVideoStudio direct-review workflow
 

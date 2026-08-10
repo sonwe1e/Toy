@@ -1,6 +1,6 @@
-# Review Navigation, Codec, and Diff Design
+> **Status: implemented.** Superseded by the production implementation. Retained for design-history context.
 
-> Status: approved design, ready for implementation planning.
+# Review Navigation, Codec, and Diff Design
 
 ## Objective
 

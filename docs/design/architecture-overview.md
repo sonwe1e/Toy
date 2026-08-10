@@ -9,4 +9,4 @@ The playback contract is frame-based and atomic: a render update always contains
 
 Qt Quick owns presentation, FFmpeg owns media decoding and child-process transforms, and `platform_windows` owns D3D11 resources, process supervision, and atomic file publication. Framework/native types do not cross application ports. VCStation manages only the current open 1–3 video session and does not persist projects or Bad Case captures. Settings and generated output writes remain transactional. Asynchronous work is scoped by session, playback, job, and device identities.
 
-See `AGENTS.md` for the operational invariants and repository commands. The current product direction (session-only, no project persistence) is documented in `USERPLAN.md`.
+See `AGENTS.md` for the operational invariants and repository commands. The current product direction (session-only, no project persistence) is documented in [`architecture.md`](../architecture.md).
