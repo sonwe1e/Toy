@@ -343,6 +343,7 @@ public:
                 }
             } else if (playback.playbackGeneration != latestFrameContext_->playbackGeneration) {
                 latestFrameContext_ = playback;
+                generationDeltaCount_.fetch_add(1U, std::memory_order_release);
                 cancelOutdatedFrameQueuesLocked(playback, &displaced);
                 interrupt = cancelActiveOutdatedFrameLocked(playback);
             }
@@ -361,6 +362,7 @@ public:
                     exactQueue_.push_back(std::move(operation));
                     break;
                 case application::FrameRequestPriority::Sequential:
+                    sequentialRequestCount_.fetch_add(1U, std::memory_order_release);
                     while (sequentialQueue_.size() >= kSequentialRequestSlots) {
                         cancelFrontLocked(sequentialQueue_,
                                           application::CancellationReason::Superseded,
@@ -456,8 +458,14 @@ public:
                 samePlaybackScope(playbackContext(*activeOperation_), context)) {
                 interrupt = activeOperation_->requestCancellation(
                     application::CancellationReason::UserRequested);
+                if (interrupt) {
+                    // The active operation is canceled but not displaced into the queue
+                    // collection; count it so the cancel total reflects every coordinator cancel.
+                    cancelCount_.fetch_add(1U, std::memory_order_release);
+                }
             }
         }
+        cancelCount_.fetch_add(displaced.size(), std::memory_order_release);
         if (interrupt) {
             interruptRequested_.store(true, std::memory_order_release);
         }
@@ -494,6 +502,10 @@ public:
             .maximumAssemblyMicroseconds =
                 maximumAssemblyMicroseconds_.load(std::memory_order_acquire),
             .frameSetCacheHits = frameSetCacheHitCount_.load(std::memory_order_acquire),
+            .sequentialRequestCount = sequentialRequestCount_.load(std::memory_order_acquire),
+            .cancelCount = cancelCount_.load(std::memory_order_acquire),
+            .decoderReopenCount = decoderReopenCount_.load(std::memory_order_acquire),
+            .generationDeltaCount = generationDeltaCount_.load(std::memory_order_acquire),
         };
     }
 
@@ -793,6 +805,14 @@ private:
             return;
         }
 
+        // Reopening a decoder session that is already active (sources opened, then re-opened
+        // without an intervening close) counts as a decoder reopen. The healthy held-forward
+        // fixture never triggers this, so the gate expects zero. This hook cannot see
+        // per-source decoder error-triggered reopens that SourceDecodeActor recovers internally;
+        // those are intentionally not counted here.
+        if (!decodeActors_.empty()) {
+            decoderReopenCount_.fetch_add(1U, std::memory_order_release);
+        }
         closeDecodeActors();
         interruptRequested_.store(false, std::memory_order_release);
         try {
@@ -1453,6 +1473,10 @@ private:
     std::atomic<std::uint64_t> assembledFrameSets_ = 0U;
     std::atomic<std::uint64_t> totalAssemblyMicroseconds_ = 0U;
     std::atomic<std::uint64_t> maximumAssemblyMicroseconds_ = 0U;
+    std::atomic<std::uint64_t> sequentialRequestCount_ = 0U;
+    std::atomic<std::uint64_t> cancelCount_ = 0U;
+    std::atomic<std::uint64_t> decoderReopenCount_ = 0U;
+    std::atomic<std::uint64_t> generationDeltaCount_ = 0U;
 };
 
 MultiSourceFrameProvider::MultiSourceFrameProvider(

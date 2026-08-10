@@ -531,13 +531,16 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     QCoreApplication::processEvents();
     EXPECT_TRUE(immersiveHud->property("visible").toBool());
 
+    // Left/Right step a single frame in every preset (plan 1.5.md §11.1). Preset 1 (Player) no
+    // longer maps Right to a 5-second jump (5 * 30 = 150 frames) — that violated the ±1 expectation.
+    // Multi-frame jumps in preset 1 remain available via Ctrl+Right (stepSeconds(30)).
     preferences.setShortcutPreset(1);
     QCoreApplication::processEvents();
     sendKey(*window, Qt::Key_Right);
     ASSERT_FALSE(submitted.empty());
     const auto* const playerStep = std::get_if<application::StepFramesCommand>(&submitted.back());
     ASSERT_NE(playerStep, nullptr);
-    EXPECT_EQ(playerStep->delta, 5 * 30);
+    EXPECT_EQ(playerStep->delta, 1);
     terminals.push_back(application::CommandTerminal{
         .context = application::commandContext(submitted.back()),
         .outcome = application::CommandOutcome::Succeeded,
@@ -717,6 +720,164 @@ TEST(MainQmlContractTests, InstantiatesRootAndSeparatesManualAlignmentStates) {
     EXPECT_FALSE(analyzeMenu->property("enabled").toBool());
     EXPECT_TRUE(reviewContextMenu->property("emptyStateOnly").toBool());
     EXPECT_EQ(reviewContextMenu->property("availableActionCount").toInt(), 2);
+}
+
+TEST(MainQmlContractTests, DockedTransportResolvesContextuallyAndClearsViewport) {
+    // Harness: a mutable two-source session so the contextual transport rule can be
+    // exercised across multi (pinned/docked), single (auto-hide/overlay), and empty
+    // (hidden) topologies on one instantiated Main.qml.
+    auto snapshot = std::make_shared<application::SessionSnapshot>();
+    snapshot->graphicsReady = true;
+    snapshot->sessionState = domain::SessionState::kReady;
+    snapshot->playbackState = domain::PlaybackState::kPaused;
+    snapshot->displayedFrame = domain::FrameId{0};
+    snapshot->canonicalFrameCount = 10U;
+    snapshot->sources = {
+        application::SessionSourceView{
+            .sourceId = 0U,
+            .role = domain::ComparisonRole::kReference,
+            .displayName = "A",
+        },
+        application::SessionSourceView{
+            .sourceId = 1U,
+            .role = domain::ComparisonRole::kPrediction,
+            .displayName = "B",
+        },
+    };
+    snapshot->presentedSources = {
+        application::PresentedSourceState{
+            .sourceId = 0U,
+            .sourceFrameId = domain::FrameId{0},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+        },
+        application::PresentedSourceState{
+            .sourceId = 1U,
+            .sourceFrameId = domain::FrameId{0},
+            .matchKind = application::FrameMatchKind::ExactIndex,
+        },
+    };
+    std::vector<application::PlaybackCommand> submitted;
+    std::vector<application::CommandTerminal> terminals;
+    ReviewController controller{
+        ReviewController::Dependencies{
+            .submit =
+                [&submitted](application::PlaybackCommand command) {
+                    submitted.push_back(std::move(command));
+                    return application::PortSubmitResult::Accepted;
+                },
+            .snapshot = [snapshot] { return snapshot; },
+            .takeCompletedCommands =
+                [&terminals] {
+                    std::vector<application::CommandTerminal> result = std::move(terminals);
+                    terminals.clear();
+                    return result;
+                },
+        },
+    };
+    ReviewPreferencesController preferences{std::make_shared<ClosedSettingsRepository>()};
+    ReviewShellController shell{controller, preferences};
+    ReviewSessionFacade facade{controller, preferences, shell};
+
+    QQmlEngine engine;
+    engine.addImportPath(
+        QDir{QCoreApplication::applicationDirPath()}.filePath(QStringLiteral("qml")));
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewController"), &controller);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewPreferences"), &preferences);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewSession"), &shell);
+    engine.rootContext()->setContextProperty(QStringLiteral("reviewFacade"), &facade);
+    QQmlComponent component{&engine, QUrl{QStringLiteral("qrc:/qml/Main.qml")}};
+    ASSERT_EQ(component.status(), QQmlComponent::Ready) << componentErrors(component);
+
+    std::unique_ptr<QObject> root{component.create()};
+    ASSERT_NE(root, nullptr) << componentErrors(component);
+    auto* const window = qobject_cast<QQuickWindow*>(root.get());
+    ASSERT_NE(window, nullptr);
+
+    window->resize(960, 640);
+    window->show();
+    const auto processLayout = [] {
+        for (int iteration = 0; iteration < 5; ++iteration) {
+            QCoreApplication::processEvents();
+        }
+    };
+    processLayout();
+
+    auto* const transport = root->findChild<QQuickItem*>(QStringLiteral("transport"));
+    auto* const viewport = root->findChild<QQuickItem*>(QStringLiteral("mediaViewportFocusTarget"));
+    ASSERT_NE(transport, nullptr);
+    ASSERT_NE(viewport, nullptr);
+
+    const auto rectInContent = [&](QQuickItem* item) {
+        const QPointF tl = item->mapToItem(window->contentItem(), QPointF{0.0, 0.0});
+        return QRectF(tl.x(), tl.y(), item->width(), item->height());
+    };
+
+    // --- Multi-source: contextual rule resolves to pinned/docked. ---
+    ASSERT_EQ(controller.sourceCount(), 2);
+    EXPECT_FALSE(root->property("singleMode").toBool());
+    EXPECT_TRUE(root->property("transportDocked").toBool());
+    EXPECT_FALSE(root->property("transportOverlay").toBool());
+    EXPECT_FALSE(root->property("transportHidden").toBool());
+
+    // Docked transport must sit below the viewport and not geometrically intersect it.
+    {
+        const QRectF transportRect = rectInContent(transport);
+        const QRectF viewportRect = rectInContent(viewport);
+        EXPECT_FALSE(transportRect.intersects(viewportRect))
+            << "docked transport must not intersect viewport (transport=" << transportRect.x()
+            << "," << transportRect.y() << " " << transportRect.width() << "x"
+            << transportRect.height() << " viewport=" << viewportRect.x() << ","
+            << viewportRect.y() << " " << viewportRect.width() << "x" << viewportRect.height()
+            << ")";
+        EXPECT_GE(transportRect.top(), viewportRect.bottom() - 1.0)
+            << "docked transport top must be at/under viewport bottom";
+    }
+
+    // Transport right edge stays within the content width at 960x640.
+    {
+        const QPointF transportRight =
+            transport->mapToItem(window->contentItem(), QPointF{transport->width(), 0.0});
+        EXPECT_LE(transportRight.x(), window->contentItem()->width() + 1.0);
+    }
+
+    // --- Single source: contextual rule resolves to auto-hide/overlay. ---
+    snapshot->sources.resize(1U);
+    snapshot->presentedSources.resize(1U);
+    controller.refreshProjection();
+    processLayout();
+    EXPECT_EQ(controller.sourceCount(), 1);
+    EXPECT_TRUE(root->property("singleMode").toBool());
+    EXPECT_FALSE(root->property("transportDocked").toBool());
+    EXPECT_TRUE(root->property("transportOverlay").toBool());
+    EXPECT_FALSE(root->property("transportHidden").toBool());
+
+    // Overlay transport must overlap the canvas (intersects the viewport footprint).
+    {
+        const QRectF transportRect = rectInContent(transport);
+        const QRectF viewportRect = rectInContent(viewport);
+        EXPECT_TRUE(transportRect.intersects(viewportRect))
+            << "overlay transport must intersect viewport (transport=" << transportRect.x()
+            << "," << transportRect.y() << " " << transportRect.width() << "x"
+            << transportRect.height() << " viewport=" << viewportRect.x() << ","
+            << viewportRect.y() << " " << viewportRect.width() << "x" << viewportRect.height()
+            << ")";
+    }
+
+    // --- Empty: transport hidden and its controls disabled. ---
+    snapshot->sources.clear();
+    snapshot->presentedSources.clear();
+    snapshot->sessionState = domain::SessionState::kEmpty;
+    snapshot->displayedFrame.reset();
+    snapshot->canonicalFrameCount = 0U;
+    controller.refreshProjection();
+    processLayout();
+    EXPECT_EQ(controller.sourceCount(), 0);
+    EXPECT_TRUE(root->property("transportHidden").toBool());
+    EXPECT_FALSE(root->property("transportDocked").toBool());
+    EXPECT_FALSE(root->property("transportOverlay").toBool());
+    EXPECT_FALSE(transport->isVisible());
+    EXPECT_FALSE(transport->property("controlsEnabled").toBool())
+        << "hidden auto-hide panel must expose controlsEnabled == false";
 }
 
 TEST(MainQmlContractTests, ShowsIntentMessageOnSynchronousRejection) {

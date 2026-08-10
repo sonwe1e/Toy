@@ -120,6 +120,10 @@ Item {
     }
 
     Rectangle {
+        // The playhead thumb. Its full box (including the ~6 px that extend below the rail) must
+        // clear the transport bar above which TimelineTracks sits — see PlayerOsc's content-driven
+        // height, which reserves exactly this much vertical room.
+        objectName: "playheadThumb"
         width: 13
         height: 13
         radius: 6.5

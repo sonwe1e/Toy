@@ -55,6 +55,20 @@ constexpr auto kPlaybackCatchUpTolerance = 2000ms;
 // read-aheads internally. Bounding the input prevents an OS auto-repeat from queuing a long tail
 // of work that outlives the key release.
 constexpr auto kInteractiveStepInputLookahead = 3U;
+// Why an active interactive forward-step stream is being torn down. The cancel path (navigation
+// superseded, play, session/device change, shutdown) completes pending step commands as
+// Canceled/Closed and does NOT set lastError: these are normal navigation events, not coordinator
+// errors. The failure path (provider failure, render closed, presentation timeout, mismatched
+// FrameSet, unrecoverable graphics failure) sets lastError and fails pending commands. The two
+// paths share teardown (cancel timers/provider, clear render, advance generation) but differ on
+// lastError and command outcome, which is why stopInteractiveStepRun(error) was split.
+enum class InteractiveStepStopReason {
+    NavigationSuperseded,
+    PlaybackStarted,
+    SessionChanged,
+    DeviceChanged,
+    Shutdown,
+};
 enum class PendingPhase {
     kOpeningProvider,
     kOpeningFirstFrame,
@@ -969,9 +983,9 @@ private:
         const PortSubmitResult deadlineResult =
             dependencies_.deadlineScheduler->schedule(deadline, eventSink_);
         if (deadlineResult != PortSubmitResult::Accepted) {
-            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                    "The interactive step presentation deadline could "
-                                                    "not be scheduled."));
+            // The presentation deadline scheduler is at capacity (transient backpressure): tear the
+            // stream down as a normal cancel rather than surfacing a coordinator error.
+            cancelInteractiveStepRun(InteractiveStepStopReason::NavigationSuperseded);
             return false;
         }
         frame.presentationTimerId = timerId;
@@ -1013,9 +1027,11 @@ private:
         }
         if (dependencies_.renderChannel->publish(frame.context, *frame.set) ==
             RenderPublishResult::Closed) {
-            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                    "The render channel closed before it accepted the "
-                                                    "interactive step frame set."));
+            // The render channel closed before it could accept the frame set: a hard render
+            // failure, not a normal navigation — surface it via lastError.
+            failInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
+                                                   "The render channel closed before it accepted the "
+                                                   "interactive step frame set."));
             return;
         }
         frame.framePublished = true;
@@ -1106,13 +1122,12 @@ private:
             }
             if (submitInteractiveStepRequest(interactiveStepRun_->frame->frame) !=
                 PortSubmitResult::Accepted) {
-                // The provider rejected the request: the just-popped command would be lost if we
-                // only reset the frame. Tear the run down so every not-yet-presented command (this
-                // one plus the rest of the queue) receives a terminal, mirroring the first-frame
-                // failure path in beginInteractiveForwardStep.
-                stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                        "The frame provider did not accept the "
-                                                        "interactive step frame request."));
+                // The provider rejected the request (transient backpressure): the just-popped
+                // command would be lost if we only reset the frame. Tear the run down as a cancel
+                // so every not-yet-presented command (this one plus the rest of the queue)
+                // receives a Canceled terminal, mirroring the first-frame rejection path in
+                // beginInteractiveForwardStep.
+                cancelInteractiveStepRun(InteractiveStepStopReason::NavigationSuperseded);
                 return;
             }
             state_.requestedFrame = interactiveStepRun_->lastQueuedTarget;
@@ -1129,12 +1144,13 @@ private:
         publishInteractiveSnapshot();
     }
 
-    // Tears down an active interactive run on a discontinuity (backward step, seek, play, device
-    // loss, provider failure, shutdown). Advances the generation so any in-flight Sequential results
-    // from this run cannot commit, and completes every not-yet-presented command as canceled/closed.
-    void stopInteractiveStepRun(const domain::MediaError& error) {
+    // Shared teardown for both cancel and failure: moves the run out, cancels its presentation
+    // timers and provider request, and clears the render channel if the current frame was already
+    // published. Returns the moved run (or nullopt when none was engaged) so the caller can complete
+    // its pending commands with the outcome appropriate to the stop reason.
+    [[nodiscard]] std::optional<InteractiveStepRun> teardownInteractiveStepRun() noexcept {
         if (!interactiveStepRun_.has_value()) {
-            return;
+            return std::nullopt;
         }
         InteractiveStepRun stopped = std::move(*interactiveStepRun_);
         interactiveStepRun_.reset();
@@ -1153,8 +1169,18 @@ private:
         if (stopped.frame.has_value() && stopped.frame->frame.framePublished) {
             dependencies_.renderChannel->clear(stopped.providerContext);
         }
+        return stopped;
+    }
 
-        const CommandOutcome outcome = error.recoverable ? CommandOutcome::Canceled : CommandOutcome::Failed;
+    // Completes every not-yet-presented command of a torn-down run (queued, prepared, current) with
+    // the given outcome and optional error. The current frame's command is completed unconditionally:
+    // commitInteractiveStepFrameIfComplete always reassigns the frame slot right after completing
+    // its command, so a still-current frame.command is guaranteed never to have been completed already —
+    // gating on framePresented would instead drop the command of a frame that was rendered (render ACK)
+    // but whose provider-success event had not yet committed it.
+    void completeInteractiveStepCommands(const InteractiveStepRun& stopped,
+                                          const CommandOutcome outcome,
+                                          std::optional<domain::MediaError> error) {
         const auto completePending = [this, outcome, &error](const CommandContext& context) {
             completeCommand(context, outcome, error);
         };
@@ -1164,21 +1190,46 @@ private:
         if (stopped.preparedFrame.has_value()) {
             completePending(stopped.preparedFrame->command);
         }
-        // Complete the current frame's command unconditionally. Commit always reassigns the
-        // frame slot (commitInteractiveStepFrameIfComplete) right after completing its command,
-        // so a still-current frame.command is guaranteed never to have been completed already —
-        // gating on framePresented would instead drop the command of a frame that was rendered
-        // (render ACK) but whose provider-success event had not yet committed it.
         if (stopped.frame.has_value()) {
             completePending(stopped.frame->command);
         }
+    }
 
+    // Cancellation path: a normal navigation event (backward step, seek, play, first/last, source
+    // topology/reference/alignment change) or shutdown supersedes the warm Sequential stream. The
+    // not-yet-presented step commands are completed as Canceled, or Closed for an orderly shutdown;
+    // lastError is NOT set because nothing went wrong. The generation still advances so any in-flight
+    // Sequential results from this run cannot commit.
+    void cancelInteractiveStepRun(const InteractiveStepStopReason reason) {
+        const std::optional<InteractiveStepRun> stopped = teardownInteractiveStepRun();
+        if (!stopped.has_value()) {
+            return;
+        }
+        const CommandOutcome outcome = reason == InteractiveStepStopReason::Shutdown
+                                           ? CommandOutcome::Closed
+                                           : CommandOutcome::Canceled;
+        completeInteractiveStepCommands(*stopped, outcome, std::nullopt);
         state_.playbackGeneration = increment(state_.playbackGeneration);
         state_.playbackState = domain::PlaybackState::kPaused;
         state_.requestedFrame.reset();
-        // Note: lastError is intentionally not set here. A backward step, seek, or play that
-        // interrupts the stream is a normal navigation event, not a coordinator error; the not-yet-
-        // presented step commands are completed as Canceled above with the supersede detail.
+        publishSnapshot();
+    }
+
+    // Failure path: a provider request failed, the render channel closed, the presentation deadline
+    // elapsed, the provider published a mismatched FrameSet, or an unrecoverable graphics/media
+    // failure occurred. These are coordinator errors, so lastError IS set (the snapshot banner can
+    // surface it) and the not-yet-presented step commands are completed as Failed with the error.
+    // The generation advances and the last ACKed displayedFrame is left intact.
+    void failInteractiveStepRun(domain::MediaError error) {
+        const std::optional<InteractiveStepRun> stopped = teardownInteractiveStepRun();
+        if (!stopped.has_value()) {
+            return;
+        }
+        completeInteractiveStepCommands(*stopped, CommandOutcome::Failed, error);
+        state_.lastError = error;
+        state_.playbackGeneration = increment(state_.playbackGeneration);
+        state_.playbackState = domain::PlaybackState::kPaused;
+        state_.requestedFrame.reset();
         publishSnapshot();
     }
 
@@ -1226,9 +1277,9 @@ private:
         }
         if (submitInteractiveStepRequest(interactiveStepRun_->frame->frame) !=
             PortSubmitResult::Accepted) {
-            stopInteractiveStepRun(coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                                    "The frame provider did not accept the first "
-                                                    "interactive step frame request."));
+            // The provider rejected the first request (transient backpressure): tear the run down
+            // as a cancel so the step command receives a Canceled terminal.
+            cancelInteractiveStepRun(InteractiveStepStopReason::NavigationSuperseded);
             return;
         }
         submitInteractiveStepSuccessor();
@@ -1276,11 +1327,12 @@ private:
             if (std::holds_alternative<RequestSucceeded>(terminal)) {
                 interactiveStepRun_->frame->frame.providerSucceeded = true;
             } else if (const auto* const failed = std::get_if<RequestFailed>(&terminal)) {
-                stopInteractiveStepRun(failed->error);
+                // A provider RequestFailed is a hard decode failure — surface it via lastError.
+                failInteractiveStepRun(failed->error);
             } else {
-                stopInteractiveStepRun(
-                    coordinatorError(domain::MediaErrorCode::kMediaDecodeFailed,
-                                     "The interactive step frame request was canceled."));
+                // The in-flight request was canceled (e.g. superseded by a generation change):
+                // transient, not a coordinator error — tear down as a cancel.
+                cancelInteractiveStepRun(InteractiveStepStopReason::NavigationSuperseded);
             }
             commitInteractiveStepFrameIfComplete();
             return true;
@@ -2551,9 +2603,10 @@ private:
             std::holds_alternative<StepFramesCommand>(command) &&
             std::get<StepFramesCommand>(command).delta == 1;
         if (interactiveStepRun_.has_value() && !isForwardStepPlusOne) {
-            stopInteractiveStepRun(coordinatorError(
-                domain::MediaErrorCode::kMediaDecodeFailed,
-                "The interactive step stream was interrupted by another navigation operation."));
+            // Any non-+1 navigation command (backward step, seek, first/last, play, source
+            // topology/reference/alignment change) invalidates the warm Sequential cursor. This is
+            // a normal navigation supersede, not a coordinator error — tear down as a cancel.
+            cancelInteractiveStepRun(InteractiveStepStopReason::NavigationSuperseded);
         }
         if (pending_.has_value() || pendingProbe_.has_value() || playbackRun_.has_value()) {
             completeCommand(context, CommandOutcome::Busy);
@@ -2975,7 +3028,9 @@ private:
         if (matchesInteractiveStepFrame(ready.context)) {
             PendingPlaybackFrame& frame = interactiveStepRun_->frame->frame;
             if (ready.set.canonicalFrameId() != frame.expectedFrame) {
-                stopInteractiveStepRun(coordinatorError(
+                // The provider published a frame set for the wrong canonical frame: a malformed /
+                // mismatched FrameSet is a hard failure — surface it via lastError.
+                failInteractiveStepRun(coordinatorError(
                     domain::MediaErrorCode::kMediaDecodeFailed,
                     "The provider published a mismatched interactive step frame set."));
                 return;
@@ -3538,7 +3593,9 @@ private:
             interactiveStepRun_->frame->frame.presentationTimerId.has_value() &&
             elapsed.context == interactiveStepRun_->frame->frame.context.playback &&
             elapsed.timerId == *interactiveStepRun_->frame->frame.presentationTimerId) {
-            stopInteractiveStepRun(
+            // A frame decoded but never presented within the deadline is a presentation failure —
+            // surface it via lastError (plan M1.2: presentation timeout is a failure, not a cancel).
+            failInteractiveStepRun(
                 presentationError("The interactive step frame was not presented within five seconds."));
             return;
         }
@@ -3571,6 +3628,13 @@ private:
         if (context.deviceGeneration < state_.deviceGeneration) {
             return;
         }
+        // Surface the error once up front so it is set on every non-stale event regardless of which
+        // branch fires — failPending does not touch lastError, and with no run active nothing else
+        // would set it. (failInteractiveStepRun/stopPlayback also set it internally and publish
+        // immediately; the trailing publishSnapshot remains the authoritative publish of the final
+        // graphicsReady/playbackState. A second publish in the interactive/playback branches is
+        // idempotent and harmless.)
+        state_.lastError = error;
         if (pendingProbe_.has_value()) {
             failProbe(error, CommandOutcome::Failed, domain::SessionState::kError);
         }
@@ -3578,7 +3642,8 @@ private:
             failPending(error, CommandOutcome::Failed);
         }
         if (interactiveStepRun_.has_value()) {
-            stopInteractiveStepRun(error);
+            // An unrecoverable graphics/media failure is a hard failure for the interactive stream.
+            failInteractiveStepRun(error);
         }
         if (playbackRun_.has_value()) {
             stopPlayback(error, false);
@@ -3586,7 +3651,6 @@ private:
         state_.deviceGeneration = context.deviceGeneration;
         state_.graphicsReady = false;
         state_.playbackState = domain::PlaybackState::kPaused;
-        state_.lastError = error;
         publishSnapshot();
     }
 
@@ -3707,37 +3771,12 @@ private:
         if (playbackRun_.has_value()) {
             stopPlayback(std::nullopt, false);
         }
+        // Shutdown supersedes any active interactive stream. The cancel path drains every
+        // not-yet-presented step command as Closed (Shutdown reason) so shutdown stays bounded and
+        // the UI does not retain a dangling frame-pending indicator. This replaces the hand-rolled
+        // teardown that previously duplicated stopInteractiveStepRun's logic.
         if (interactiveStepRun_.has_value()) {
-            InteractiveStepRun stopped = std::move(*interactiveStepRun_);
-            interactiveStepRun_.reset();
-            lastInteractiveProjectionAt_.reset();
-            if (stopped.frame.has_value() && stopped.frame->frame.presentationTimerId.has_value()) {
-                static_cast<void>(
-                    dependencies_.deadlineScheduler->cancel(*stopped.frame->frame.presentationTimerId));
-            }
-            if (stopped.preparedFrame.has_value() &&
-                stopped.preparedFrame->frame.presentationTimerId.has_value()) {
-                static_cast<void>(dependencies_.deadlineScheduler->cancel(
-                    *stopped.preparedFrame->frame.presentationTimerId));
-            }
-            dependencies_.directFrameProvider->cancel(stopped.providerContext);
-            if (stopped.frame.has_value() && stopped.frame->frame.framePublished) {
-                dependencies_.renderChannel->clear(stopped.providerContext);
-            }
-            // Drain every not-yet-presented step command as Closed so shutdown stays bounded and the
-            // UI does not retain a dangling frame-pending indicator.
-            const auto closePending = [this](const CommandContext& context) {
-                completeCommand(context, CommandOutcome::Closed);
-            };
-            for (const CommandContext& queued : stopped.queuedCommands) {
-                closePending(queued);
-            }
-            if (stopped.preparedFrame.has_value()) {
-                closePending(stopped.preparedFrame->command);
-            }
-            if (stopped.frame.has_value()) {
-                closePending(stopped.frame->command);
-            }
+            cancelInteractiveStepRun(InteractiveStepStopReason::Shutdown);
         }
     }
 

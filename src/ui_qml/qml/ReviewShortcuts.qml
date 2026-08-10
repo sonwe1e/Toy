@@ -77,17 +77,22 @@ Item {
         enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
         onActivated: reviewActions.nextFrame()
     }
+    // Left/Right always step a single frame, in every shortcut preset. The OS auto-repeat drives
+    // rapid stepping (plan 1.5.md §11.1: "continue letting nextFrame() be driven by OS auto-repeat").
+    // Preset 1 (Player) previously mapped these to stepSeconds(5) = 150 frames at 30 fps — a jump that
+    // violated the "±1 frame" expectation. Multi-frame jumps in preset 1 are still available via
+    // Ctrl+Left/Ctrl+Right (stepSeconds(30)) and the dedicated five-frame/second buttons.
     Shortcut {
         sequence: "Left"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canPrevious
-        onActivated: control.shortcutPreset === 1 ? reviewActions.stepSeconds(-5) : reviewActions.previousFrame()
+        onActivated: reviewActions.previousFrame()
     }
     Shortcut {
         sequence: "Right"
         context: Qt.ApplicationShortcut
         enabled: reviewActions.shortcutsEnabled && reviewActions.canNext
-        onActivated: control.shortcutPreset === 1 ? reviewActions.stepSeconds(5) : reviewActions.nextFrame()
+        onActivated: reviewActions.nextFrame()
     }
     Shortcut {
         sequences: ["Down", "Shift+Left", "Shift+A"]

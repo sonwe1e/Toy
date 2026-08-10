@@ -54,6 +54,10 @@ dvs_add_gtest(
     ENVIRONMENT QSG_RENDER_LOOP=basic QT_QUICK_CONTROLS_STYLE=Basic
 )
 
+# DPI scale factors covered by the per-test QT_SCALE_FACTOR loops below (100/125/150/200%). Kept
+# in one variable so the four loops cannot drift apart when a factor is added or removed.
+set(dvs_dpi_scale_factors 1 1.25 1.5 2)
+
 set(dvs_toolbar_combo_qml_test "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_toolbar_combo.qml")
 foreach(dvs_qml_style IN ITEMS Basic Windows)
     add_test(
@@ -76,7 +80,7 @@ set(
     dvs_drop_confirmation_qml_test
     "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_drop_confirmation_dialog.qml"
 )
-foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+foreach(dvs_scale_factor ${dvs_dpi_scale_factors})
     string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
     add_test(
         NAME "ui.DropConfirmationDialog.scale-${dvs_scale_name}"
@@ -96,7 +100,7 @@ foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
 endforeach()
 
 set(dvs_wipe_handle_qml_test "${CMAKE_CURRENT_SOURCE_DIR}/qml/tst_wipe_handle.qml")
-foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+foreach(dvs_scale_factor ${dvs_dpi_scale_factors})
     string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
     add_test(
         NAME "ui.WipeHandle.scale-${dvs_scale_name}"
@@ -149,7 +153,7 @@ endforeach()
 
 foreach(dvs_menu_qml_test IN ITEMS vcs_menu application_menu_bar active_source_strip)
     foreach(dvs_qml_style IN ITEMS Basic Windows)
-        foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+        foreach(dvs_scale_factor ${dvs_dpi_scale_factors})
             string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
             add_test(
                 NAME "ui.${dvs_menu_qml_test}.${dvs_qml_style}.scale-${dvs_scale_name}"
@@ -171,7 +175,7 @@ foreach(dvs_menu_qml_test IN ITEMS vcs_menu application_menu_bar active_source_s
 endforeach()
 
 foreach(dvs_qml_style IN ITEMS Basic Windows)
-    foreach(dvs_scale_factor IN ITEMS 1 1.25 1.5)
+    foreach(dvs_scale_factor ${dvs_dpi_scale_factors})
         string(REPLACE "." "_" dvs_scale_name "${dvs_scale_factor}")
         add_test(
             NAME "ui.vcs_tool_tip.${dvs_qml_style}.scale-${dvs_scale_name}"

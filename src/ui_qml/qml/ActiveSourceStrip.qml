@@ -30,8 +30,8 @@ Rectangle {
     readonly property bool anyMenuOpen: openMenuCount > 0
 
     objectName: "activeSourceStrip"
-    height: sourceCount > 0 ? (singleMode ? 38 : 42) : 0
-    visible: sourceCount > 0
+    height: sourceCount > 1 ? 42 : 0
+    visible: sourceCount > 1
     color: singleMode ? "transparent" : panelColor
     border.color: singleMode ? "transparent" : borderColor
     opacity: singleMode && !sourceHover.hovered ? 0.68 : 1.0

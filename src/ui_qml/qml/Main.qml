@@ -101,6 +101,10 @@ ApplicationWindow {
     readonly property bool singleMode: sourceCount === 1
     readonly property int preferredOscState: preferences ? Number(preferences.oscMode) : -1
     readonly property int oscState: sourceCount === 0 || !chromeVisible ? 2 : (preferredOscState >= 0 ? preferredOscState : (singleMode ? 1 : 0))
+    readonly property bool transportHidden: oscState === 2 || !chromeVisible
+    readonly property bool transportDocked: !transportHidden && oscState === 0
+    readonly property bool transportOverlay: !transportHidden && oscState === 1
+    readonly property int transportDockHeight: transportDocked ? transport.height + 8 : 0
     readonly property string pairErrorKey: controller ? controller.pairErrorKey : ""
     readonly property string frameMappingStatus: controller ? controller.frameMappingStatus : ""
     readonly property string alignmentEstimateStatus: controller ? controller.alignmentEstimateStatus : ""
@@ -1228,7 +1232,7 @@ ApplicationWindow {
             top: parent.top
             topMargin: root.chromeVisible && !root.singleMode ? sourceBar.height + comparisonBar.height + 6 : 0
             bottom: parent.bottom
-            bottomMargin: 0
+            bottomMargin: root.transportDocked ? root.transportDockHeight : 0
             left: parent.left
             leftMargin: root.chromeVisible ? 14 : 0
             right: alignmentBar.visible && root.width >= 1120 ? alignmentBar.left : parent.right
@@ -1261,6 +1265,8 @@ ApplicationWindow {
 
         z: 50
         controllerState: root.oscState
+        docked: root.transportDocked
+        sourceLabel: root.sourceAName
         playing: root.playing
         timelineEnabled: root.timelineEnabled
         currentFrame: Number(root.currentFrame)
@@ -1285,7 +1291,7 @@ ApplicationWindow {
         anchors {
             left: viewportFrame.left
             right: root.drawerMode ? alignmentBar.left : viewportFrame.right
-            bottom: viewportFrame.bottom
+            bottom: parent.bottom
         }
         onSeekRequested: frame => {
             root.revealOsc();

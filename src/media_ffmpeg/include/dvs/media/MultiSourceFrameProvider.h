@@ -21,6 +21,12 @@ struct FrameProviderStatistics final {
     std::uint64_t totalAssemblyMicroseconds = 0U;
     std::uint64_t maximumAssemblyMicroseconds = 0U;
     std::uint64_t frameSetCacheHits = 0U;
+    // Held-forward step gate (plan 1.6 M1.1): counts captured across the
+    // HeldStepping window and reported as deltas.
+    std::uint64_t sequentialRequestCount = 0U;
+    std::uint64_t cancelCount = 0U;
+    std::uint64_t decoderReopenCount = 0U;
+    std::uint64_t generationDeltaCount = 0U;
 };
 
 // Multi-source review adapter backed by independent software decoder contexts. It accepts bounded

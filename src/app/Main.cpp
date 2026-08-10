@@ -30,6 +30,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdlib>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -98,6 +99,22 @@ struct PerformanceMetrics final {
     qint64 seekP95Milliseconds = -1;
     qint64 warmStepP50Milliseconds = -1;
     qint64 warmStepP95Milliseconds = -1;
+    // Held-forward step gate (plan 1.6 M1.1). Latency percentiles are computed over the
+    // committed-frame latency samples collected during Stage::HeldStepping.
+    qint64 heldStepP50Milliseconds = -1;
+    qint64 heldStepP95Milliseconds = -1;
+    qint64 heldStepP99Milliseconds = -1;
+    std::uint64_t heldStepPresentedFrames = 0U;
+    std::uint64_t heldStepSequenceErrors = 0U;
+    std::uint64_t heldStepGenerationDelta = 0U;
+    std::uint64_t heldStepExactSeekDelta = 0U;
+    std::uint64_t heldStepSequentialRequestCount = 0U;
+    std::uint64_t heldStepCancelCount = 0U;
+    std::uint64_t heldStepDecoderReopenCount = 0U;
+    // Fraction of held-window decode operations that were sequential continuations (not exact
+    // seeks). 1.0 means every decode continued from the previous frame; lower means the decoder
+    // fell back to exact seeks. Computed in finalizeHeldStep from decoder backend status deltas.
+    double heldStepSequentialRatio = 0.0;
     qint64 analysisMilliseconds = -1;
     std::uint64_t analysisDecodedFrames = 0U;
     qint64 shutdownMilliseconds = -1;
@@ -877,6 +894,7 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         WaitingForPause,
         Seeking,
         WarmStepping,
+        HeldStepping,
         Analyzing,
     };
     Stage stage = Stage::WaitingForGraphics;
@@ -900,6 +918,34 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
     std::size_t seekIndex = 0U;
     std::size_t warmStepIndex = 0U;
     qint64 warmStepTarget = -1;
+    // Held-forward step gate (plan 1.6 M1.1). The cadence test submits up to 300 consecutive +1
+    // steps at 25-35 Hz and records per committed frame: the latency, and whether the presented
+    // FrameId is exactly +1 from the previous (sequence error if not). Provider statistics deltas
+    // captured across the window yield the sequential-request, generation, exact-seek, cancel and
+    // decoder-reopen counters. The saturation test (submit-when-bounded-lookahead-accepts) is
+    // deferred: it requires per-submit lookahead-accept feedback the controller does not expose.
+    // The sample count is a runtime value (set once the fixture length is known after the seek)
+    // capped at the frames remaining past the middle seek target — otherwise a fixture shorter
+    // than ~2 * 300 frames would run past its end and hard-fail as "held-step-rejected".
+    static constexpr std::size_t kHeldStepSamplesMax = 300U;
+    std::size_t heldStepSamples = kHeldStepSamplesMax;
+    // 25-35 Hz input cadence with deterministic jitter (milliseconds between submits). 34 ms base
+    // +/- 5 ms jitter keeps the interval in 29-39 ms (25.6-34.5 Hz), inside the 25-35 Hz band.
+    static constexpr qint64 kHeldStepCadenceBaseMs = 34U;
+    static constexpr qint64 kHeldStepCadenceJitterMs = 5U;
+    std::vector<qint64> heldStepMilliseconds;
+    std::deque<qint64> heldStepSubmitTimes;
+    std::size_t heldStepIndex = 0U;
+    qint64 heldStepLastPresentedFrame = -1;
+    qint64 heldStepSeekTarget = -1;
+    std::uint64_t heldStepSequenceErrors = 0U;
+    bool heldStepSeekedToMiddle = false;
+    QElapsedTimer heldStepTimer;
+    qint64 heldStepNextDeadlineMs = 0;
+    std::optional<dvs::media::FrameProviderStatistics> heldStepProviderBaseline;
+    std::optional<dvs::media::FrameProviderStatistics> heldStepProviderEnd;
+    std::vector<dvs::media::DecoderBackendStatus> heldStepDecoderBaseline;
+    std::vector<dvs::media::DecoderBackendStatus> heldStepDecoderEnd;
     std::uint64_t analysisSignatureBaseline = 0U;
     bool analysisObservedRunning = false;
     bool completed = false;
@@ -973,6 +1019,69 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         warmStepTarget = runtime->controller()->currentFrame() + delta;
         warmStepTimer.start();
         return runtime->controller()->stepFrames(delta);
+    };
+    // Held-forward cadence: deterministic jitter around a 25-35 Hz input rate. Each call advances
+    // the deadline by a fresh jittered interval; the first call arms the initial deadline.
+    const auto heldStepCadenceMs = [&] {
+        const qint64 jitter = static_cast<qint64>((heldStepIndex * 5U) % (2U * kHeldStepCadenceJitterMs + 1U)) -
+                              kHeldStepCadenceJitterMs;
+        heldStepNextDeadlineMs = heldStepTimer.elapsed() + kHeldStepCadenceBaseMs + jitter;
+    };
+    // Compute held-step latency percentiles and provider-statistic deltas for the window.
+    const auto finalizeHeldStep = [&] {
+        if (!heldStepProviderBaseline.has_value() || !heldStepProviderEnd.has_value()) {
+            fail("held-step-statistics-missing");
+            return;
+        }
+        const auto& base = *heldStepProviderBaseline;
+        const auto& end = *heldStepProviderEnd;
+        metrics.heldStepSequentialRequestCount = end.sequentialRequestCount - base.sequentialRequestCount;
+        metrics.heldStepCancelCount = end.cancelCount - base.cancelCount;
+        metrics.heldStepDecoderReopenCount = end.decoderReopenCount - base.decoderReopenCount;
+        metrics.heldStepGenerationDelta = end.generationDeltaCount - base.generationDeltaCount;
+        const auto accumulateExactSeeks = [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
+            return std::accumulate(
+                statuses.begin(), statuses.end(), std::uint64_t{0U},
+                [](const std::uint64_t total, const auto& status) {
+                    return total + status.exactSeekCount;
+                });
+        };
+        const std::uint64_t baseExactSeeks = accumulateExactSeeks(heldStepDecoderBaseline);
+        const std::uint64_t endExactSeeks = accumulateExactSeeks(heldStepDecoderEnd);
+        metrics.heldStepExactSeekDelta = endExactSeeks - baseExactSeeks;
+        // Sequential continuations are decodes that did NOT exact-seek. The ratio is the share of
+        // held-window decodes served by the sequential cursor, which is exactly the "sequential
+        // continuation >= 95%" gate. A healthy held-forward run on a warmed pipeline is ~1.0.
+        const auto accumulateDecodes = [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
+            return std::accumulate(
+                statuses.begin(), statuses.end(), std::uint64_t{0U},
+                [](const std::uint64_t total, const auto& status) {
+                    return total + status.completedDecodeCount;
+                });
+        };
+        const std::uint64_t baseDecodes = accumulateDecodes(heldStepDecoderBaseline);
+        const std::uint64_t endDecodes = accumulateDecodes(heldStepDecoderEnd);
+        const std::uint64_t windowDecodes = endDecodes - baseDecodes;
+        const std::uint64_t windowExactSeeks = endExactSeeks - baseExactSeeks;
+        if (windowDecodes == 0U) {
+            metrics.heldStepSequentialRatio = 0.0;
+        } else if (windowExactSeeks >= windowDecodes) {
+            metrics.heldStepSequentialRatio = 0.0;
+        } else {
+            metrics.heldStepSequentialRatio =
+                static_cast<double>(windowDecodes - windowExactSeeks) /
+                static_cast<double>(windowDecodes);
+        }
+        metrics.heldStepSequenceErrors = heldStepSequenceErrors;
+        std::ranges::sort(heldStepMilliseconds);
+        const std::size_t samples = heldStepMilliseconds.size();
+        if (samples > 0U) {
+            metrics.heldStepP50Milliseconds = heldStepMilliseconds[samples / 2U];
+            metrics.heldStepP95Milliseconds =
+                heldStepMilliseconds[static_cast<std::size_t>(samples * 95U / 100U)];
+            metrics.heldStepP99Milliseconds =
+                heldStepMilliseconds[static_cast<std::size_t>(samples * 99U / 100U)];
+        }
     };
 
     QTimer poll;
@@ -1174,19 +1283,98 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
             std::ranges::sort(warmStepMilliseconds);
             metrics.warmStepP50Milliseconds = warmStepMilliseconds[9U];
             metrics.warmStepP95Milliseconds = warmStepMilliseconds[18U];
-            if (expectedSourceCount == 1U) {
-                metrics.finalThreads = dvs::platform::sampleCurrentProcessTelemetry().threadCount;
-                completed = true;
-                desktop.exit(EXIT_SUCCESS);
+            // Held-forward step gate (plan 1.6 M1.1): hold forward through 300 consecutive +1 steps
+            // and measure latency + correctness before completing the run.
+            heldStepSeekTarget = -1;
+            heldStepSeekedToMiddle = false;
+            stage = Stage::HeldStepping;
+            return;
+        case Stage::HeldStepping:
+            if (!heldStepSeekedToMiddle) {
+                if (heldStepSeekTarget < 0) {
+                    // Seek to a safe middle frame so 300 forward steps cannot run past the end.
+                    heldStepSeekTarget = static_cast<qint64>(controller.totalFrames() / 2U);
+                    if (!controller.seekFrame(heldStepSeekTarget)) {
+                        fail("held-step-seek-rejected");
+                    }
+                    return;
+                }
+                if (controller.busy() || controller.currentFrame() != heldStepSeekTarget) {
+                    return;
+                }
+                heldStepSeekedToMiddle = true;
+                heldStepLastPresentedFrame = controller.currentFrame();
+                // Cap the window to the frames remaining past the middle seek target so the run can
+                // never step past the fixture end (which would hard-fail as "held-step-rejected" on
+                // short fixtures). totalFrames() is authoritative only after the seek commits.
+                heldStepSamples = std::min(kHeldStepSamplesMax,
+                    static_cast<std::size_t>(
+                        std::max<qint64>(0, controller.totalFrames() - heldStepSeekTarget - 1)));
+                heldStepTimer.start();
+                heldStepCadenceMs();
+                heldStepProviderBaseline = runtime->frameProviderStatistics();
+                heldStepDecoderBaseline = runtime->decoderBackendStatuses();
                 return;
             }
-            analysisSignatureBaseline = runtime->decodedSignatureCount();
-            analysisTimer.start();
-            if (!controller.estimateAlignment()) {
-                fail("analysis-rejected");
+            // Scoped so its local declarations cannot be skipped by a later case label.
+            {
+                const qint64 presented = controller.currentFrame();
+                if (presented != heldStepLastPresentedFrame) {
+                // Count missing intermediate FrameIds. A clean +1 advance is error-free; a jump of
+                // N frames means (N - 1) intermediate FrameIds were skipped. This maps directly to
+                // the "0 missing intermediate FrameIds" gate. A regression (presented <= last) is
+                // also a sequence error (and is separately caught by the canonical-regression gate).
+                if (presented > heldStepLastPresentedFrame) {
+                    heldStepSequenceErrors +=
+                        static_cast<std::uint64_t>(presented - heldStepLastPresentedFrame - 1);
+                } else {
+                    ++heldStepSequenceErrors;
+                }
+                if (!heldStepSubmitTimes.empty()) {
+                    heldStepMilliseconds.push_back(heldStepTimer.elapsed() -
+                                                   heldStepSubmitTimes.front());
+                    heldStepSubmitTimes.pop_front();
+                }
+                heldStepLastPresentedFrame = presented;
+                ++metrics.heldStepPresentedFrames;
+            }
+            } // end presented-frame detection scope
+            if (heldStepIndex >= heldStepSamples) {
+                if (controller.busy()) {
+                    return;
+                }
+                heldStepProviderEnd = runtime->frameProviderStatistics();
+                heldStepDecoderEnd = runtime->decoderBackendStatuses();
+                finalizeHeldStep();
+                if (expectedSourceCount == 1U) {
+                    metrics.finalThreads =
+                        dvs::platform::sampleCurrentProcessTelemetry().threadCount;
+                    completed = true;
+                    desktop.exit(EXIT_SUCCESS);
+                    return;
+                }
+                analysisSignatureBaseline = runtime->decodedSignatureCount();
+                analysisTimer.start();
+                if (!controller.estimateAlignment()) {
+                    fail("analysis-rejected");
+                    return;
+                }
+                stage = Stage::Analyzing;
                 return;
             }
-            stage = Stage::Analyzing;
+            // Paced cadence: never submit while the controller is busy. dispatchNavigation rejects
+            // stepFrames when busy (canNavigate requires !busy), so submitting unconditionally would
+            // fail the run. The cadence deadline sets the minimum interval; the controller's own
+            // pacing sets the effective rate when steps take longer than the cadence.
+            if (!controller.busy() && heldStepTimer.elapsed() >= heldStepNextDeadlineMs) {
+                heldStepSubmitTimes.push_back(heldStepTimer.elapsed());
+                if (!controller.stepFrames(1)) {
+                    fail("held-step-rejected");
+                    return;
+                }
+                ++heldStepIndex;
+                heldStepCadenceMs();
+            }
             return;
         case Stage::Analyzing:
             if (controller.alignmentAnalysisRunning()) {
@@ -1346,6 +1534,18 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
     report.insert(QStringLiteral("seek_samples_ms"), seekSamples);
     addNumber(QStringLiteral("warm_step_p50_ms"), metrics.warmStepP50Milliseconds);
     addNumber(QStringLiteral("warm_step_p95_ms"), metrics.warmStepP95Milliseconds);
+    addNumber(QStringLiteral("held_step_p50_ms"), metrics.heldStepP50Milliseconds);
+    addNumber(QStringLiteral("held_step_p95_ms"), metrics.heldStepP95Milliseconds);
+    addNumber(QStringLiteral("held_step_p99_ms"), metrics.heldStepP99Milliseconds);
+    addNumber(QStringLiteral("held_step_presented_frames"), metrics.heldStepPresentedFrames);
+    addNumber(QStringLiteral("held_step_sequence_errors"), metrics.heldStepSequenceErrors);
+    addNumber(QStringLiteral("held_step_generation_delta"), metrics.heldStepGenerationDelta);
+    addNumber(QStringLiteral("held_step_exact_seek_delta"), metrics.heldStepExactSeekDelta);
+    addNumber(QStringLiteral("held_step_sequential_request_count"),
+              metrics.heldStepSequentialRequestCount);
+    addNumber(QStringLiteral("held_step_cancel_count"), metrics.heldStepCancelCount);
+    addNumber(QStringLiteral("held_step_decoder_reopen_count"), metrics.heldStepDecoderReopenCount);
+    addNumber(QStringLiteral("held_step_sequential_ratio"), metrics.heldStepSequentialRatio);
     addNumber(QStringLiteral("analysis_ms"), metrics.analysisMilliseconds);
     addNumber(QStringLiteral("analysis_decoded_frames"), metrics.analysisDecodedFrames);
     addNumber(QStringLiteral("analysis_frames_per_second"), analysisFramesPerSecond);

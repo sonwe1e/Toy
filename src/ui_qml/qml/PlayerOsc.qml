@@ -7,6 +7,10 @@ Item {
     id: control
 
     required property int controllerState // 0 pinned, 1 auto, 2 hidden
+    // Docked (pinned-below-canvas) vs overlay transport. Bound by Main.qml; defaults to false so
+    // the component also instantiates standalone (e.g. in QML unit tests) without binding it.
+    property bool docked: false
+    property string sourceLabel
     required property bool playing
     required property bool timelineEnabled
     required property int currentFrame
@@ -29,13 +33,20 @@ Item {
     property string previewTimecode: "00:00:00:00"
     property url previewThumbnailSource: ""
     property bool revealActive: controllerState === 0
-    readonly property bool controlsEnabled: controllerState === 0 || revealActive
+    readonly property bool controlsEnabled: control.docked || control.controllerState === 0 || control.revealActive
 
     signal previewRequested(int frame)
     signal seekRequested(int frame)
 
     objectName: "transport"
-    height: 120
+    // Height is the content stack, expressed directly so it never depends on an anchored
+    // child (anchoring the height to the TransportBar while the TransportBar anchors back to the
+    // panel is a binding loop — Qt bails and collapses the whole control to 0, the bug that
+    // prompted this fix). The TransportBar therefore anchors to the tracks with a 13 px top margin
+    // (which clears the playhead thumb's ~6 px overflow below the 42 px tracks); the control height
+    // is tracks.y + tracks height + that margin + TransportBar height (34 px) + a 5 px bottom inset.
+    // transportDockHeight (Main.qml) reads this height.
+    height: Math.max(0, tracks.y) + tracks.height + 13 + 34 + 5
     visible: controllerState !== 2
 
     onControllerStateChanged: {
@@ -54,11 +65,20 @@ Item {
         id: panel
 
         objectName: "oscPanel"
-        anchors.fill: parent
+        // The panel fills the control; the control's height is content-driven (see `height` binding
+        // below) so the timeline playhead thumb always clears the TransportBar. The TransportBar
+        // anchors to the tracks (the content above it), NOT the panel bottom — anchoring it to the
+        // panel would create a bottom-to-bottom binding loop.
+        anchors {
+            top: parent.top
+            bottom: parent.bottom
+            left: parent.left
+            right: parent.right
+        }
         opacity: control.controlsEnabled ? 1.0 : 0.0
         enabled: control.controlsEnabled
-        color: Theme.oscPanel
-        border.color: "#384860"
+        color: control.docked ? Theme.panel : Theme.oscPanel
+        border.color: control.docked ? Theme.border : "#384860"
 
         Behavior on opacity {
             NumberAnimation {
@@ -77,13 +97,34 @@ Item {
             }
         }
 
+        Text {
+            id: sourceLabelReadout
+            objectName: "sourceLabelReadout"
+            visible: control.sourceLabel !== ""
+            height: visible ? implicitHeight : 0
+            text: control.sourceLabel
+            color: Theme.mutedText
+            font.family: "Consolas"
+            font.pixelSize: 12
+            // Elide long filenames instead of overflowing the panel edge (the panel has no clip).
+            elide: Text.ElideRight
+            anchors {
+                top: parent.top
+                topMargin: 8
+                left: parent.left
+                leftMargin: 16
+                right: parent.right
+                rightMargin: 16
+            }
+        }
+
         Row {
             id: readout
 
             spacing: 14
             anchors {
-                top: parent.top
-                topMargin: 8
+                top: sourceLabelReadout.visible ? sourceLabelReadout.bottom : parent.top
+                topMargin: sourceLabelReadout.visible ? 2 : 8
                 left: parent.left
                 leftMargin: 16
             }
@@ -141,11 +182,18 @@ Item {
         }
 
         TransportBar {
+            // Local id `transport` so the control's `height: transport.bottom + 5` always resolves to
+            // THIS TransportBar, independent of the id the PlayerOsc instance is given at its
+            // instantiation site (e.g. `id: osc` in the unit test vs `id: transport` in Main.qml).
+            id: transport
             objectName: "transportBar"
             compact: true
+            // Anchored to the tracks (the content above it), NOT the panel bottom — anchoring to the
+            // panel bottom would form a bottom-to-bottom binding loop with the control's height. The
+            // 13 px top margin clears the playhead thumb, which extends ~6 px below the tracks box.
             anchors {
-                bottom: parent.bottom
-                bottomMargin: 5
+                top: tracks.bottom
+                topMargin: 13
                 horizontalCenter: parent.horizontalCenter
             }
             canFirst: control.canFirst
@@ -172,7 +220,7 @@ Item {
         id: wakeArea
 
         objectName: "oscWakeArea"
-        visible: control.controllerState === 1 && !control.controlsEnabled
+        visible: control.controllerState === 1 && !control.controlsEnabled && !control.docked
         height: 10
         anchors {
             left: parent.left
@@ -196,7 +244,7 @@ Item {
         interval: 1200
         repeat: false
         onTriggered: {
-            if (control.controllerState === 1)
+            if (control.controllerState === 1 && !control.docked)
                 control.revealActive = false;
         }
     }

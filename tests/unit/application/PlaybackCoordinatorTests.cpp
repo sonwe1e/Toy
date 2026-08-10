@@ -4518,6 +4518,88 @@ TEST(PlaybackCoordinatorTests, ProviderFailureFailsPendingStepCommands) {
     }));
 }
 
+// Plan M1.2: a real provider failure must surface the error via the snapshot's lastError so the UI
+// banner can show it (failInteractiveStepRun sets lastError). Before the cancel/fail split this was
+// conflated with cancels that must NOT set lastError.
+TEST(PlaybackCoordinatorTests, ProviderFailureSurfacesStepStreamError) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+    const std::optional<FrameRequest> current = provider->frameRequest(1U);
+    ASSERT_TRUE(current.has_value());
+
+    // Fail the current frame's provider request with a non-recoverable decode error.
+    const domain::MediaError failure =
+        domain::makeMediaError(domain::MediaErrorCode::kMediaDecodeFailed,
+                               domain::MediaOperation::kMediaDecode, std::nullopt, false, "decode failure");
+    ASSERT_TRUE(provider->postFrameFailed(*current, failure));
+
+    // The stream must tear down and lastError must surface the provider error on the snapshot.
+    EXPECT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused &&
+               coordinator->snapshot()->lastError.has_value();
+    }));
+    ASSERT_TRUE(coordinator->snapshot()->lastError.has_value());
+    EXPECT_EQ(coordinator->snapshot()->lastError->code, domain::MediaErrorCode::kMediaDecodeFailed);
+    EXPECT_EQ(coordinator->snapshot()->lastError->technicalDetail, "decode failure");
+
+    const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
+    ASSERT_EQ(terminals.size(), 1U);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Failed);
+}
+
+// Plan M1.2: superseding the stream with a backward step (Previous) is a normal navigation cancel —
+// it must NOT set lastError. This is the distinguishing invariant from ProviderFailureSurfacesStepStreamError.
+TEST(PlaybackCoordinatorTests, SupersedingStepDoesNotSurfaceError) {
+    const auto provider = std::make_shared<FakeFrameProvider>();
+    const auto render = std::make_shared<FakeRenderChannel>();
+    const auto coordinator = makeCoordinator(provider, render);
+    ASSERT_NE(coordinator, nullptr);
+    openReady(coordinator, provider, render);
+
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{2}),
+                  .delta = 1,
+              }),
+              PortSubmitResult::Accepted);
+    ASSERT_TRUE(provider->waitForFrameRequestCount(2U));
+
+    // A backward step supersedes the forward stream. lastError must remain unset.
+    const std::size_t requestsBeforeSeek = provider->frameRequestCount();
+    ASSERT_EQ(coordinator->submit(StepFramesCommand{
+                  .context = commandContext(coordinator, domain::CommandId{3}),
+                  .delta = -1,
+              }),
+              PortSubmitResult::Accepted);
+
+    // The backward step seeks back to frame 0 (the displayed frame). Drive that exact seek to
+    // completion deterministically: the FakeFrameProvider never auto-responds and the
+    // FakeDeadlineScheduler never auto-fires, so without this the seek would hang in kSeeking
+    // until the 5s presentation deadline and the wait below would race it (flaky under load).
+    ASSERT_TRUE(provider->waitForFrameRequestCount(requestsBeforeSeek + 1U));
+    const auto seek = provider->frameRequest(requestsBeforeSeek);
+    ASSERT_TRUE(seek.has_value());
+    ASSERT_EQ(seek->frameId, domain::FrameId{0});
+    ASSERT_TRUE(provider->postFrameReady(*seek, makeFrameSet(seek->frameId)));
+    ASSERT_TRUE(render->waitForPublishedCount(2U));
+    ASSERT_TRUE(provider->postFrameSucceeded(*seek));
+    presentPublished(coordinator, render, 1U);
+
+    EXPECT_TRUE(waitUntil([&coordinator] {
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+    }));
+    EXPECT_FALSE(coordinator->snapshot()->lastError.has_value());
+}
+
 // Device loss invalidates the forward stream.
 TEST(PlaybackCoordinatorTests, DeviceLossInvalidatesForwardStepStream) {
     const auto provider = std::make_shared<FakeFrameProvider>();
@@ -4739,9 +4821,10 @@ TEST(PlaybackCoordinatorTests, ForwardStepFallsBackToExactAtDiscontinuity) {
 }
 
 // The presentation deadline guards an interactive step frame: if the render ACK never arrives
-// before the deadline elapses, the stream must tear down and the pending step command must fail
-// (plan section 14.1, decode-failure semantics). The FakeDeadlineScheduler.fire seam drives the
-// untested handleElapsedDeadline branch for the interactive run.
+// before the deadline elapses, the stream must tear down. Plan M1.2 classifies a presentation
+// timeout as a failure (not a cancel): the step command must complete as Failed and the error must
+// surface via the snapshot's lastError so the UI banner can show it. The FakeDeadlineScheduler.fire
+// seam drives the handleDeadline branch for the interactive run.
 TEST(PlaybackCoordinatorTests, ForwardStepPresentationTimeoutFailsStream) {
     const auto scheduler = std::make_shared<FakeDeadlineScheduler>();
     const auto provider = std::make_shared<FakeFrameProvider>();
@@ -4765,15 +4848,19 @@ TEST(PlaybackCoordinatorTests, ForwardStepPresentationTimeoutFailsStream) {
     ASSERT_TRUE(waitUntil([&scheduler] { return scheduler->scheduleCount() >= 2U; }));
     ASSERT_TRUE(scheduler->fire(scheduler->scheduleCount() - 1U));
 
-    // The recoverable presentation-timeout error tears the stream down and completes the step
-    // command as Canceled (not Failed) and leaves the coordinator paused.
+    // The presentation-timeout failure tears the stream down, leaves the coordinator paused, and
+    // surfaces the error via lastError.
     EXPECT_TRUE(waitUntil([&coordinator] {
-        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused;
+        return coordinator->snapshot()->playbackState == domain::PlaybackState::kPaused &&
+               coordinator->snapshot()->lastError.has_value();
     }));
+    ASSERT_TRUE(coordinator->snapshot()->lastError.has_value());
+    EXPECT_EQ(coordinator->snapshot()->lastError->code,
+              domain::MediaErrorCode::kFramePresentationTimedOut);
     const std::vector<CommandTerminal> terminals = waitForTerminals(coordinator, 1U);
     ASSERT_EQ(terminals.size(), 1U);
     EXPECT_EQ(terminals.front().context.commandId, domain::CommandId{2});
-    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Canceled);
+    EXPECT_EQ(terminals.front().outcome, CommandOutcome::Failed);
     ASSERT_TRUE(terminals.front().error.has_value());
     EXPECT_EQ(terminals.front().error->code, domain::MediaErrorCode::kFramePresentationTimedOut);
 }

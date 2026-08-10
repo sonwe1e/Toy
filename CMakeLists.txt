@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 4.4 FATAL_ERROR)
 
-project(VCStation VERSION 1.4.5 LANGUAGES CXX)
+project(VCStation VERSION 1.6.0 LANGUAGES CXX)
 
 option(DVS_BUILD_DESKTOP "Build the Windows desktop application and packaging" ON)
 option(DVS_BUILD_ADAPTERS "Build Windows, FFmpeg, and JSON adapters" ON)

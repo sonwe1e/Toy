@@ -40,6 +40,7 @@ Item {
 
         width: root.width
         controllerState: 1
+        docked: false
         playing: false
         timelineEnabled: true
         currentFrame: 10
@@ -56,6 +57,35 @@ Item {
         canNext: true
         canLast: true
         anchors.bottom: root.bottom
+    }
+
+    // Docked instance: controllerState 0 (pinned) with docked == true. Exercises the
+    // opaque, always-enabled, no-wake-strip docked transport path. Anchored to the top so
+    // it does not overlap the auto-hide osc (which owns the bottom) — the two must not
+    // compete for synthetic hover events in the MouseArea-free QML test surface.
+    Dvs.PlayerOsc {
+        id: dockedOsc
+
+        width: root.width
+        controllerState: 0
+        docked: true
+        sourceLabel: "gameplay_capture.mp4"
+        playing: false
+        timelineEnabled: true
+        currentFrame: 2188
+        totalFrames: 9012
+        progress: 0.24
+        timecodeText: "00:01:12:18"
+        markers: []
+        actions: actions
+        focusTarget: focusTarget
+        canFirst: true
+        canPrevious: true
+        canPlay: true
+        canPause: false
+        canNext: true
+        canLast: true
+        anchors.top: root.top
     }
 
     SignalSpy {
@@ -87,10 +117,23 @@ Item {
             osc.revealActive = true;
             const timeline = findChild(osc, "timelineSlider");
             const transport = findChild(osc, "transportBar");
+            const thumb = findChild(timeline, "playheadThumb");
             verify(timeline !== null);
             verify(transport !== null);
+            verify(thumb !== null);
+            // The transport bar must sit below the timeline box...
             verify(timeline.y + timeline.height <= transport.y);
-            compare(osc.height, 120);
+            // ...and the playhead thumb (which extends ~6 px below the rail) must clear the
+            // transport bar so it is neither painted over by nor ungrabbable behind the buttons.
+            // Translate the thumb's bounding box into the osc coordinate space before comparing, since
+            // thumb.y is relative to the timeline while transport.y is relative to the osc. NOTE: in
+            // QML a QRectF exposes `bottom` as a read-only property, not a method — use `.bottom`.
+            // Map the thumb's OWN bounds (origin 0,0 in its local space) to the osc coordinate space.
+            // NOTE: do NOT pass thumb.x/thumb.y as the rect origin — mapToItem already accounts for the
+            // item's position in its parent, so doing so would double-count the offset.
+            const thumbRect = thumb.mapToItem(osc, Qt.rect(0, 0, thumb.width, thumb.height));
+            verify(thumbRect.bottom <= transport.y,
+                "thumb bottom " + thumbRect.bottom + " must clear transport top " + transport.y);
         }
 
         function test_preview_is_forwarded_as_a_signal() {
@@ -99,6 +142,25 @@ Item {
             timeline.previewRequested(42);
             compare(previewSpy.count, 1);
             compare(previewSpy.signalArguments[0][0], 42);
+        }
+
+        function test_docked_is_always_enabled_without_wake_strip() {
+            verify(dockedOsc.docked);
+            verify(dockedOsc.controlsEnabled);
+            const panel = findChild(dockedOsc, "oscPanel");
+            const wakeArea = findChild(dockedOsc, "oscWakeArea");
+            verify(panel !== null);
+            verify(wakeArea !== null);
+            verify(panel.enabled);
+            // Docked never fades: fully opaque regardless of revealActive.
+            compare(panel.opacity, 1.0);
+            // Docked has no wake strip.
+            verify(!wakeArea.visible);
+            // sourceLabel readout is present when a label is bound.
+            const label = findChild(dockedOsc, "sourceLabelReadout");
+            verify(label !== null);
+            verify(label.visible);
+            compare(label.text, "gameplay_capture.mp4");
         }
     }
 }
