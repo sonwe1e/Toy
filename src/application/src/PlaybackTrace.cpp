@@ -75,17 +75,6 @@ void PlaybackTraceBuffer::reset() noexcept {
     sink_ = nullptr;
 }
 
-namespace {
-
-PlaybackTraceBuffer& globalBuffer() noexcept {
-    // Construct on first use so the buffer exists before any static-initialization-order use.
-    // The buffer's members are trivially constructed, so no lifetime ordering hazard remains.
-    static PlaybackTraceBuffer buffer;
-    return buffer;
-}
-
-} // namespace
-
 PlaybackTrace& PlaybackTrace::instance() noexcept {
     static PlaybackTrace trace;
     return trace;
