@@ -1,5 +1,6 @@
 #include "SoftwareDecoder.h"
 
+#include "dvs/application/PlaybackTrace.h"
 #include "dvs/platform/D3d11DecodedFrameResource.h"
 #include "dvs/platform/FrameResourceFactory.h"
 #include "dvs/platform/GraphicsDeviceBroker.h"
@@ -539,6 +540,11 @@ SoftwareDecoder::decodeInternal(const domain::FrameId frameId,
                 true));
         }
         ++impl_->exactSeekCount;
+        application::PlaybackTrace::instance().record(
+            application::TraceEventKind::DecoderSeek,
+            application::TraceIdentity{
+                .request = domain::RequestId{static_cast<std::uint64_t>(impl_->sourceId)}},
+            static_cast<std::uint64_t>(frameId.value()));
         avcodec_flush_buffers(impl_->codec.get());
         if (impl_->packet != nullptr) {
             av_packet_unref(impl_->packet.get());

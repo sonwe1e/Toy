@@ -1317,7 +1317,8 @@ private:
         next.canPrevious = canNavigate && next.currentFrame > 0;
         // Navigation is allowed up to the newest requested target, not only the last displayed
         // frame, so a burst of +1 presses that has been queued but not yet presented does not
-        // repeatedly submit boundary commands once the displayed frame nears the end (USERPLAN 3.1).
+        // repeatedly submit boundary commands once the displayed frame nears the end
+        // (USERPLAN 3.1).
         const std::optional<domain::FrameId> navigationTarget =
             snapshot_->requestedFrame.has_value() ? snapshot_->requestedFrame
                                                   : snapshot_->displayedFrame;

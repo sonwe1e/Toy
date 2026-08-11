@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dvs/application/PlaybackTrace.h"
 #include "dvs/media/DecoderBackend.h"
 #include "dvs/media/MediaProbe.h"
 #include "dvs/media/MultiSourceFrameProvider.h"
@@ -42,6 +43,10 @@ public:
     [[nodiscard]] platform::GpuTransferStatistics transferStatistics() const noexcept;
     [[nodiscard]] ui::RenderAckRelayStatistics renderRelayStatistics() const noexcept;
     [[nodiscard]] std::size_t reservedFrameBytes() const noexcept;
+
+    // Holds a trace sink (e.g. FileTraceSink) for the lifetime of the runtime so the
+    // PlaybackTrace sink pointer stays valid until the event loop exits. No-op if unset.
+    void setTraceSink(std::shared_ptr<application::ITraceSink> sink) noexcept;
 
     // GUI-thread phase. Stops UI ingress and detaches non-owning QML/render references without
     // waiting on media, render, or acknowledgement workers.

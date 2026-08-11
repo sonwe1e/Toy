@@ -2,7 +2,9 @@
 #define NOMINMAX
 #endif
 
+#include "dvs/application/PlaybackTrace.h"
 #include "dvs/platform/ProcessTelemetry.h"
+#include "dvs/platform/TraceSink.h"
 #include "dvs/ui/ComparisonSurface.h"
 #include "dvs/ui/DesktopApplication.h"
 #include "dvs/ui/GraphicsBackend.h"
@@ -204,6 +206,22 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         return dvs::ui::ComparisonSurface::Difference;
     }
     return dvs::ui::ComparisonSurface::SideBySide;
+}
+
+void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
+    char* tracePath = nullptr;
+    std::size_t tracePathLength = 0U;
+    if (_dupenv_s(&tracePath, &tracePathLength, "DVS_PLAYBACK_TRACE") != 0) {
+        return;
+    }
+    const std::unique_ptr<char, decltype(&std::free)> ownedTracePath{tracePath, &std::free};
+    if (tracePathLength <= 1U) {
+        return;
+    }
+    auto sink = std::make_shared<dvs::platform::FileTraceSink>(ownedTracePath.get());
+    dvs::application::PlaybackTrace::instance().installSink(sink.get());
+    dvs::application::PlaybackTrace::instance().enable(dvs::application::traceNowMicroseconds);
+    runtime.setTraceSink(std::move(sink));
 }
 
 [[nodiscard]] std::optional<PerformanceInvocation> parsePerformanceInvocation(const int argc,
@@ -710,6 +728,9 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         smokeTimeout.start();
     }
 
+    // Default-off Phase 0 trace. The sink is drained by the background runtime shutdown work.
+    installPlaybackTrace(*runtime);
+
     int result = desktop.exec();
     smokePoll.stop();
     smokeTimeout.stop();
@@ -884,6 +905,7 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         writeStandardError("DVS_PERFORMANCE_UI_LOAD_FAILED\n");
         return EXIT_FAILURE;
     }
+    installPlaybackTrace(*runtime);
     enum class Stage {
         WaitingForGraphics,
         WaitingForFirstFrame,
@@ -1023,8 +1045,9 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
     // Held-forward cadence: deterministic jitter around a 25-35 Hz input rate. Each call advances
     // the deadline by a fresh jittered interval; the first call arms the initial deadline.
     const auto heldStepCadenceMs = [&] {
-        const qint64 jitter = static_cast<qint64>((heldStepIndex * 5U) % (2U * kHeldStepCadenceJitterMs + 1U)) -
-                              kHeldStepCadenceJitterMs;
+        const qint64 jitter =
+            static_cast<qint64>((heldStepIndex * 5U) % (2U * kHeldStepCadenceJitterMs + 1U)) -
+            kHeldStepCadenceJitterMs;
         heldStepNextDeadlineMs = heldStepTimer.elapsed() + kHeldStepCadenceBaseMs + jitter;
     };
     // Compute held-step latency percentiles and provider-statistic deltas for the window.
@@ -1035,30 +1058,35 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
         }
         const auto& base = *heldStepProviderBaseline;
         const auto& end = *heldStepProviderEnd;
-        metrics.heldStepSequentialRequestCount = end.sequentialRequestCount - base.sequentialRequestCount;
+        metrics.heldStepSequentialRequestCount =
+            end.sequentialRequestCount - base.sequentialRequestCount;
         metrics.heldStepCancelCount = end.cancelCount - base.cancelCount;
         metrics.heldStepDecoderReopenCount = end.decoderReopenCount - base.decoderReopenCount;
         metrics.heldStepGenerationDelta = end.generationDeltaCount - base.generationDeltaCount;
-        const auto accumulateExactSeeks = [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
-            return std::accumulate(
-                statuses.begin(), statuses.end(), std::uint64_t{0U},
-                [](const std::uint64_t total, const auto& status) {
-                    return total + status.exactSeekCount;
-                });
-        };
+        const auto accumulateExactSeeks =
+            [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
+                return std::accumulate(statuses.begin(),
+                                       statuses.end(),
+                                       std::uint64_t{0U},
+                                       [](const std::uint64_t total, const auto& status) {
+                                           return total + status.exactSeekCount;
+                                       });
+            };
         const std::uint64_t baseExactSeeks = accumulateExactSeeks(heldStepDecoderBaseline);
         const std::uint64_t endExactSeeks = accumulateExactSeeks(heldStepDecoderEnd);
         metrics.heldStepExactSeekDelta = endExactSeeks - baseExactSeeks;
         // Sequential continuations are decodes that did NOT exact-seek. The ratio is the share of
         // held-window decodes served by the sequential cursor, which is exactly the "sequential
         // continuation >= 95%" gate. A healthy held-forward run on a warmed pipeline is ~1.0.
-        const auto accumulateDecodes = [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
-            return std::accumulate(
-                statuses.begin(), statuses.end(), std::uint64_t{0U},
-                [](const std::uint64_t total, const auto& status) {
-                    return total + status.completedDecodeCount;
-                });
-        };
+        const auto accumulateDecodes =
+            [](const std::vector<dvs::media::DecoderBackendStatus>& statuses) {
+                return std::accumulate(statuses.begin(),
+                                       statuses.end(),
+                                       std::uint64_t{0U},
+                                       [](const std::uint64_t total, const auto& status) {
+                                           return total + status.completedDecodeCount;
+                                       });
+            };
         const std::uint64_t baseDecodes = accumulateDecodes(heldStepDecoderBaseline);
         const std::uint64_t endDecodes = accumulateDecodes(heldStepDecoderEnd);
         const std::uint64_t windowDecodes = endDecodes - baseDecodes;
@@ -1307,9 +1335,10 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
                 // Cap the window to the frames remaining past the middle seek target so the run can
                 // never step past the fixture end (which would hard-fail as "held-step-rejected" on
                 // short fixtures). totalFrames() is authoritative only after the seek commits.
-                heldStepSamples = std::min(kHeldStepSamplesMax,
-                    static_cast<std::size_t>(
-                        std::max<qint64>(0, controller.totalFrames() - heldStepSeekTarget - 1)));
+                heldStepSamples =
+                    std::min(kHeldStepSamplesMax,
+                             static_cast<std::size_t>(std::max<qint64>(
+                                 0, controller.totalFrames() - heldStepSeekTarget - 1)));
                 heldStepTimer.start();
                 heldStepCadenceMs();
                 heldStepProviderBaseline = runtime->frameProviderStatistics();
@@ -1320,24 +1349,25 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
             {
                 const qint64 presented = controller.currentFrame();
                 if (presented != heldStepLastPresentedFrame) {
-                // Count missing intermediate FrameIds. A clean +1 advance is error-free; a jump of
-                // N frames means (N - 1) intermediate FrameIds were skipped. This maps directly to
-                // the "0 missing intermediate FrameIds" gate. A regression (presented <= last) is
-                // also a sequence error (and is separately caught by the canonical-regression gate).
-                if (presented > heldStepLastPresentedFrame) {
-                    heldStepSequenceErrors +=
-                        static_cast<std::uint64_t>(presented - heldStepLastPresentedFrame - 1);
-                } else {
-                    ++heldStepSequenceErrors;
+                    // Count missing intermediate FrameIds. A clean +1 advance is error-free; a jump
+                    // of N frames means (N - 1) intermediate FrameIds were skipped. This maps
+                    // directly to the "0 missing intermediate FrameIds" gate. A regression
+                    // (presented <= last) is also a sequence error (and is separately caught by the
+                    // canonical-regression gate).
+                    if (presented > heldStepLastPresentedFrame) {
+                        heldStepSequenceErrors +=
+                            static_cast<std::uint64_t>(presented - heldStepLastPresentedFrame - 1);
+                    } else {
+                        ++heldStepSequenceErrors;
+                    }
+                    if (!heldStepSubmitTimes.empty()) {
+                        heldStepMilliseconds.push_back(heldStepTimer.elapsed() -
+                                                       heldStepSubmitTimes.front());
+                        heldStepSubmitTimes.pop_front();
+                    }
+                    heldStepLastPresentedFrame = presented;
+                    ++metrics.heldStepPresentedFrames;
                 }
-                if (!heldStepSubmitTimes.empty()) {
-                    heldStepMilliseconds.push_back(heldStepTimer.elapsed() -
-                                                   heldStepSubmitTimes.front());
-                    heldStepSubmitTimes.pop_front();
-                }
-                heldStepLastPresentedFrame = presented;
-                ++metrics.heldStepPresentedFrames;
-            }
             } // end presented-frame detection scope
             if (heldStepIndex >= heldStepSamples) {
                 if (controller.busy()) {
@@ -1363,9 +1393,9 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
                 return;
             }
             // Paced cadence: never submit while the controller is busy. dispatchNavigation rejects
-            // stepFrames when busy (canNavigate requires !busy), so submitting unconditionally would
-            // fail the run. The cadence deadline sets the minimum interval; the controller's own
-            // pacing sets the effective rate when steps take longer than the cadence.
+            // stepFrames when busy (canNavigate requires !busy), so submitting unconditionally
+            // would fail the run. The cadence deadline sets the minimum interval; the controller's
+            // own pacing sets the effective rate when steps take longer than the cadence.
             if (!controller.busy() && heldStepTimer.elapsed() >= heldStepNextDeadlineMs) {
                 heldStepSubmitTimes.push_back(heldStepTimer.elapsed());
                 if (!controller.stepFrames(1)) {

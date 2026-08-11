@@ -180,6 +180,14 @@ public:
         deviceBroker.reset();
         frameBudget.reset();
 
+        if (traceSink) {
+            application::PlaybackTrace& trace = application::PlaybackTrace::instance();
+            trace.disable();
+            static_cast<void>(trace.drainToSink());
+            trace.installSink(nullptr);
+            traceSink.reset();
+        }
+
         {
             const std::scoped_lock lock(completionMutex);
             result = relayStopped && actorStopped;
@@ -218,6 +226,7 @@ public:
     std::shared_ptr<platform::PresentationAckMailbox> acknowledgementMailbox;
     std::shared_ptr<platform::GraphicsDeviceBroker> deviceBroker;
     std::shared_ptr<platform::FrameBudget> frameBudget;
+    std::shared_ptr<application::ITraceSink> traceSink;
 
 private:
     std::mutex completionMutex;
@@ -462,6 +471,7 @@ public:
         work->acknowledgementMailbox = std::move(acknowledgementMailbox_);
         work->deviceBroker = std::move(deviceBroker_);
         work->frameBudget = std::move(frameBudget_);
+        work->traceSink = std::move(traceSink_);
 
         // Reserve the failure keepalive before thread creation. If the OS rejects the new thread,
         // abandoning this holder intentionally keeps all live worker objects intact instead of
@@ -485,6 +495,10 @@ public:
         shutdownResult_ = completedInTime && controlResult;
         shutdownCompleted_ = true;
         return shutdownResult_;
+    }
+
+    void setTraceSink(std::shared_ptr<application::ITraceSink> sink) noexcept {
+        traceSink_ = std::move(sink);
     }
 
 private:
@@ -519,6 +533,9 @@ private:
     bool prepared_ = false;
     bool shutdownCompleted_ = false;
     bool shutdownResult_ = false;
+    // Holds the playback trace sink until ownership moves to the background shutdown work, which
+    // drains the trace after all producers stop. Null when tracing is disabled (the default).
+    std::shared_ptr<application::ITraceSink> traceSink_;
 };
 
 std::unique_ptr<ReviewRuntime> ReviewRuntime::create() {
@@ -571,6 +588,12 @@ ui::RenderAckRelayStatistics ReviewRuntime::renderRelayStatistics() const noexce
 
 std::size_t ReviewRuntime::reservedFrameBytes() const noexcept {
     return impl_ ? impl_->reservedFrameBytes() : 0U;
+}
+
+void ReviewRuntime::setTraceSink(std::shared_ptr<application::ITraceSink> sink) noexcept {
+    if (impl_) {
+        impl_->setTraceSink(std::move(sink));
+    }
 }
 
 void ReviewRuntime::prepareForSceneGraphRelease() noexcept {
