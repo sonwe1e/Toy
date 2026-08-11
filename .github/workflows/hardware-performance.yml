@@ -101,18 +101,18 @@ jobs:
               throw "Missing performance fixture: $path"
             }
           }
-          .\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
+          .\tools\testing\test-hardware-runner.ps1 -MinimumRefreshRate 120
 
       - name: Configure
         shell: powershell
         run: >-
-          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\ci\invoke-low-impact.ps1 cmake
           --preset release --fresh
 
       - name: Build
         shell: powershell
         run: >-
-          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 cmake
+          powershell -NoProfile -File .\tools\ci\invoke-low-impact.ps1 cmake
           --build --preset release
 
       - name: D3D11VA, zero-copy, and comparison pixel tests
@@ -120,7 +120,7 @@ jobs:
         env:
           DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
-          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\ci\invoke-low-impact.ps1 ctest
           --preset hardware-d3d11 --output-on-failure
 
       - name: Release-blocking performance gates
@@ -128,7 +128,7 @@ jobs:
         env:
           DVS_EXECUTION_RESOURCE_PROFILE: Interactive
         run: >-
-          powershell -NoProfile -File .\tools\invoke-low-impact.ps1 ctest
+          powershell -NoProfile -File .\tools\ci\invoke-low-impact.ps1 ctest
           --preset performance-d3d11 --output-on-failure
 
       - name: Collect performance logs

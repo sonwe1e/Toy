@@ -100,7 +100,7 @@ GameViewer、Oray 等虚拟/间接显示适配器时，即使 D3D11VA 解码成�
 不能作为 60/120 FPS 发布证据。工作流会先执行以下 fail-closed 预检：
 
 ```powershell
-.\tools\test-hardware-runner.ps1 -MinimumRefreshRate 120
+.\tools\testing\test-hardware-runner.ps1 -MinimumRefreshRate 120
 ```
 
 预检必须输出 `DVS_HARDWARE_RUNNER_READY`。如果提示没有物理 PCI 显示适配器附着到

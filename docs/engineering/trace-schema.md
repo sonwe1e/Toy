@@ -73,8 +73,8 @@ showing no regression.
 
 ## Enabling
 
-Tracing is enabled by the navigation/comparison gate scripts (`tools/run-navigation-gate.ps1`,
-`tools/run-comparison-semantics-gate.ps1`) which pass `--playback-trace <path>` to the app. The
+Tracing is enabled by the navigation/comparison gate scripts (`tools/testing/run-navigation-gate.ps1`,
+`tools/testing/run-comparison-semantics-gate.ps1`) which pass `--playback-trace <path>` to the app. The
 app calls `PlaybackTrace::instance().enable(traceNowMicroseconds)` and installs a `FileTraceSink`,
 then disables and finalizes on shutdown. Tests use `MemoryTraceSink` to assert on the recorded
 trace without touching the filesystem.

@@ -39,7 +39,7 @@ foreach(dvs_comparison_mode IN ITEMS wipe diff)
             -ExecutionPolicy
             Bypass
             -File
-            "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+            "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
             -Profile
             1080p60-2source
             -ComparisonMode
@@ -70,7 +70,7 @@ dvs_add_test(
         -ExecutionPolicy
         Bypass
         -File
-        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
         -Profile
         1080p60-2source
         -ComparisonMode
@@ -103,7 +103,7 @@ dvs_add_test(
         -ExecutionPolicy
         Bypass
         -File
-        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
         -Profile
         1080p60-2source-rotated
         -ComparisonMode
@@ -132,7 +132,7 @@ dvs_add_test(
         -ExecutionPolicy
         Bypass
         -File
-        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
         -Profile
         1080p60-1source
         -Executable
@@ -158,7 +158,7 @@ dvs_add_test(
         -ExecutionPolicy
         Bypass
         -File
-        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
         -Profile
         1080p60-2source
         -Executable
@@ -184,7 +184,7 @@ dvs_add_test(
         -ExecutionPolicy
         Bypass
         -File
-        "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+        "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
         -Profile
         1080p60
         -Executable
@@ -211,7 +211,7 @@ foreach(profile IN ITEMS 1080p120-1source 1080p120-2source 1080p120-3source)
             -ExecutionPolicy
             Bypass
             -File
-            "${PROJECT_SOURCE_DIR}/tools/run-performance-gate.ps1"
+            "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
             -Profile
             "${profile}"
             -Executable
