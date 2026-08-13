@@ -54,7 +54,9 @@ public:
 
     // Called after the desktop host has destroyed its QML engine/window. Adapter teardown is
     // transferred to a detached control task and this call returns within the seven-second total
-    // shutdown budget. Controller and relay QObjects remain owned by the creating GUI thread.
+    // shutdown budget. Controller and relay QObjects remain owned by the creating GUI thread. A
+    // false result means teardown is still running; the executable host must terminate without
+    // normal static destruction rather than return from main while that work remains active.
     [[nodiscard]] bool shutdownAfterSceneGraphRelease() noexcept;
 
 private:

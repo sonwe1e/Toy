@@ -5,20 +5,25 @@
 #include "dvs/ui/SourceListModel.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHash>
 #include <QMetaObject>
 #include <QSet>
 #include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -30,7 +35,173 @@ namespace dvs::ui {
 namespace {
 
 constexpr int kFallbackProjectionIntervalMilliseconds = 10;
+constexpr int kSourceDiskStatusPollMilliseconds = 50;
+constexpr qint64 kSourceDiskStatusRefreshMilliseconds = 250;
 constexpr qsizetype kMaximumAlignmentTimelineMarkers = 256;
+
+struct SourceDiskStatusRequest final {
+    QString key;
+    QString path;
+    std::uint64_t expectedBytes = 0U;
+    std::int64_t expectedModifiedMilliseconds = 0;
+    bool hasExpectedIdentity = false;
+};
+
+struct SourceDiskStatusResult final {
+    QString key;
+    bool changedOnDisk = false;
+};
+
+struct SourceDiskStatusCompletion final {
+    std::uint64_t generation = 0U;
+    std::optional<std::vector<SourceDiskStatusResult>> results;
+};
+
+class SourceDiskStatusMailbox final {
+public:
+    void publish(const std::uint64_t generation,
+                 std::optional<std::vector<SourceDiskStatusResult>> results) noexcept {
+        try {
+            auto completion =
+                std::make_shared<const SourceDiskStatusCompletion>(SourceDiskStatusCompletion{
+                    .generation = generation, .results = std::move(results)});
+            std::lock_guard lock(mutex_);
+            if (generation < highestPublishedGeneration_) {
+                return;
+            }
+            highestPublishedGeneration_ = generation;
+            completion_ = std::move(completion);
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] std::shared_ptr<const SourceDiskStatusCompletion> tryTake() noexcept {
+        try {
+            std::unique_lock lock(mutex_, std::try_to_lock);
+            if (!lock.owns_lock()) {
+                return {};
+            }
+            return std::exchange(completion_, {});
+        } catch (...) {
+            return {};
+        }
+    }
+
+    void taskScheduled() noexcept {
+        try {
+            std::lock_guard lock(mutex_);
+            ++activeTasks_;
+        } catch (...) {
+        }
+    }
+
+    void taskFinished() noexcept {
+        try {
+            {
+                std::lock_guard lock(mutex_);
+                if (activeTasks_ > 0U) {
+                    --activeTasks_;
+                }
+            }
+            idleCondition_.notify_all();
+        } catch (...) {
+        }
+    }
+
+    [[nodiscard]] bool waitForIdle(const std::chrono::milliseconds timeout) noexcept {
+        try {
+            std::unique_lock lock(mutex_);
+            return idleCondition_.wait_for(lock, timeout, [this] { return activeTasks_ == 0U; });
+        } catch (...) {
+            return false;
+        }
+    }
+
+private:
+    std::mutex mutex_;
+    std::condition_variable idleCondition_;
+    std::uint64_t highestPublishedGeneration_ = 0U;
+    std::size_t activeTasks_ = 0U;
+    std::shared_ptr<const SourceDiskStatusCompletion> completion_;
+};
+
+class SourceDiskStatusTaskLease final {
+public:
+    explicit SourceDiskStatusTaskLease(std::shared_ptr<SourceDiskStatusMailbox> mailbox) noexcept
+        : mailbox_(std::move(mailbox)) {
+        mailbox_->taskScheduled();
+    }
+
+    ~SourceDiskStatusTaskLease() {
+        finish();
+    }
+
+    SourceDiskStatusTaskLease(const SourceDiskStatusTaskLease&) = delete;
+    SourceDiskStatusTaskLease& operator=(const SourceDiskStatusTaskLease&) = delete;
+
+    void finish() noexcept {
+        if (mailbox_) {
+            mailbox_->taskFinished();
+            mailbox_.reset();
+        }
+    }
+
+private:
+    std::shared_ptr<SourceDiskStatusMailbox> mailbox_;
+};
+
+class SourceDiskStatusTaskState final {
+public:
+    SourceDiskStatusTaskState(
+        std::shared_ptr<SourceDiskStatusMailbox> mailbox,
+        std::function<ReviewController::SourceFileMetadata(const QString&)> metadataProbe,
+        const std::uint64_t generation,
+        std::vector<SourceDiskStatusRequest> requests)
+        : lease_(mailbox), mailbox_(std::move(mailbox)), metadataProbe_(std::move(metadataProbe)),
+          generation_(generation), requests_(std::move(requests)) {}
+
+    void run() noexcept {
+        try {
+            std::vector<SourceDiskStatusResult> results;
+            results.reserve(requests_.size());
+            for (const SourceDiskStatusRequest& request : requests_) {
+                ReviewController::SourceFileMetadata live;
+                if (metadataProbe_) {
+                    live = metadataProbe_(request.path);
+                } else {
+                    const QFileInfo liveInfo{request.path};
+                    live.exists = liveInfo.exists();
+                    if (live.exists) {
+                        live.byteSize = static_cast<std::uint64_t>(liveInfo.size());
+                        live.modifiedUtcMilliseconds = liveInfo.lastModified().toMSecsSinceEpoch();
+                    }
+                }
+                bool changed = !live.exists;
+                if (live.exists && request.hasExpectedIdentity) {
+                    changed = live.byteSize != request.expectedBytes ||
+                              live.modifiedUtcMilliseconds != request.expectedModifiedMilliseconds;
+                }
+                results.push_back(SourceDiskStatusResult{
+                    .key = request.key,
+                    .changedOnDisk = changed,
+                });
+            }
+            mailbox_->publish(generation_, std::move(results));
+        } catch (...) {
+            mailbox_->publish(generation_, std::nullopt);
+        }
+    }
+
+private:
+    // Declared first so its destructor runs after the payload and mailbox members. Shutdown does
+    // not observe the task as idle while Qt/standard-library payload destruction is still active.
+    SourceDiskStatusTaskLease lease_;
+    std::shared_ptr<SourceDiskStatusMailbox> mailbox_;
+    std::function<ReviewController::SourceFileMetadata(const QString&)> metadataProbe_;
+    std::uint64_t generation_ = 0U;
+    std::vector<SourceDiskStatusRequest> requests_;
+};
+
 [[nodiscard]] QString twoDigits(const std::int64_t value) {
     return QString::number(value).rightJustified(2, QLatin1Char{'0'});
 }
@@ -266,6 +437,14 @@ public:
 
         QObject::connect(&projectionTimer_, &QTimer::timeout, &owner_, [this] { refresh(); });
         projectionTimer_.setInterval(kFallbackProjectionIntervalMilliseconds);
+        QObject::connect(&sourceDiskStatusPollTimer_, &QTimer::timeout, &owner_, [this] {
+            consumeSourceDiskStatusCompletion();
+        });
+        sourceDiskStatusPollTimer_.setInterval(kSourceDiskStatusPollMilliseconds);
+        QObject::connect(&sourceDiskStatusRefreshTimer_, &QTimer::timeout, &owner_, [this] {
+            scheduleSourceDiskStatusRefresh();
+        });
+        sourceDiskStatusRefreshTimer_.setSingleShot(true);
         refresh();
         if (!stopped_ && !dependencies_.eventDriven) {
             projectionTimer_.start();
@@ -274,6 +453,8 @@ public:
 
     ~Impl() {
         projectionTimer_.stop();
+        sourceDiskStatusPollTimer_.stop();
+        sourceDiskStatusRefreshTimer_.stop();
     }
 
     [[nodiscard]] const ReviewView& view() const noexcept {
@@ -702,6 +883,11 @@ public:
         refresh();
     }
 
+    [[nodiscard]] bool
+    waitForSourceDiskStatusIdle(const std::chrono::milliseconds timeout) noexcept {
+        return sourceDiskStatusMailbox_->waitForIdle(timeout);
+    }
+
     [[nodiscard]] QString frozenSourceIdentity(const QUrl& source) const {
         if (!source.isLocalFile()) {
             return canonicalSourceIdentity(source);
@@ -734,6 +920,10 @@ public:
         }
         stopped_ = true;
         projectionTimer_.stop();
+        sourceDiskStatusPollTimer_.stop();
+        sourceDiskStatusRefreshTimer_.stop();
+        ++sourceDiskStatusGeneration_;
+        sourceDiskStatusCheckPending_ = false;
         pendingCommand_.reset();
         pendingNavigationCommand_.reset();
         pendingTransportCommand_.reset();
@@ -754,6 +944,97 @@ private:
         } catch (...) {
             return {};
         }
+    }
+
+    void scheduleSourceDiskStatusRefresh() noexcept {
+        try {
+            if (stopped_ || !frozenComparison_ || sourceDiskStatusCheckPending_) {
+                return;
+            }
+            if (sourceDiskStatusTimer_.isValid() &&
+                !sourceDiskStatusTimer_.hasExpired(kSourceDiskStatusRefreshMilliseconds)) {
+                const qint64 remaining =
+                    kSourceDiskStatusRefreshMilliseconds - sourceDiskStatusTimer_.elapsed();
+                sourceDiskStatusRefreshTimer_.start(
+                    static_cast<int>(std::max<qint64>(1, remaining)));
+                return;
+            }
+            sourceDiskStatusRefreshTimer_.stop();
+
+            std::vector<SourceDiskStatusRequest> requests;
+            requests.reserve(frozenComparison_->sources().size());
+            for (const domain::ComparisonSource& source : frozenComparison_->sources()) {
+                const QString path =
+                    QString::fromStdWString(source.descriptor.normalizedPath.wstring());
+                const auto& identity = source.descriptor.sourceIdentity;
+                requests.push_back(SourceDiskStatusRequest{
+                    .key = QDir::cleanPath(path).toCaseFolded(),
+                    .path = path,
+                    .expectedBytes = identity.has_value() ? identity->byteSize : 0U,
+                    .expectedModifiedMilliseconds =
+                        identity.has_value() ? identity->modifiedUtcMilliseconds : 0,
+                    .hasExpectedIdentity = identity.has_value(),
+                });
+            }
+
+            sourceDiskStatusCheckPending_ = true;
+            sourceDiskStatusTimer_.restart();
+            const std::uint64_t generation = ++sourceDiskStatusGeneration_;
+            const std::shared_ptr<SourceDiskStatusMailbox> mailbox = sourceDiskStatusMailbox_;
+            if (dependencies_.scheduleBackgroundTask) {
+                auto state = std::make_shared<SourceDiskStatusTaskState>(
+                    mailbox,
+                    dependencies_.sourceFileMetadataProbe,
+                    generation,
+                    std::move(requests));
+                // The injected scheduler owns its std::function copy. Clang's analyzer cannot
+                // model that type-erased ownership transfer and reports the shared state as a
+                // leak; component tests exercise queued, failed, and released task lifetimes.
+                // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+                Dependencies::BackgroundTask task = [state = std::move(state)]() noexcept {
+                    state->run();
+                };
+                dependencies_.scheduleBackgroundTask(std::move(task));
+            } else {
+                auto state = std::make_unique<SourceDiskStatusTaskState>(
+                    mailbox,
+                    dependencies_.sourceFileMetadataProbe,
+                    generation,
+                    std::move(requests));
+                QThreadPool::globalInstance()->start(
+                    [state = std::move(state)]() noexcept { state->run(); });
+            }
+            sourceDiskStatusPollTimer_.start();
+        } catch (...) {
+            sourceDiskStatusCheckPending_ = false;
+            sourceDiskStatusPollTimer_.stop();
+            if (frozenComparison_ && !stopped_) {
+                sourceDiskStatusRefreshTimer_.start(
+                    static_cast<int>(kSourceDiskStatusRefreshMilliseconds));
+            }
+        }
+    }
+
+    void consumeSourceDiskStatusCompletion() noexcept {
+        const std::shared_ptr<const SourceDiskStatusCompletion> completion =
+            sourceDiskStatusMailbox_->tryTake();
+        if (!completion || completion->generation != sourceDiskStatusGeneration_) {
+            return;
+        }
+        sourceDiskStatusCheckPending_ = false;
+        sourceDiskStatusPollTimer_.stop();
+        if (stopped_) {
+            return;
+        }
+        if (!completion->results.has_value()) {
+            scheduleSourceDiskStatusRefresh();
+            return;
+        }
+        changedOnDiskByPath_.clear();
+        for (const SourceDiskStatusResult& result : *completion->results) {
+            changedOnDiskByPath_.insert(result.key, result.changedOnDisk);
+        }
+        publishProjection();
     }
 
     void refresh() noexcept {
@@ -791,6 +1072,12 @@ private:
             if (snapshot_->validatedComparison != frozenComparison_) {
                 frozenComparison_ = snapshot_->validatedComparison;
                 frozenIdentitiesByPath_.clear();
+                changedOnDiskByPath_.clear();
+                ++sourceDiskStatusGeneration_;
+                sourceDiskStatusCheckPending_ = false;
+                sourceDiskStatusPollTimer_.stop();
+                sourceDiskStatusRefreshTimer_.stop();
+                sourceDiskStatusTimer_.invalidate();
                 if (frozenComparison_) {
                     for (const domain::ComparisonSource& source : frozenComparison_->sources()) {
                         const QString path =
@@ -803,6 +1090,8 @@ private:
                                 composeSourceIdentity(path,
                                                       static_cast<std::int64_t>(identity->byteSize),
                                                       identity->modifiedUtcMilliseconds));
+                        } else {
+                            frozenIdentitiesByPath_.insert(key, key);
                         }
                     }
                 }
@@ -832,6 +1121,10 @@ private:
     void failClosed() noexcept {
         stopped_ = true;
         projectionTimer_.stop();
+        sourceDiskStatusPollTimer_.stop();
+        sourceDiskStatusRefreshTimer_.stop();
+        ++sourceDiskStatusGeneration_;
+        sourceDiskStatusCheckPending_ = false;
         pendingCommand_.reset();
         pendingNavigationCommand_.reset();
         pendingTransportCommand_.reset();
@@ -1200,6 +1493,8 @@ private:
             }
         }
 
+        scheduleSourceDiskStatusRefresh();
+
         std::vector<SourceListRow> sourceRows;
         if (snapshot_) {
             sourceRows.reserve(snapshot_->sources.size());
@@ -1239,18 +1534,13 @@ private:
                         if (frozenIt != frozenIdentitiesByPath_.cend()) {
                             row.sourceIdentity = *frozenIt;
                         } else {
-                            row.sourceIdentity = canonicalSourceIdentity(QUrl::fromLocalFile(path));
+                            // A validated descriptor normally has a frozen identity. Keep the
+                            // projection filesystem-free when an incomplete adapter omits it.
+                            row.sourceIdentity = QDir::cleanPath(path).toCaseFolded();
                         }
-                        const QFileInfo liveInfo{path};
-                        const auto& descriptorIdentity =
-                            sourceDescriptor->descriptor.sourceIdentity;
-                        if (!liveInfo.exists() || !descriptorIdentity.has_value()) {
-                            row.changedOnDisk = !liveInfo.exists();
-                        } else {
-                            row.changedOnDisk = static_cast<std::uint64_t>(liveInfo.size()) !=
-                                                    descriptorIdentity->byteSize ||
-                                                liveInfo.lastModified().toMSecsSinceEpoch() !=
-                                                    descriptorIdentity->modifiedUtcMilliseconds;
+                        const auto changedOnDisk = changedOnDiskByPath_.constFind(frozenKey);
+                        if (changedOnDisk != changedOnDiskByPath_.cend()) {
+                            row.changedOnDisk = *changedOnDisk;
                         }
                     }
                 }
@@ -1505,6 +1795,8 @@ private:
     Dependencies dependencies_;
     SourceListModel sourceModel_;
     QTimer projectionTimer_;
+    QTimer sourceDiskStatusPollTimer_;
+    QTimer sourceDiskStatusRefreshTimer_;
     std::shared_ptr<const application::SessionSnapshot> snapshot_;
     QString candidateSourceAErrorKey_;
     QString candidateSourceBErrorKey_;
@@ -1520,6 +1812,12 @@ private:
     ReviewView view_;
     std::shared_ptr<const domain::ValidatedComparisonSet> frozenComparison_;
     QHash<QString, QString> frozenIdentitiesByPath_;
+    QHash<QString, bool> changedOnDiskByPath_;
+    QElapsedTimer sourceDiskStatusTimer_;
+    std::uint64_t sourceDiskStatusGeneration_ = 0U;
+    bool sourceDiskStatusCheckPending_ = false;
+    std::shared_ptr<SourceDiskStatusMailbox> sourceDiskStatusMailbox_ =
+        std::make_shared<SourceDiskStatusMailbox>();
 };
 
 ReviewController::ReviewController(Dependencies dependencies, QObject* const parent)
@@ -1924,6 +2222,11 @@ void ReviewController::stop() noexcept {
         return;
     }
     impl_->stop();
+}
+
+bool ReviewController::waitForSourceDiskStatusIdle(
+    const std::chrono::milliseconds timeout) noexcept {
+    return impl_->waitForSourceDiskStatusIdle(timeout);
 }
 
 } // namespace dvs::ui

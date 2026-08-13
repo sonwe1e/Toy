@@ -184,6 +184,7 @@ public:
             application::PlaybackTrace& trace = application::PlaybackTrace::instance();
             trace.disable();
             static_cast<void>(trace.drainToSink());
+            static_cast<void>(traceSink->finalize());
             trace.installSink(nullptr);
             traceSink.reset();
         }
@@ -492,7 +493,10 @@ public:
 
         bool controlResult = false;
         const bool completedInTime = work->waitUntil(shutdownDeadline, controlResult);
-        shutdownResult_ = completedInTime && controlResult;
+        const bool sourceDiskStatusIdle =
+            !controller_ || controller_->waitForSourceDiskStatusIdle(
+                                boundedRemainingTime(shutdownDeadline, kTotalShutdownTimeout));
+        shutdownResult_ = completedInTime && controlResult && sourceDiskStatusIdle;
         shutdownCompleted_ = true;
         return shutdownResult_;
     }

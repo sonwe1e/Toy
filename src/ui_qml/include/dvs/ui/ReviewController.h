@@ -12,6 +12,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -103,12 +105,23 @@ public:
         std::string fallbackReason;
     };
 
+    struct SourceFileMetadata final {
+        bool exists = false;
+        std::uint64_t byteSize = 0U;
+        std::int64_t modifiedUtcMilliseconds = 0;
+    };
+
     struct Dependencies final {
+        using BackgroundTask = std::function<void()>;
+
         std::function<application::PortSubmitResult(application::PlaybackCommand)> submit;
         std::function<std::shared_ptr<const application::SessionSnapshot>()> snapshot;
         std::function<std::vector<application::CommandTerminal>()> takeCompletedCommands;
         std::function<std::vector<DecoderBackendState>()> decoderBackendStates;
         bool eventDriven = false;
+        // Optional test/adapter seam. The default probe uses QFileInfo on a background worker.
+        std::function<SourceFileMetadata(const QString&)> sourceFileMetadataProbe;
+        std::function<void(BackgroundTask)> scheduleBackgroundTask;
     };
 
     explicit ReviewController(Dependencies dependencies, QObject* parent = nullptr);
@@ -228,6 +241,11 @@ public:
     // Stops timer/backend access and makes every command fail closed. Calls from another thread
     // are queued to the controller's GUI thread; the runtime calls this before closing ingress.
     Q_INVOKABLE void stop() noexcept;
+
+    // Shutdown-only ownership fence. Call after stop(); no new probes can then start. A timeout
+    // leaves the probe running in the background and requires the executable host to terminate
+    // without normal static destruction.
+    [[nodiscard]] bool waitForSourceDiskStatusIdle(std::chrono::milliseconds timeout) noexcept;
 
 Q_SIGNALS:
     void stateChanged();
