@@ -3,6 +3,7 @@
 #include "dvs/domain/Identifiers.h"
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -12,11 +13,9 @@
 namespace dvs::application {
 
 // The identity scope attached to every trace event. Mirrors the plan's OperationIdentity
-// (03_目标架构设计.md §4) so a trace can prove command exactly-once, ACK-before-commit, and
-// no stale commit: any revision mismatch between an async result and current state means the
-// result is stale and must not commit. Topology/timeline revisions are tracked from Phase 0 so
-// the trace can already detect stale commits across topology/timeline changes; they become
-// load-bearing for Phase 1+ identity but are populated here.
+// (03_目标架构设计.md §4) so a future analyzer can check command exactly-once,
+// ACK-before-commit, and stale-result rejection. The current emission contract is not sufficient
+// to prove all three invariants; see trace-schema.md for the explicit gaps.
 struct TraceIdentity final {
     domain::SessionId session{0};
     domain::SessionEpoch epoch{0};
@@ -32,24 +31,24 @@ struct TraceIdentity final {
 };
 
 enum class TraceEventKind : std::uint8_t {
-    CommandAccepted,
-    CommandRejected,
-    ProviderSubmitted,
-    ProviderCanceled,
-    FrameSetReady,
-    ProviderTerminal,
-    RenderPublished,
-    PresentationAcknowledged,
-    SnapshotCommitted,
-    CommandTerminal,
-    DecoderSeek,
-    DecoderReopen,
-    CacheHit,
-    DeviceGenerationChanged,
+    CommandAccepted = 0,
+    CommandRejected = 1,
+    ProviderSubmitted = 2,
+    ProviderCanceled = 3,
+    FrameSetReady = 4,
+    ProviderTerminal = 5,
+    RenderPublished = 6,
+    PresentationAcknowledged = 7,
+    SnapshotCommitted = 8,
+    CommandTerminal = 9,
+    DecoderSeek = 10,
+    DecoderReopen = 11,
+    CacheHit = 12,
+    DeviceGenerationChanged = 13,
 };
 
-// A single fixed-size trace event. Kept small and trivially copyable so it can live in a
-// lock-free ring buffer with no heap allocation and no variable-length payloads on the hot path.
+// A single fixed-size trace event. Kept small and trivially copyable so it can live in a bounded
+// ring buffer with no heap allocation and no variable-length payloads on the hot path.
 // `payload` carries event-specific data (e.g. a frame id, a request kind) and is interpreted
 // per `kind`; see trace-schema.md for the encoding.
 struct TraceEvent final {
@@ -67,28 +66,36 @@ struct TraceEvent final {
 class ITraceSink {
 public:
     virtual ~ITraceSink() = default;
-    virtual void append(const TraceEvent& event) = 0;
-    virtual void recordOverflow(std::uint64_t lostCount) = 0;
+
+    // Returns true only when the complete record was accepted. Export failures are folded into
+    // the trace loss count so a successful overflow marker makes the incomplete capture explicit.
+    // Sink callbacks must not re-enter PlaybackTrace lifecycle or drain operations.
+    [[nodiscard]] virtual bool append(const TraceEvent& event) noexcept = 0;
+    [[nodiscard]] virtual bool recordOverflow(std::uint64_t lostCount) noexcept = 0;
+
+    // Completes a capture after all events and overflow records have been submitted. File-backed
+    // sinks use this boundary to flush, close, and atomically publish the final output.
+    [[nodiscard]] virtual bool finalize() noexcept = 0;
 };
 
 // Bounded multi-producer/single-consumer ring buffer. Events are produced by several threads
 // (the coordinator worker and, for media-layer events, each per-source decode worker) and
-// consumed later by a single export thread. The buffer is protected by a mutex: the critical
-// section is a single array write (nanoseconds), so producer contention is negligible and the
-// coordinator worker never blocks on I/O — record() never touches the sink. A dropped event
-// (buffer full) is preferred over blocking, and the lost count is reported so export can flag an
-// incomplete trace. This is a diagnostic facility that is disabled by default, so correctness
-// and clarity are favoured over a lock-free design.
+// consumed later by a single export thread. The buffer is protected by a mutex, but producers use
+// try-lock and drop on contention or capacity exhaustion; record() therefore never waits and never
+// touches the sink. Queue drops and sink/export failures contribute to the lost count so export
+// can flag an incomplete trace. This is a diagnostic facility that is disabled by default.
 class PlaybackTraceBuffer final {
 public:
     static constexpr std::size_t kCapacity = 16384U;
     static_assert((kCapacity & (kCapacity - 1U)) == 0U, "capacity must be a power of two");
 
+    // Sink installation is a lifecycle operation. Replacing a sink waits for an in-progress
+    // drain, so after setSink(nullptr) returns the caller may safely destroy the previous sink.
+    // This lifecycle lock is independent of the producer queue lock.
     void setSink(ITraceSink* sink) noexcept;
-    [[nodiscard]] ITraceSink* sink() const noexcept;
 
-    // Records an event from any thread. Returns false (and counts it as lost) when the buffer
-    // is full so producers never block. Never performs I/O.
+    // Records an event from any thread. Returns false (and counts it as lost) when the queue lock
+    // is contended or the buffer is full. Never waits and never performs I/O.
     [[nodiscard]] bool record(TraceEvent event) noexcept;
 
     // Drains up to `max` events into `out`, returning the count written. Single-consumer: must
@@ -96,7 +103,8 @@ public:
     std::size_t drain(TraceEvent* out, std::size_t max) noexcept;
 
     // Convenience for the export path: drains events and forwards each to the sink on the
-    // consumer thread (never the worker). Returns count dequeued.
+    // consumer thread (never the worker). Failed sink writes count the affected dequeued events
+    // as lost. Returns count dequeued.
     std::size_t drainToSink() noexcept;
 
     [[nodiscard]] std::uint64_t overflowCount() const noexcept;
@@ -108,30 +116,34 @@ private:
     }
 
     mutable std::mutex mutex_;
+    mutable std::mutex sinkMutex_;
     ITraceSink* sink_ = nullptr;
     std::array<TraceEvent, kCapacity> buffer_;
     std::uint64_t head_ = 0U;
     std::uint64_t tail_ = 0U;
-    std::uint64_t overflow_ = 0U;
+    std::atomic<std::uint64_t> overflow_{0U};
+    std::uint64_t reportedOverflow_ = 0U;
 };
 
-// Process-global trace buffer. Constructed once and accessed via instance(); tests may replace
-// it with reset() between cases. Thread-safe for the single-producer/single-consumer contract
-// declared on PlaybackTraceBuffer.
+// Process-global trace buffer. Constructed once and accessed via instance(); tests may reset it
+// between cases after stopping producers. Recording supports multiple producers and one consumer.
 class PlaybackTrace final {
 public:
+    using Clock = std::uint64_t (*)() noexcept;
+
     static PlaybackTrace& instance() noexcept;
 
     void installSink(ITraceSink* sink) noexcept;
     [[nodiscard]] bool enabled() const noexcept;
 
     // Enables recording with the given monotonic time source (microseconds since an arbitrary
-    // epoch). Disabling drops all subsequent records and is the default, so tracing has zero
-    // steady-state cost unless a gate explicitly enables it.
-    void enable(std::uint64_t (*nowMicroseconds)() noexcept) noexcept;
+    // epoch). Disabling drops all subsequent records and is the default, leaving only one atomic
+    // clock read and branch unless a gate explicitly enables tracing.
+    void enable(Clock nowMicroseconds) noexcept;
     void disable() noexcept;
 
-    void record(TraceEventKind kind, const TraceIdentity& identity, std::uint64_t payload = 0U);
+    void
+    record(TraceEventKind kind, const TraceIdentity& identity, std::uint64_t payload = 0U) noexcept;
 
     std::size_t drain(TraceEvent* out, std::size_t max) noexcept;
     std::size_t drainToSink() noexcept;
@@ -141,7 +153,7 @@ public:
 private:
     PlaybackTrace() = default;
 
-    std::uint64_t (*now_)() noexcept = nullptr;
+    std::atomic<Clock> now_{nullptr};
     PlaybackTraceBuffer buffer_;
 };
 

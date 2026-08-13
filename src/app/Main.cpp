@@ -12,6 +12,7 @@
 #include "dvs/ui/ReviewPreferencesController.h"
 #include "dvs/ui/SourceListModel.h"
 
+#include "PlaybackTraceEnvironment.h"
 #include "ReviewRuntime.h"
 #include "StartupFailureReporter.h"
 #include "StartupRequest.h"
@@ -209,16 +210,12 @@ performanceSurfaceMode(const PerformanceComparisonMode comparisonMode) noexcept 
 }
 
 void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
-    char* tracePath = nullptr;
-    std::size_t tracePathLength = 0U;
-    if (_dupenv_s(&tracePath, &tracePathLength, "DVS_PLAYBACK_TRACE") != 0) {
+    const std::optional<std::filesystem::path> tracePath =
+        dvs::app::playbackTracePathFromEnvironment();
+    if (!tracePath.has_value()) {
         return;
     }
-    const std::unique_ptr<char, decltype(&std::free)> ownedTracePath{tracePath, &std::free};
-    if (tracePathLength <= 1U) {
-        return;
-    }
-    auto sink = std::make_shared<dvs::platform::FileTraceSink>(ownedTracePath.get());
+    auto sink = std::make_shared<dvs::platform::FileTraceSink>(*tracePath);
     dvs::application::PlaybackTrace::instance().installSink(sink.get());
     dvs::application::PlaybackTrace::instance().enable(dvs::application::traceNowMicroseconds);
     runtime.setTraceSink(std::move(sink));
@@ -394,7 +391,10 @@ void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
     if (!smokeMode && !applyStartupRequest(startupRequest, desktop)) {
         runtime->prepareForSceneGraphRelease();
         desktop.releaseSceneGraph();
-        static_cast<void>(runtime->shutdownAfterSceneGraphRelease());
+        if (!runtime->shutdownAfterSceneGraphRelease()) {
+            writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+            std::_Exit(EXIT_FAILURE);
+        }
         return dvs::app::reportFatalStartup("The requested startup action could not be opened.",
                                             false);
     }
@@ -770,6 +770,14 @@ void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
                           return runtime->attachSurface(surface);
                       })) {
         writeStandardError("DVS_UPGRADE_SETTINGS_UI_LOAD_FAILED\n");
+        if (runtime) {
+            runtime->prepareForSceneGraphRelease();
+            desktop.releaseSceneGraph();
+            if (!runtime->shutdownAfterSceneGraphRelease()) {
+                writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+                std::_Exit(EXIT_FAILURE);
+            }
+        }
         return EXIT_FAILURE;
     }
 
@@ -873,7 +881,7 @@ void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
     desktop.releaseSceneGraph();
     if (!runtime->shutdownAfterSceneGraphRelease()) {
         writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
-        return EXIT_FAILURE;
+        std::_Exit(EXIT_FAILURE);
     }
     return result;
 }
@@ -903,6 +911,14 @@ void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
                           return runtime->attachSurface(surface);
                       })) {
         writeStandardError("DVS_PERFORMANCE_UI_LOAD_FAILED\n");
+        if (runtime) {
+            runtime->prepareForSceneGraphRelease();
+            desktop.releaseSceneGraph();
+            if (!runtime->shutdownAfterSceneGraphRelease()) {
+                writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+                std::_Exit(EXIT_FAILURE);
+            }
+        }
         return EXIT_FAILURE;
     }
     installPlaybackTrace(*runtime);
@@ -1675,6 +1691,7 @@ void installPlaybackTrace(dvs::app::ReviewRuntime& runtime) {
     writeStandardError("DVS_PERFORMANCE_RESULT " + encodedReport.toStdString() + '\n');
     if (!shutdownCompleted) {
         writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+        std::_Exit(EXIT_FAILURE);
     }
     return result;
 }
@@ -1704,13 +1721,28 @@ struct PopupProbeResult final {
         return result;
     }
     result.captured = true;
+    // Popup.Window preserves the rounded VcsMenu corners as transparent pixels. Exclude only those
+    // four corners so the gate still verifies the top, bottom, left, and right edge centers.
+    constexpr qreal kSafeLogicalCornerExtent = 10.0;
+    const int cornerExtent =
+        static_cast<int>(std::ceil(kSafeLogicalCornerExtent * rgba.devicePixelRatio()));
+    if (cornerExtent <= 0 || rgba.width() <= cornerExtent * 2 ||
+        rgba.height() <= cornerExtent * 2) {
+        result.failureReason = "no-pixels";
+        return result;
+    }
     const int horizontalStep = (std::max)(1, rgba.width() / 48);
     const int verticalStep = (std::max)(1, rgba.height() / 48);
     int minimumAlpha = 255;
     std::uint64_t sampledPixels = 0U;
     for (int y = 0; y < rgba.height(); y += verticalStep) {
         const auto* const row = rgba.constScanLine(y);
+        const bool inVerticalCorner = y < cornerExtent || y >= rgba.height() - cornerExtent;
         for (int x = 0; x < rgba.width(); x += horizontalStep) {
+            const bool inHorizontalCorner = x < cornerExtent || x >= rgba.width() - cornerExtent;
+            if (inVerticalCorner && inHorizontalCorner) {
+                continue;
+            }
             const int offset = x * 4;
             const int alpha = static_cast<int>(row[offset + 3]);
             ++sampledPixels;
@@ -1746,6 +1778,14 @@ struct PopupProbeResult final {
                           return runtime->attachSurface(surface);
                       })) {
         writeStandardError("DVS_POPUP_PIXEL_UI_LOAD_FAILED\n");
+        if (runtime) {
+            runtime->prepareForSceneGraphRelease();
+            desktop.releaseSceneGraph();
+            if (!runtime->shutdownAfterSceneGraphRelease()) {
+                writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
+                std::_Exit(EXIT_FAILURE);
+            }
+        }
         return EXIT_FAILURE;
     }
 
@@ -1969,7 +2009,7 @@ struct PopupProbeResult final {
     desktop.releaseSceneGraph();
     if (!runtime->shutdownAfterSceneGraphRelease()) {
         writeStandardError("DVS_RUNTIME_SHUTDOWN_TIMEOUT\n");
-        return EXIT_FAILURE;
+        std::_Exit(EXIT_FAILURE);
     }
     return result;
 }

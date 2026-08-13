@@ -1,80 +1,167 @@
 # Playback Trace Schema
 
-> Format and semantics for the Phase 0 deterministic playback trace. Purpose: from a single trace
-> exported on the coordinator worker, prove **command exactly-once**, **ACK-before-commit**, and
-> **no stale commit** — the three invariants the optimization plan must never break.
+The playback trace is a versioned diagnostic JSON Lines file. Multiple playback producers submit
+events to one bounded in-process buffer; the runtime exports the buffer to one sink during
+orderly shutdown. The schema records identity fields intended for later invariant analysis, but
+the current emission contract is not by itself proof of the three asynchronous invariants and no
+such analyzer is implemented yet.
 
-## Storage format
+The navigation and comparison-semantics gate scripts currently validate only that the child
+process succeeds and produces a structurally valid, fully parseable trace with a header, at least
+one event, and no overflow marker. They do not prove exactly-once terminal delivery,
+acknowledgment-before-commit ordering, or stale-result rejection.
 
-Traces are streamed as **JSONL** (one JSON object per line) by `FileTraceSink`. A `MemoryTraceSink`
-keeps the same records in memory for tests. Every line after the header is a `TraceEvent`:
+## Enabling and file lifecycle
 
-```json
-{"t":<µs>,"kind":<n>,"s":<sessionId>,"e":<epoch>,"topo":<topoRev>,"tl":<timelineRev>,"al":<alignRev>,"gen":<playbackGen>,"req":<requestId>,"cmd":<commandId|null>,"p":<payload>}
+Tracing is disabled unless the process environment contains `DVS_PLAYBACK_TRACE`. Its value is
+the output JSONL path. For example:
+
+```powershell
+$env:DVS_PLAYBACK_TRACE = Join-Path $PWD "out\playback-trace.jsonl"
+.\out\build\dev\bin\VCStation.exe
+Remove-Item Env:DVS_PLAYBACK_TRACE
 ```
 
-- `t` — monotonic microseconds since an arbitrary epoch (`std::chrono::steady_clock`). Only deltas
-  between events on the same worker are meaningful; the epoch is not wall-clock.
-- `kind` — index into `TraceEventKind` (see table below).
-- `s/e/topo/tl/al/gen/req/cmd` — the `TraceIdentity` scope. `cmd` is `null` for events not tied to a
-  specific command.
-- `p` — event-specific payload (encoding per kind, see below).
+The scripts under `tools/testing` set this variable for the child process and restore the
+caller's previous value afterward. There is no `--playback-trace` command-line option.
 
-The file opens with a single header line: `{"traceVersion":1}`.
+During normal runtime shutdown, playback producers are stopped first, tracing is disabled, and
+the remaining buffer is drained to a same-directory temporary file. The sink flushes and closes
+that transaction before atomically publishing the configured path. A write, flush, close, or
+publish failure leaves the capture unavailable and never exposes the partial new trace at the final
+path; the gate consequently fails closed. A pre-existing target normally remains unchanged until
+replacement succeeds. In the rare
+unrecoverable partial-replacement case, the publisher preserves the previous target and replacement
+as explicit same-directory recovery artifacts rather than silently losing either copy; the final
+path may then be absent and the gate fails closed.
+
+The sink is not continuously streamed and a crash or forced termination may therefore leave the
+new trace missing (or preserve the previous target), rather than publish the in-progress partial.
+If no event or overflow record is drained, the lazily opened transaction is not created.
+
+## JSON Lines format
+
+The first written line is the version header:
+
+```json
+{"traceVersion":1}
+```
+
+Each normal event is one compact JSON object:
+
+```json
+{"t":123456789,"kind":7,"s":42,"e":3,"topo":8,"tl":15,"al":2,"gen":9,"dev":4,"req":27,"cmd":91,"p":1200}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `t` | Monotonic process-local timestamp in microseconds. |
+| `kind` | Numeric event kind from the table below. |
+| `s` | Session identifier. |
+| `e` | Session epoch. |
+| `topo` | Topology revision. |
+| `tl` | Timeline revision. |
+| `al` | Alignment revision. |
+| `gen` | Playback generation. |
+| `dev` | Device generation. |
+| `req` | Provider request identifier. |
+| `cmd` | Command identifier, or JSON `null` when the event is not command-scoped. |
+| `p` | Event-specific payload interpreted according to `kind`. |
+
+The timestamp is useful for elapsed-time measurements, but it is not a global wall clock. Queue
+serialization determines file order. Because producers obtain timestamps before attempting to
+enqueue, timestamps from different threads must not be treated as a stronger total ordering than
+the trace line order.
+
+An overflow report is a separate JSON object:
+
+```json
+{"overflow":17}
+```
+
+Its value is the number of previously unreported events lost to queue-lock contention, a full
+queue, or sink/export failure after dequeue. For a failed batch export, the count conservatively
+includes the failed event and the remaining unattempted suffix of that batch. More than one marker
+may occur across drains. Any analyzer that uses the trace as proof must fail closed when it
+encounters an overflow marker because the missing events may affect the result. If the sink cannot
+write the overflow marker itself, the in-process count remains unreported and the resulting file
+must not be treated as complete.
 
 ## Event kinds
 
-| # | kind | When emitted | `payload` encoding |
-|---|------|--------------|--------------------|
-| 0 | `CommandAccepted` | A command passes admission (valid epoch, not a duplicate) in `handleCommand`, before dispatch. | 0 |
-| 1 | `CommandRejected` | `rejectCommand` — the command is rejected with a hard error. | `CommandOutcome` value |
-| 2 | `ProviderSubmitted` | (reserved for provider adapter) a decode request is submitted to the provider. | request priority |
-| 3 | `ProviderCanceled` | (reserved) a provider request is canceled. | `CancellationReason` value |
-| 4 | `FrameSetReady` | `handleFrameSet` — a complete `FrameSetReady` event is accepted. | canonical frame id |
-| 5 | `ProviderTerminal` | `handleInteractiveStepTerminal` — a provider terminal for the interactive run. | `RequestTerminal` variant index |
-| 6 | `RenderPublished` | A frame set is handed to `IRenderChannel::publish` (interactive + playback paths). | canonical frame id |
-| 7 | `PresentationAcknowledged` | `handleFramePresented` — a `FrameSetPresented` ACK is accepted. | canonical frame id |
-| 8 | `SnapshotCommitted` | `publishSnapshot` — an immutable `SessionSnapshot` is published. | displayed frame id (or UINT64_MAX if none) |
-| 9 | `CommandTerminal` | `completeCommand` — a command reaches a terminal outcome. | `CommandOutcome` value |
-| 10 | `DecoderSeek` | `SoftwareDecoder::decodeInternal` performs an `av_seek_frame` (exact seek). | target frame id |
-| 11 | `DecoderReopen` | (reserved) a decoder is reopened after interruption. | source id |
-| 12 | `CacheHit` | `SourceDecodeActor` finds a frame in the per-source cache. | source frame id |
-| 13 | `DeviceGenerationChanged` | `handleGraphicsReady` — the graphics device generation advances. | device generation |
+| Value | Name | Payload |
+| --- | --- | --- |
+| `0` | `CommandAccepted` | `0`. |
+| `1` | `CommandRejected` | `CommandOutcome` value. |
+| `2` | `ProviderSubmitted` | Request priority. Reserved; not currently emitted. |
+| `3` | `ProviderCanceled` | `CancellationReason` value. Reserved; not currently emitted. |
+| `4` | `FrameSetReady` | Completed canonical position. |
+| `5` | `ProviderTerminal` | `RequestTerminal` variant index. |
+| `6` | `RenderPublished` | Published canonical position. |
+| `7` | `PresentationAcknowledged` | Presented canonical position. |
+| `8` | `SnapshotCommitted` | Displayed canonical position, or `UINT64_MAX` when absent. |
+| `9` | `CommandTerminal` | `CommandOutcome` value. |
+| `10` | `DecoderSeek` | Seek target position. |
+| `11` | `DecoderReopen` | Source identifier. Reserved; not currently emitted. |
+| `12` | `CacheHit` | Cached source-frame index. |
+| `13` | `DeviceGenerationChanged` | New device generation. |
 
-Kinds marked *(reserved)* are defined in the enum and the schema but not yet emitted by Phase 0; they
-are filled in by Phase 3 (reverse window) and Phase 4 (scrub/thumbnail) so the trace format is stable
-across phases.
+`CommandAccepted` currently means that a command was nonduplicate and claimed by the coordinator;
+it is emitted before the remaining admission checks. A rejected claimed command may therefore
+produce `CommandAccepted`, `CommandRejected`, and exactly one `CommandTerminal` record.
 
-## Identity and stale-commit detection
+Numeric values are append-only. Do not reorder or reuse them within schema version 1. Additive
+event fields may be introduced without changing the version; a semantic change to an existing
+field or event requires a new trace version and analyzer support for both versions. The version
+header remains exactly the one-field object shown above.
 
-Every async result the coordinator accepts carries a `FrameRequestContext` (session + epoch +
-playback-generation + device-generation + request id). The trace identity extends that with the
-topology/timeline/alignment revisions tracked from Phase 0. A trace analyzer proves **no stale
-commit** by checking, for every `SnapshotCommitted` event, that its identity revisions all equal the
-coordinator's live revisions at the moment of commit; any mismatch means a result from a superseded
-topology/timeline/generation committed — an invariant violation.
+## Buffer and export behavior
 
-## Proving the three invariants from one trace
+The implementation is a 16,384-event fixed-capacity MPSC queue guarded by a mutex:
 
-1. **Command exactly-once**: for each `CommandAccepted` with command id `c`, there is exactly one
-   `CommandTerminal` (or `CommandRejected`) with the same `c`. No duplicates, no orphans.
-2. **ACK-before-commit**: for each `SnapshotCommitted` at frame `f`, a `PresentationAcknowledged`
-   at frame `f` appears **earlier** in the trace (smaller `t`), and no `SnapshotCommitted` at `f`
-   appears before its ACK.
-3. **No stale commit**: every `SnapshotCommitted` identity matches live revisions (see above).
+- playback coordination and source-decode actors may both be producers;
+- every producer attempts `try_lock` and drops rather than waiting on contention;
+- the queue also drops when its fixed capacity is exhausted;
+- lost-event accounting is atomic; and
+- the single shutdown consumer copies batches of at most 256 events, releases the mutex, and
+  performs sink I/O outside the producer critical section;
+- the file sink batches JSONL bytes into bounded 64 KiB writes; and
+- failed sink writes are counted as lost, while finalize/transaction failures prevent publication
+  so the trace gate fails closed without misclassifying the runtime as a shutdown timeout.
 
-## Buffer and overflow
+This design bounds producer delay and storage, but it is not lock-free and it does not guarantee
+a lossless trace. An overflow marker is the explicit loss signal.
 
-The trace buffer is a bounded lock-free SPSC ring (`PlaybackTraceBuffer`, capacity 16384 events).
-When full, new events are dropped and counted (`overflowCount`); the sink is notified so an export
-can flag incompleteness. Recording is **off by default** (`PlaybackTrace::instance().enable(...)`
-gates it), so steady-state performance is unaffected. The Phase 0 exit gate requires an on/off A/B
-showing no regression.
+## Intended analyzer contract and current gaps
 
-## Enabling
+A future analyzer is intended to use the full identity tuple
+`(s, e, topo, tl, al, gen, dev, req, cmd)` and event payloads to check:
 
-Tracing is enabled by the navigation/comparison gate scripts (`tools/testing/run-navigation-gate.ps1`,
-`tools/testing/run-comparison-semantics-gate.ps1`) which pass `--playback-trace <path>` to the app. The
-app calls `PlaybackTrace::instance().enable(traceNowMicroseconds)` and installs a `FileTraceSink`,
-then disables and finalizes on shutdown. Tests use `MemoryTraceSink` to assert on the recorded
-trace without touching the filesystem.
+1. every accepted command reaches exactly one terminal outcome;
+2. a matching `PresentationAcknowledged` precedes `SnapshotCommitted` for the same canonical
+   frame and identity; and
+3. results from superseded session, revision, provider, request, or device identities are not
+   published or committed.
+
+Those rules still need an executable analyzer with explicit handling for claimed-but-rejected
+commands, cancellation, non-frame snapshot publications, revision changes, and trace overflow.
+In addition, coordinator arrival events currently use the coordinator's current trace identity,
+not a separately exported copy of the incoming asynchronous event context. Authoritative stale-
+result analysis therefore needs an emission contract that records both the incoming identity and
+the live identity (or equivalent replayable revision transitions). The current fields and gate do
+not establish that proof.
+
+## Current validation coverage
+
+- `PlaybackTraceTests` exercises the bounded queue, one-time overflow reporting per lost batch,
+  sink failure accounting, sink I/O outside the queue lock, sink removal as an ownership fence,
+  and the disabled/enabled global record path.
+- `TraceSinkTests` exercises the file header, every identity field including `dev`, normal events,
+  overflow JSON, Unicode paths, and bounded memory-sink behavior.
+- `PlaybackTraceGate.psm1` parses every nonblank trace line, validates the schema-v1 numeric types
+  and ranges, rejects malformed records and any overflow marker, and propagates the child process
+  result. `PlaybackTraceGateTests.ps1` locks down the structural boundary and uint64 edge cases. The
+  gate deliberately does not implement the intended semantic analyzer contract.
+
+For the wider performance and hardware-validation boundary, see
+[Maintenance and Performance Notes](maintenance-and-performance.md).
