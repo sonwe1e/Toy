@@ -1,5 +1,6 @@
 # --- Build, package, coverage, and downloaded runtime output ---
 /out/
+/vd/
 /Testing/
 /vcpkg_installed/
 /_deps/

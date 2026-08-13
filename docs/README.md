@@ -4,7 +4,11 @@ VCStation documentation is grouped by lifecycle and audience:
 
 - [architecture.md](architecture.md), [architecture/](architecture/), and [adr/](adr/) define
   current architecture, dependency rules, state ownership, and accepted decisions.
-- [engineering/](engineering/) contains active engineering contracts and diagnostics.
+- [engineering/](engineering/) contains active engineering contracts and diagnostics. Start with
+  [maintenance and performance](engineering/maintenance-and-performance.md) for the current
+  cleanup and validation boundary, [the behavior baseline](engineering/behavior-baseline.md) for
+  asynchronous playback rules, and [the trace schema](engineering/trace-schema.md) for the
+  implemented diagnostic format and its current limitations.
 - [plans/playback-overhaul/](plans/playback-overhaul/) contains the active playback overhaul plan
   and its independent review reports.
 - [releases/](releases/) records shipped behavior and release-specific validation.
