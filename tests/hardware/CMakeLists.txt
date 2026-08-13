@@ -28,6 +28,11 @@ set_tests_properties(hardware.d3d11_zero_copy PROPERTIES RUN_SERIAL TRUE TIMEOUT
 # These execute through the real QML controls on the GPU runner. Unlike the regular source-count
 # performance profiles, they capture the resulting Wipe/Diff surface and reject a black output.
 foreach(dvs_comparison_mode IN ITEMS wipe diff)
+    if(dvs_comparison_mode STREQUAL "diff")
+        set(dvs_comparison_profile 1080p60-2source-diff)
+    else()
+        set(dvs_comparison_profile 1080p60-2source)
+    endif()
     dvs_add_test(
         NAME hardware.${dvs_comparison_mode}-2source
         LAYER hardware
@@ -41,7 +46,7 @@ foreach(dvs_comparison_mode IN ITEMS wipe diff)
             -File
             "${PROJECT_SOURCE_DIR}/tools/testing/run-performance-gate.ps1"
             -Profile
-            1080p60-2source
+            "${dvs_comparison_profile}"
             -ComparisonMode
             "${dvs_comparison_mode}"
             -Executable
@@ -223,6 +228,6 @@ foreach(profile IN ITEMS 1080p120-1source 1080p120-2source 1080p120-3source)
         performance.${profile}
         PROPERTIES
             RUN_SERIAL TRUE
-            TIMEOUT 180
+            TIMEOUT 210
     )
 endforeach()

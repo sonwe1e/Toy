@@ -3,6 +3,7 @@ param(
     [ValidateSet(
         '1080p60-1source',
         '1080p60-2source',
+        '1080p60-2source-diff',
         '1080p60-2source-rotated',
         '1080p60',
         '1080p120-1source',
@@ -33,6 +34,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $ComparisonMode = $ComparisonMode.ToLowerInvariant()
 
+Import-Module (Join-Path $PSScriptRoot 'CommandLineArgument.psm1') -Force
+
 $resolvedExecutable = (Resolve-Path -LiteralPath $Executable).Path
 if (-not $FixtureRoot) {
     $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
@@ -51,6 +54,9 @@ $fixtureNames = switch ($Profile) {
     }
     '1080p60-2source' {
         @('gate-1080p60-a.mp4', 'gate-1080p60-b.mp4')
+    }
+    '1080p60-2source-diff' {
+        @('gate-1080p60-a.mp4', 'gate-1080p60-diff-b.mp4')
     }
     '1080p60-2source-rotated' {
         @('gate-1080p60-rot90-a.mp4', 'gate-1080p60-b.mp4')
@@ -72,39 +78,117 @@ $fixtures = foreach ($name in $fixtureNames) {
     (Resolve-Path -LiteralPath (Join-Path $resolvedFixtureRoot $name)).Path
 }
 
-if (-not $RunName) {
-    $RunName = if ($ComparisonMode -eq 'side') { $Profile } else { "$Profile-$ComparisonMode" }
+if ($Profile -eq '1080p60-2source-diff') {
+    if ($ComparisonMode -ne 'diff') {
+        throw 'The 1080p60-2source-diff profile may only run in diff comparison mode.'
+    }
+    $contractPath = Join-Path $resolvedFixtureRoot 'gate-1080p60-diff-b.contract.json'
+    if (-not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "The diff fixture contract was not found: $contractPath"
+    }
+    $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json
+    if ($contract.contractVersion -ne 1 -or
+        $contract.sourceFileName -cne 'gate-1080p60-a.mp4' -or
+        $contract.fixtureFileName -cne 'gate-1080p60-diff-b.mp4' -or
+        $contract.width -ne 1920 -or
+        $contract.height -ne 1080 -or
+        $contract.averageFrameRate -cne '60/1') {
+        throw "The diff fixture contract is invalid: $contractPath"
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $fixtures[0] -Algorithm SHA256).Hash
+    $fixtureHash = (Get-FileHash -LiteralPath $fixtures[1] -Algorithm SHA256).Hash
+    if ($sourceHash -cne ([string]$contract.sourceFileSha256).ToUpperInvariant() -or
+        $fixtureHash -cne ([string]$contract.fixtureFileSha256).ToUpperInvariant()) {
+        throw 'The diff fixture files do not match their generation contract.'
+    }
+    $decodedHashPattern = '^[0-9a-f]{64}$'
+    if ([string]$contract.sourceFirstFrameSha256 -cnotmatch $decodedHashPattern -or
+        [string]$contract.fixtureFirstFrameSha256 -cnotmatch $decodedHashPattern -or
+        $contract.sourceFirstFrameSha256 -ceq $contract.fixtureFirstFrameSha256) {
+        throw 'The diff fixture contract does not prove a decoded-pixel difference.'
+    }
 }
-$stderrPath = Join-Path $resolvedLogRoot "$runName-stderr.log"
-$stdoutPath = Join-Path $resolvedLogRoot "$runName-stdout.log"
+
+if (-not $RunName) {
+    $RunName = if ($ComparisonMode -eq 'side' -or $Profile.EndsWith("-$ComparisonMode")) {
+        $Profile
+    } else {
+        "$Profile-$ComparisonMode"
+    }
+}
+if ($RunName -cnotmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$') {
+    throw 'RunName must be one 1-128 character ASCII filename stem using letters, digits, _ or -.'
+}
+$canonicalLogRoot = [System.IO.Path]::GetFullPath($resolvedLogRoot)
+$stderrPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $canonicalLogRoot "$RunName-stderr.log"))
+$stdoutPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $canonicalLogRoot "$RunName-stdout.log"))
+foreach ($logPath in @($stderrPath, $stdoutPath)) {
+    $parentPath = [System.IO.Path]::GetDirectoryName($logPath)
+    if (-not [string]::Equals(
+            $parentPath, $canonicalLogRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "The performance log path escapes LogRoot: $logPath"
+    }
+}
 $arguments = @('--ui-performance') + $fixtures + @('--seconds', $DurationSeconds, '--mode', $ComparisonMode)
+$commandLineArguments = (
+    $arguments | ForEach-Object { ConvertTo-WindowsCommandLineArgument -Value ([string]$_) }
+) -join ' '
 $process = Start-Process `
     -FilePath $resolvedExecutable `
-    -ArgumentList $arguments `
+    -ArgumentList $commandLineArguments `
     -RedirectStandardError $stderrPath `
     -RedirectStandardOutput $stdoutPath `
     -PassThru
-$gateProcess = Get-Process -Id $PID
+# Force Windows PowerShell to retain the native process handle needed by ExitCode even when a
+# short-lived child exits before the Process object is queried again.
+[void]$process.Handle
+$processExitCode = $null
+$processTimeoutSeconds = $DurationSeconds + 120
 try {
-    $process.ProcessorAffinity = $gateProcess.ProcessorAffinity
-    $process.PriorityClass = $gateProcess.PriorityClass
-} catch [System.InvalidOperationException] {
+    $gateProcess = Get-Process -Id $PID
+    try {
+        $process.ProcessorAffinity = $gateProcess.ProcessorAffinity
+        $process.PriorityClass = $gateProcess.PriorityClass
+    } catch [System.InvalidOperationException] {
+        if (-not $process.HasExited) {
+            throw
+        }
+    }
+    $gatePriority = $gateProcess.PriorityClass
+    $gateAffinityMask = [Int64]$gateProcess.ProcessorAffinity.ToInt64()
+    $gateProcessorIds = [System.Collections.Generic.List[int]]::new()
+    $maximumProcessorCount = [Math]::Min([Environment]::ProcessorCount, 63)
+    for ($processorId = 0; $processorId -lt $maximumProcessorCount; ++$processorId) {
+        if (($gateAffinityMask -band ([Int64]1 -shl $processorId)) -ne 0) {
+            $gateProcessorIds.Add($processorId)
+        }
+    }
+
+    if (-not $process.WaitForExit($processTimeoutSeconds * 1000)) {
+        throw (
+            "The $runName gate exceeded its bounded process timeout of " +
+            "$processTimeoutSeconds seconds."
+        )
+    }
+    # Finish Process bookkeeping before reading ExitCode. This returns immediately after the
+    # bounded wait has observed termination.
+    $process.WaitForExit()
+    $process.Refresh()
+    $processExitCode = $process.ExitCode
+    if ($null -eq $processExitCode) {
+        throw "The $runName gate process exited without an observable exit code."
+    }
+} finally {
     if (-not $process.HasExited) {
-        throw
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        if (-not $process.WaitForExit(5000)) {
+            Write-Warning "The timed-out $runName gate process did not exit within 5 seconds."
+        }
     }
+    $process.Dispose()
 }
-$gatePriority = $gateProcess.PriorityClass
-$gateAffinityMask = [Int64]$gateProcess.ProcessorAffinity.ToInt64()
-$gateProcessorIds = [System.Collections.Generic.List[int]]::new()
-$maximumProcessorCount = [Math]::Min([Environment]::ProcessorCount, 63)
-for ($processorId = 0; $processorId -lt $maximumProcessorCount; ++$processorId) {
-    if (($gateAffinityMask -band ([Int64]1 -shl $processorId)) -ne 0) {
-        $gateProcessorIds.Add($processorId)
-    }
-}
-$process.WaitForExit()
-$process.Refresh()
-$processExitCode = $process.ExitCode
 
 if ($env:DVS_GATE_RESOURCE_PROFILE) {
     Add-Content `

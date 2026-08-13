@@ -79,12 +79,30 @@ DVS_PERFORMANCE_FIXTURE_ROOT=G:\GitHubActions\Toy-data\performance
 ```text
 gate-1080p60-a.mp4
 gate-1080p60-b.mp4
+gate-1080p60-diff-b.mp4  # 从 a 生成，中心 25% 注入确定性可见差异
+gate-1080p60-diff-b.contract.json
 gate-1080p60-c.mp4
 gate-1080p60-rot90-a.mp4  # 1080p60, 90-degree presentation metadata
 gate-1080p120-a.mp4
 gate-1080p120-b.mp4
 gate-1080p120-c.mp4
 ```
+
+Diff 门禁不会使用可能与 A 像素相同的通用 B 素材。首次准备 runner，或替换
+`gate-1080p60-a.mp4` 后，必须重新生成带来源哈希、输出哈希和解码首帧哈希的专用素材：
+
+```powershell
+.\tools\testing\generate-performance-diff-fixture.ps1 `
+  -Ffmpeg C:\ffmpeg\bin\ffmpeg.exe `
+  -FixtureRoot $env:DVS_PERFORMANCE_FIXTURE_ROOT
+```
+
+生成器要求输入和输出均为同 codec、pixel format、frame count 的 1920x1080 60 fps
+素材，并在 B 的中心 25% 写入白色块。`hardware.diff-2source` 启动前还会核对 contract
+中的文件 SHA-256 与两个不同的解码首帧 SHA-256；最终渲染仍必须通过至少 1% 的亮像素
+比例门禁。若通过 `-OutputName` 生成额外素材，其 contract 使用相同文件基名；默认门禁仍
+只读取上述固定命名配对。生成、探测与首帧哈希均受 `-NativeTimeoutSeconds` 限制，替换
+现有配对失败时生成器会回滚视频和 contract，保留上一组可用文件。
 
 4K 不属于活动性能矩阵，runner 不需要 4K fixture。HEVC Main10/P010 与 D3D11VA
 零拷贝正确性继续由仓库内的小分辨率 fixture 覆盖。

@@ -1,7 +1,7 @@
 name: Hardware and Performance
 
 # Kept separate from Build and Test on purpose: these suites need a GPU-equipped,
-# interactively logged-in self-hosted runner and six external performance fixtures. It includes
+# interactively logged-in self-hosted runner and external performance fixtures. It includes
 # actual Wipe/Diff pixel captures before the source-count performance profiles.
 # They run on demand instead of accepting pull-request code on the workstation.
 
@@ -89,6 +89,8 @@ jobs:
           $required = @(
             'gate-1080p60-a.mp4',
             'gate-1080p60-b.mp4',
+            'gate-1080p60-diff-b.mp4',
+            'gate-1080p60-diff-b.contract.json',
             'gate-1080p60-c.mp4',
             'gate-1080p60-rot90-a.mp4',
             'gate-1080p120-a.mp4',
