@@ -1112,6 +1112,8 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
     auto* const viewportItem =
         root->findChild<QQuickItem*>(QStringLiteral("mediaViewportFocusTarget"));
     ASSERT_NE(viewportItem, nullptr);
+    QQuickItem* const layoutRoot = inspectorItem->parentItem();
+    ASSERT_NE(layoutRoot, nullptr);
 
     const auto processLayout = [] {
         for (int iteration = 0; iteration < 5; ++iteration) {
@@ -1119,7 +1121,8 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
         }
     };
 
-    // Geometry matrix: four sizes x inspector open/closed.
+    // Keep the geometry matrix hidden so small Windows desktops do not clamp the requested
+    // logical size. The exposed 960x640 pixel and keyboard checks remain below.
     struct GeometryCase {
         int width;
         int height;
@@ -1133,12 +1136,17 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
 
     for (const auto& size : kSizes) {
         window->resize(size.width, size.height);
-        window->show();
         processLayout();
+        const auto restoreHiddenContentSize = [&] {
+            layoutRoot->setSize(
+                QSizeF{static_cast<qreal>(size.width), static_cast<qreal>(size.height)});
+        };
+        restoreHiddenContentSize();
 
         // --- Inspector closed ---
         shell.setInspectorVisible(false);
         processLayout();
+        restoreHiddenContentSize();
 
         EXPECT_FALSE(scrim->property("visible").toBool())
             << size.width << "x" << size.height << " scrim hidden when inspector closed";
@@ -1146,7 +1154,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
         // Transport spans approximately the full viewport width.
         const QPointF transportRightClosed =
             transportItem->mapToItem(window->contentItem(), QPointF{transportItem->width(), 0.0});
-        const double contentWidth = window->contentItem()->width();
+        const double contentWidth = layoutRoot->width();
         const double closedViewportWidth = viewportItem->width();
         // Allow a small margin for chrome margins.
         EXPECT_GE(transportRightClosed.x(), contentWidth * 0.85)
@@ -1157,6 +1165,7 @@ TEST(MainQmlContractTests, DrawerScrimTransportShrinkAndEscClose) {
         // --- Inspector open ---
         shell.setInspectorVisible(true);
         processLayout();
+        restoreHiddenContentSize();
 
         const bool isDrawer = size.width < 1120;
 
