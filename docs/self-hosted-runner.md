@@ -53,11 +53,11 @@ SHA-256 d59123a43003e357b0805b5d0f611d0bd2f65ab67d51bd070dd4e7a0f685c162
 ```powershell
 $runnerRoot = 'G:\GitHubActions\Toy-runner'
 $token = gh api --method POST `
-  repos/sonwe1e/Toy/actions/runners/registration-token --jq .token
+  repos/sonwe1e/VideoCompareStation/actions/runners/registration-token --jq .token
 
 Set-Location $runnerRoot
 .\config.cmd --unattended `
-  --url https://github.com/sonwe1e/Toy `
+  --url https://github.com/sonwe1e/VideoCompareStation `
   --token $token `
   --name Sonwe-RTX4090 `
   --labels dvs-toolchain-4.4,dvs-gpu `
