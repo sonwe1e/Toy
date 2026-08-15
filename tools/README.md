@@ -2,7 +2,6 @@
 
 PowerShell automation is grouped by responsibility:
 
-- `bootstrap/`: download and validate development/runtime dependencies.
 - `ci/`: wrappers used by continuous integration jobs.
 - `quality/`: repository policy, resource-limit, and coverage checks.
 - `testing/`: fixture generation and playback/performance gate entry points. The playback gates
@@ -16,7 +15,8 @@ PowerShell automation is grouped by responsibility:
   FFmpeg operations are timeout-bounded, and it publishes the video/contract pair with rollback so
   a failed replacement preserves the previous usable pair. The hardware gate consumes the default
   `gate-1080p60-diff-b` pair.
-- `release/`: release identity, certificate, and signing operations.
+- `release/`: release identity and validation operations. Releases are currently unsigned
+  by policy; signing tooling stays out of the tree until a signed release is actually planned.
 
 Run scripts from the repository root using their full path. Component-local compiled utilities,
 such as the HLSL header compiler, remain beside their owning component under `src/`.
