@@ -183,19 +183,6 @@ public:
         return activeScreenRefreshRate_;
     }
 
-    [[nodiscard]] bool reviewLocalFiles(const QList<QUrl>& files) {
-        if (window_ == nullptr || files.isEmpty()) {
-            return false;
-        }
-        QVariantList values;
-        values.reserve(files.size());
-        for (const QUrl& file : files) {
-            values.push_back(file);
-        }
-        return QMetaObject::invokeMethod(
-            window_, "reviewDroppedUrls", Q_ARG(QVariant, QVariant::fromValue(values)));
-    }
-
     [[nodiscard]] bool enqueueStartupRequest(const int kind, const QList<QUrl>& files) {
         if (window_ == nullptr || shellController_ == nullptr || kind < 0) {
             return false;
@@ -584,10 +571,6 @@ void DesktopApplication::exit(const int exitCode) noexcept {
 
 double DesktopApplication::activeScreenRefreshRate() const noexcept {
     return impl_->activeScreenRefreshRate();
-}
-
-bool DesktopApplication::reviewLocalFiles(const QList<QUrl>& files) {
-    return impl_->reviewLocalFiles(files);
 }
 
 bool DesktopApplication::enqueueStartupRequest(const int kind, const QList<QUrl>& files) {
