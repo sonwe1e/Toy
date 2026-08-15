@@ -12,6 +12,8 @@ VCStation documentation is grouped by lifecycle and audience:
 - [plans/playback-overhaul/](plans/playback-overhaul/) contains the active playback overhaul plan
   and its independent review reports.
 - [releases/](releases/) records shipped behavior and release-specific validation.
+- [design/](design/) preserves the historical A/B design overview; the current target design lives
+  in [architecture.md](architecture.md).
 - [archive/](archive/) preserves superseded designs, implementation plans, and historical reviews;
   archived documents are not current requirements.
 

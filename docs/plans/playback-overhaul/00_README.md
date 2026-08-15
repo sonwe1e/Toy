@@ -74,6 +74,9 @@ Toy 已经拥有一套值得保留的专业级内核：C++20、Qt Quick、FFmpeg
     当前问题的最小复现、实验记录格式和每个里程碑的验收场景。
 13. [`13_风险登记与完成定义.md`](13_风险登记与完成定义.md)
     风险、缓解措施、Definition of Done 和项目健康指标。
+14. [`reviews/00_Synthesis.md`](reviews/00_Synthesis.md)
+    五份独立审查报告（`A_architecture`、`B_root_cause`、`C_migration_surface`、
+    `D_correctness_review`、`E_regression_review`）的综合裁决与冲突解决记录。
 
 ## 证据可信度标记
 
