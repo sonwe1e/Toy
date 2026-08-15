@@ -44,7 +44,6 @@ public:
     [[nodiscard]] int exec();
     void exit(int exitCode) noexcept;
     [[nodiscard]] double activeScreenRefreshRate() const noexcept;
-    [[nodiscard]] bool reviewLocalFiles(const QList<QUrl>& files);
     [[nodiscard]] bool enqueueStartupRequest(int kind, const QList<QUrl>& files);
     void activateWindow() noexcept;
 
